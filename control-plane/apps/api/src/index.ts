@@ -7,6 +7,9 @@ import { z } from "zod";
 import { prisma } from "@/packages/shared/src/db.js";
 import { getAmqpChannel, closeAmqp } from "@/packages/shared/src/amqp.js";
 
+import { ensureTopology } from "@/packages/shared/src/topology.js";
+import { publishDeployRequested } from "@/apps/api/src/jobs/publish.js";
+
 const envSchema = {
   type: "object",
   required: ["API_PORT", "DATABASE_URL", "AMQP_URL", "JWT_SECRET"],
@@ -31,6 +34,8 @@ const app = Fastify({
 await app.register(env, { schema: envSchema, dotenv: true });
 await app.register(cors, { origin: true });
 await app.register(jwt, { secret: process.env.JWT_SECRET! });
+await ensureTopology();
+
 
 app.get("/healthz", async () => ({ ok: true }));
 
@@ -101,6 +106,40 @@ app.post("/services", async (req) => {
       branch: body.branch ?? "main"
     }
   });
+});
+
+// Deploy Service
+app.post("/services/:id/deploy", async (req, reply) => {
+  const params = z.object({ id: z.string() }).parse(req.params);
+  const body = z
+    .object({
+      commitSha: z.string().min(7), 
+    })
+    .parse(req.body);
+
+  // Ensure service exists
+  const service = await prisma.service.findUnique({
+    where: { id: params.id },
+    select: { id: true }
+  });
+
+  if (!service) {
+    return reply.status(404).send({ error: "service_not_found" });
+  }
+
+  // Create Deployment row
+  const deployment = await prisma.deployment.create({
+    data: {
+      serviceId: service.id,
+      commitSha: body.commitSha,
+      status: "queued"
+    }
+  });
+
+  // Publish message (idempotency at queue level can be added later DB id is the source of truth)
+  await publishDeployRequested({ deploymentId: deployment.id });
+
+  return { deploymentId: deployment.id, status: deployment.status };
 });
 
 const port = Number(process.env.API_PORT ?? 8080);

@@ -1,0 +1,25 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: cp_postgres
+    environment:
+      POSTGRES_USER: cp
+      POSTGRES_PASSWORD: cp
+      POSTGRES_DB: control_plane
+    ports:
+      - "5432:5432"
+    volumes:
+      - cp_pgdata:/var/lib/postgresql/data
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: cp_rabbitmq
+    ports:
+      - "5672:5672"    # AMQP
+      - "15672:15672"  # UI
+    environment:
+      RABBITMQ_DEFAULT_USER: cp
+      RABBITMQ_DEFAULT_PASS: cp
+
+volumes:
+  cp_pgdata:

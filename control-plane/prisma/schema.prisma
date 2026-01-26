@@ -1,0 +1,75 @@
+generator client {
+  provider   = "prisma-client-js"
+  engineType = "library"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum DeploymentStatus {
+  queued
+  building
+  deploying
+  deployed
+  failed
+}
+
+model User {
+  id        String   @id @default(cuid())
+  githubId  String?  @unique
+  email     String?  @unique
+  createdAt DateTime @default(now())
+
+  projects  Project[]
+}
+
+model Project {
+  id          String   @id @default(cuid())
+  name        String
+  ownerUserId String
+  createdAt   DateTime @default(now())
+
+  owner    User     @relation(fields: [ownerUserId], references: [id])
+  services Service[]
+}
+
+model Service {
+  id        String   @id @default(cuid())
+  projectId String
+  name      String
+  repoUrl   String
+  branch    String   @default("main")
+  createdAt DateTime @default(now())
+
+  project     Project      @relation(fields: [projectId], references: [id])
+  envVars     EnvVar[]
+  deployments Deployment[]
+
+  @@index([projectId])
+}
+
+model EnvVar {
+  id        String   @id @default(cuid())
+  serviceId String
+  key       String
+  value     String
+  createdAt DateTime @default(now())
+
+  service Service @relation(fields: [serviceId], references: [id])
+
+  @@unique([serviceId, key])
+}
+
+model Deployment {
+  id        String           @id @default(cuid())
+  serviceId String
+  commitSha String
+  image     String?
+  status    DeploymentStatus @default(queued)
+  createdAt DateTime         @default(now())
+
+  service Service @relation(fields: [serviceId], references: [id])
+
+  @@index([serviceId, createdAt])
+}

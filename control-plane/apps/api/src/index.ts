@@ -4,8 +4,8 @@ import jwt from "@fastify/jwt";
 import env from "@fastify/env";
 import { z } from "zod";
 
-import { prisma } from "../../../packages/shared/src/db.js";
-import { getAmqpChannel, closeAmqp } from "../../../packages/shared/src/amqp.js";
+import { prisma } from "@/packages/shared/src/db.js";
+import { getAmqpChannel, closeAmqp } from "@/packages/shared/src/amqp.js";
 
 const envSchema = {
   type: "object",

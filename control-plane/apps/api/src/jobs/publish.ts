@@ -1,5 +1,5 @@
-import { getAmqpChannel } from "../../../../packages/shared/src/amqp.js";
-import { MQ } from "../../../../packages/shared/src/mq.js";
+import { getAmqpChannel } from "@/packages/shared/src/amqp.js";
+import { MQ } from "@/packages/shared/src/mq.js";
 
 export async function publishDeployRequested(payload: { deploymentId: string }) {
   const ch = await getAmqpChannel();

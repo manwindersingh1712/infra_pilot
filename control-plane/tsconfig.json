@@ -6,6 +6,10 @@
         "strict": true,
         "esModuleInterop": true,
         "skipLibCheck": true,
-        "types": ["node", "pg"]
+        "types": ["node", "pg"],
+        "baseUrl": ".",
+        "paths": {
+            "@/*": ["*"]
+        }
     }
 }

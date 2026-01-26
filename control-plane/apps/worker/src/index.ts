@@ -1,6 +1,6 @@
 import "dotenv/config";
-import { prisma } from "../../../packages/shared/src/db.js";
-import { getAmqpChannel, closeAmqp } from "../../../packages/shared/src/amqp.js";
+import { prisma } from "@/packages/shared/src/db.js";
+import { getAmqpChannel, closeAmqp } from "@/packages/shared/src/amqp.js";
 
 console.log("worker up");
 

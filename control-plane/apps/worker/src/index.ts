@@ -1,11 +1,11 @@
-import "dotenv/config";
 import { prisma } from "@/packages/shared/src/db.js";
-import { getAmqpChannel, closeAmqp } from "@/packages/shared/src/amqp.js";
+import { closeAmqp } from "@/packages/shared/src/amqp.js";
+import { startDeployConsumer } from "@/apps/worker/src/consumers/deploy-consumer.js";
 
 console.log("worker up");
-
 await prisma.$queryRaw`SELECT 1`;
-await getAmqpChannel();
+
+await startDeployConsumer();
 
 const shutdown = async () => {
   console.log("worker shutting down...");
@@ -16,6 +16,3 @@ const shutdown = async () => {
 
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
-
-// Keep alive
-setInterval(() => {}, 1 << 30);

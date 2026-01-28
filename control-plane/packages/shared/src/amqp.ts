@@ -9,7 +9,7 @@ export async function getAmqpChannel(): Promise<Channel> {
   conn = await amqplib.connect(url);
   ch = await conn.createChannel();
 
-  // Backpressure: max unacked per consumer
+  // Backpressure: max unacked msg per consumer
   await ch.prefetch(10);
 
   return ch;

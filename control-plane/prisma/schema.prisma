@@ -73,3 +73,25 @@ model Deployment {
 
   @@index([serviceId, createdAt])
 }
+
+enum OutboxStatus {
+  pending
+  publishing
+  published
+  dead
+}
+
+model OutboxEvent {
+  id           String       @id @default(cuid())
+  type         String
+  payload      Json
+  status       OutboxStatus @default(pending)
+  attempts     Int          @default(0)
+  nextAttemptAt DateTime    @default(now())
+  lastError    String?
+  createdAt    DateTime     @default(now())
+  publishedAt  DateTime?
+
+  @@index([status, nextAttemptAt])
+  @@index([createdAt])
+}

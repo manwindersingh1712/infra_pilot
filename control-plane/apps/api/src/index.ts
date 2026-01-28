@@ -8,7 +8,7 @@ import { prisma } from "@/packages/shared/src/db.js";
 import { getAmqpChannel, closeAmqp } from "@/packages/shared/src/amqp.js";
 
 import { ensureTopology } from "@/packages/shared/src/topology.js";
-import { publishDeployRequested } from "@/apps/api/src/jobs/publish.js";
+import { EVENT_TYPES } from "@/packages/shared/src/events.js";
 
 const envSchema = {
   type: "object",
@@ -111,35 +111,35 @@ app.post("/services", async (req) => {
 // Deploy Service
 app.post("/services/:id/deploy", async (req, reply) => {
   const params = z.object({ id: z.string() }).parse(req.params);
-  const body = z
-    .object({
-      commitSha: z.string().min(7), 
-    })
-    .parse(req.body);
+  const body = z.object({ commitSha: z.string().min(7) }).parse(req.body);
 
-  // Ensure service exists
   const service = await prisma.service.findUnique({
     where: { id: params.id },
     select: { id: true }
   });
 
-  if (!service) {
-    return reply.status(404).send({ error: "service_not_found" });
-  }
+  if (!service) return reply.status(404).send({ error: "service_not_found" });
 
-  // Create Deployment row
-  const deployment = await prisma.deployment.create({
-    data: {
-      serviceId: service.id,
-      commitSha: body.commitSha,
-      status: "queued"
-    }
+  const result = await prisma.$transaction(async (tx) => {
+    const deployment = await tx.deployment.create({
+      data: {
+        serviceId: service.id,
+        commitSha: body.commitSha,
+        status: "queued"
+      }
+    });
+
+    await tx.outboxEvent.create({
+      data: {
+        type: EVENT_TYPES.DEPLOY_REQUESTED,
+        payload: { deploymentId: deployment.id }
+      }
+    });
+
+    return deployment;
   });
 
-  // Publish message (idempotency at queue level can be added later DB id is the source of truth)
-  await publishDeployRequested({ deploymentId: deployment.id });
-
-  return { deploymentId: deployment.id, status: deployment.status };
+  return { deploymentId: result.id, status: result.status };
 });
 
 const port = Number(process.env.API_PORT ?? 8080);

@@ -2,10 +2,12 @@ import { prisma } from "@/packages/shared/src/db.js";
 import { closeAmqp } from "@/packages/shared/src/amqp.js";
 import { startDeployConsumer } from "@/apps/worker/src/consumers/deploy-consumer.js";
 import { startOutboxPublisher } from "./outbox/publisher.js";
+import { startBuildConsumer } from "./consumers/build-consumer.js";
 
 console.log("worker up");
 await prisma.$queryRaw`SELECT 1`;
 
+await startBuildConsumer();
 await startDeployConsumer();
 await startOutboxPublisher();
 

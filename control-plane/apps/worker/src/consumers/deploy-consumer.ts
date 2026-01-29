@@ -22,7 +22,7 @@ export async function startDeployConsumer() {
       // 1) Fetch deployment
       const dep = await prisma.deployment.findUnique({
         where: { id: body.deploymentId },
-        select: { id: true, status: true }
+        select: { id: true, status: true, image: true }
       });
 
       // If not found, ack (nothing to do)
@@ -30,6 +30,8 @@ export async function startDeployConsumer() {
         ch.ack(msg);
         return;
       }
+
+      if (!dep.image) throw new Error("image_not_built_yet");
 
       // 2) Idempotency: if already progressed, ack and exit
       // queued -> deploying -> deployed/failed

@@ -131,7 +131,7 @@ app.post("/services/:id/deploy", async (req, reply) => {
 
     await tx.outboxEvent.create({
       data: {
-        type: EVENT_TYPES.DEPLOY_REQUESTED,
+        type: EVENT_TYPES.BUILD_REQUESTED,
         payload: { deploymentId: deployment.id }
       }
     });

@@ -21,5 +21,13 @@ services:
       RABBITMQ_DEFAULT_USER: cp
       RABBITMQ_DEFAULT_PASS: cp
 
+  registry:
+    image: registry:2
+    container_name: cp_registry
+    ports:
+      - "5001:5000"
+    environment:
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
+
 volumes:
   cp_pgdata:

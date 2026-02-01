@@ -142,6 +142,36 @@ app.post("/services/:id/deploy", async (req, reply) => {
   return { deploymentId: result.id, status: result.status };
 });
 
+// Get Projects
+app.get("/projects", async (req) => {
+  const userId = (req.user as any).sub as string;
+  return prisma.project.findMany({
+    where: { ownerUserId: userId },
+    orderBy: { createdAt: "desc" }
+  });
+});
+
+// Get Services
+app.get("/services", async (req) => {
+  const q = z.object({ projectId: z.string().optional() }).parse(req.query);
+
+  return prisma.service.findMany({
+    where: q.projectId ? { projectId: q.projectId } : undefined,
+    orderBy: { createdAt: "desc" }
+  });
+});
+
+// Get Deployments
+app.get("/deployments", async (req) => {
+  const q = z.object({ serviceId: z.string().optional() }).parse(req.query);
+
+  return prisma.deployment.findMany({
+    where: q.serviceId ? { serviceId: q.serviceId } : undefined,
+    orderBy: { createdAt: "desc" },
+    take: 50
+  });
+});
+
 const port = Number(process.env.API_PORT ?? 8080);
 await app.listen({ port, host: "0.0.0.0" });
 

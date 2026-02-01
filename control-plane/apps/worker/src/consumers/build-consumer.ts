@@ -3,6 +3,8 @@ import { prisma } from "@/packages/shared/src/db.js";
 import { MQ } from "@/packages/shared/src/mq.js";
 import { ensureTopology } from "@/packages/shared/src/topology.js";
 import { EVENT_TYPES } from "@/packages/shared/src/events.js";
+import path from "node:path";
+import { realBuildAndPush } from "../build/build-exec.js";
 
 const MAX_RETRIES = 5;
 
@@ -55,11 +57,22 @@ export async function startBuildConsumer() {
         return;
       }
 
-      // ---- BUILD (v0 simulated) ----
-      // Later: git clone + docker build + push to registry
-      // For now: generate deterministic image ref
-      const imageRef = `local-registry/${dep.serviceId}:${dep.commitSha}`;
-
+      // Build and push the image to the registry
+      const registry = process.env.REGISTRY_HOST ?? "localhost:5000";
+      const baseDir = process.env.BUILD_WORKDIR ?? "/tmp/cp-builds";
+      
+      const imageRef = `${registry}/${dep.serviceId}:${dep.commitSha}`;
+      
+      const workDir = path.join(baseDir, dep.id);
+      
+      await realBuildAndPush({
+        repoUrl: dep.service.repoUrl,
+        branch: dep.service.branch,
+        commitSha: dep.commitSha,
+        imageTag: imageRef,
+        workDir
+      });
+      
       // On success: set image + enqueue deploy via Outbox in ONE txn
       await prisma.$transaction(async (tx) => {
         await tx.deployment.update({

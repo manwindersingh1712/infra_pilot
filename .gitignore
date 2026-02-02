@@ -3,15 +3,19 @@
 # Dependencies
 /node_modules
 /control-plane/node_modules
+/cp-ui/node_modules
 
 # Env files
 /.env
 /control-plane/.env
+/cp-ui/.env
 
 # Build output
 /dist
 /build
 /control-plane/dist
+/cp-ui/dist
+/cp-ui/build
 
 # Logs
 *.log

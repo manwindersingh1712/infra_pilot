@@ -21,9 +21,9 @@ Flow (happy path):
    enqueues a deploy message.
 5. The deploy worker marks the deployment as deployed (runner integration TBD).
 
-<!-- ## Architecture diagram
+## Architecture diagram
 
-![Infra Pilot diagram](docs/architecture.drawio.svg) -->
+![Infra Pilot diagram](public/assets/infrapilot.drawio.svg)
 
 ## Setup
 

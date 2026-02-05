@@ -8,6 +8,7 @@ import {
   dockerPull,
   dockerRun
 } from "@/apps/worker/src/runtime/docker-runner.js";
+import { writeNginxRoute, reloadNginx } from "@/apps/worker/src/runtime/nginx.js";
 
 const MAX_RETRIES = 5;
 
@@ -28,7 +29,7 @@ export async function startDeployConsumer() {
       // 1) Fetch deployment
       const dep = await prisma.deployment.findUnique({
         where: { id: body.deploymentId },
-        select: { id: true, status: true, image: true }
+        select: { id: true, status: true, image: true, serviceId: true }
       });
 
       // If not found, ack (nothing to do)
@@ -80,8 +81,15 @@ export async function startDeployConsumer() {
           NODE_ENV: "production"
         }
       });
+      
+      const runtimeUrl = `http://${host}/s/${dep.serviceId}`;
 
-      const runtimeUrl = `http://${host}:${hostPort}`;
+      await writeNginxRoute({
+        serviceId: dep.serviceId,
+        hostPort
+      });
+
+      await reloadNginx();
 
       // 5) Update deployment status
       await prisma.deployment.update({

@@ -2,6 +2,8 @@ import { getAmqpChannel } from "@/packages/shared/src/amqp.js";
 import { prisma } from "@/packages/shared/src/db.js";
 import { MQ } from "@/packages/shared/src/mq.js";
 import { ensureTopology } from "@/packages/shared/src/topology.js";
+import { allocateHostPort } from "@/apps/worker/src/runtime/ports.js";
+import { dockerPull, dockerRun } from "@/apps/worker/src/runtime/docker-runner.js";
 
 const MAX_RETRIES = 5;
 
@@ -53,16 +55,42 @@ export async function startDeployConsumer() {
         return;
       }
 
-      // 4) TODO: call data-plane runner to run container
-      // For now, simulate deploy work
-      // await callRunner(...)
 
-      // 5) Mark deployed
-      await prisma.deployment.update({
-        where: { id: dep.id },
-        data: { status: "deployed" }
+      // 4) Run container via data-plane runner
+      const host = process.env.DATA_PLANE_HOST ?? "localhost";
+      const containerPort = 8080;
+
+      const hostPort = await allocateHostPort();
+      const containerName = `cp-${dep.id}`;
+
+      await dockerPull(dep.image);
+
+      const { containerId } = await dockerRun({
+        image: dep.image,
+        name: containerName,
+        hostPort,
+        containerPort,
+        env: {
+          // later: inject service env vars
+          NODE_ENV: "production"
+        }
       });
 
+      const runtimeUrl = `http://${host}:${hostPort}`;
+
+      // 5) Update deployment status
+      await prisma.deployment.update({
+        where: { id: dep.id },
+        data: {
+          containerId,
+          hostPort,
+          containerPort,
+          runtimeUrl,
+          status: "deployed"
+        }
+      });
+
+      // 6) Ack message
       ch.ack(msg);
     } catch (err) {
       // Retry strategy: re-publish with incremented header

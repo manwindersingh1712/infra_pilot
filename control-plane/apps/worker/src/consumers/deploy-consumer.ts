@@ -3,7 +3,11 @@ import { prisma } from "@/packages/shared/src/db.js";
 import { MQ } from "@/packages/shared/src/mq.js";
 import { ensureTopology } from "@/packages/shared/src/topology.js";
 import { allocateHostPort } from "@/apps/worker/src/runtime/ports.js";
-import { dockerPull, dockerRun } from "@/apps/worker/src/runtime/docker-runner.js";
+import {
+  detectContainerPort,
+  dockerPull,
+  dockerRun
+} from "@/apps/worker/src/runtime/docker-runner.js";
 
 const MAX_RETRIES = 5;
 
@@ -55,15 +59,16 @@ export async function startDeployConsumer() {
         return;
       }
 
-
       // 4) Run container via data-plane runner
       const host = process.env.DATA_PLANE_HOST ?? "localhost";
-      const containerPort = 8080;
-
       const hostPort = await allocateHostPort();
       const containerName = `cp-${dep.id}`;
 
       await dockerPull(dep.image);
+
+      const detectedPort = await detectContainerPort(dep.image).catch(() => null);
+      const fallbackPort = Number(process.env.DEFAULT_CONTAINER_PORT ?? 3080);
+      const containerPort = detectedPort ?? fallbackPort;
 
       const { containerId } = await dockerRun({
         image: dep.image,

@@ -28,6 +28,22 @@ services:
       - "5001:5000"
     environment:
       REGISTRY_STORAGE_DELETE_ENABLED: "true"
+  
+  nginx:
+    image: nginx:alpine
+    container_name: cp_nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./infra/nginx/conf.d:/etc/nginx/conf.d
+    networks:
+      - cp_net
+
+networks:
+  cp_net:
+    name: cp_net
+    driver: bridge
 
 volumes:
   cp_pgdata:

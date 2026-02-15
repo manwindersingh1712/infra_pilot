@@ -8,6 +8,7 @@ import {
   dockerPull,
   dockerRun
 } from "@/apps/worker/src/runtime/docker-runner.js";
+import { upsertServiceRoute } from "@/apps/worker/src/runtime/nginx.js";
 
 const MAX_RETRIES = 5;
 
@@ -28,7 +29,7 @@ export async function startDeployConsumer() {
       // 1) Fetch deployment
       const dep = await prisma.deployment.findUnique({
         where: { id: body.deploymentId },
-        select: { id: true, status: true, image: true }
+        select: { id: true, status: true, image: true, serviceId: true }
       });
 
       // If not found, ack (nothing to do)
@@ -60,7 +61,6 @@ export async function startDeployConsumer() {
       }
 
       // 4) Run container via data-plane runner
-      const host = process.env.DATA_PLANE_HOST ?? "localhost";
       const hostPort = await allocateHostPort();
       const containerName = `cp-${dep.id}`;
 
@@ -81,7 +81,18 @@ export async function startDeployConsumer() {
         }
       });
 
-      const runtimeUrl = `http://${host}:${hostPort}`;
+      // 4b) Register the service route in nginx
+      const nginxHost = process.env.NGINX_HOST ?? "localhost";
+      const nginxPort = process.env.NGINX_PORT ?? "80";
+
+      await upsertServiceRoute({
+        serviceId: dep.serviceId,
+        containerName,
+        containerPort
+      });
+
+      const portSuffix = nginxPort === "80" ? "" : `:${nginxPort}`;
+      const runtimeUrl = `http://${nginxHost}${portSuffix}/s/${dep.serviceId}`;
 
       // 5) Update deployment status
       await prisma.deployment.update({

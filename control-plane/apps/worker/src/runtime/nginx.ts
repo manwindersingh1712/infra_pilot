@@ -6,8 +6,8 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 
 /**
- * Directory on the HOST where per-service nginx route snippets are stored.
- * These are included by default.conf inside the main server block.
+ * Directory on the HOST where per-service nginx config files are stored.
+ * Each file defines a full server block with subdomain-based routing.
  */
 const NGINX_ROUTES_DIR =
   process.env.NGINX_ROUTES_DIR ??
@@ -16,12 +16,20 @@ const NGINX_ROUTES_DIR =
 const NGINX_CONTAINER = process.env.NGINX_CONTAINER ?? "cp_nginx";
 
 /**
- * Write (or overwrite) an nginx location snippet for a service so it is
- * reachable at  /s/<serviceId>/
+ * Base domain for service subdomains.
+ *   local  → "localhost"  →  <serviceId>.localhost
+ *   prod   → "example.com" →  <serviceId>.example.com
+ */
+export const SERVICE_BASE_DOMAIN =
+  process.env.SERVICE_BASE_DOMAIN ?? "localhost";
+
+/**
+ * Write (or overwrite) an nginx server block for a service so it is
+ * reachable at  http://<serviceId>.<baseDomain>/
  *
- * The snippet proxies to the container by name on the shared Docker network.
- * Uses a variable so nginx resolves the name via Docker DNS at request time
- * (not just at reload time).
+ * The app runs at "/" on its own subdomain — zero rewriting needed.
+ * Uses a variable so nginx resolves the container name via Docker DNS
+ * at request time (not just at reload time).
  */
 export async function upsertServiceRoute(params: {
   serviceId: string;
@@ -30,66 +38,36 @@ export async function upsertServiceRoute(params: {
 }) {
   const { serviceId, containerName, containerPort } = params;
 
-  // Use an underscore-safe variable name (cuid IDs are alphanumeric)
+  const serverName = `${serviceId}.${SERVICE_BASE_DOMAIN}`;
   const varName = `upstream_${serviceId.replace(/[^a-zA-Z0-9]/g, "_")}`;
 
-  const prefix = `/s/${serviceId}/`;
-
-  // Compact client-side script that patches History API so SPA routers
-  // (React Router, Vue Router, etc.) prepend the service base path on navigation.
-  const patchScript = [
-    `<script>(function(){`,
-    `var B="${prefix.slice(0, -1)}";`,
-    `var p=history.pushState,r=history.replaceState;`,
-    `function f(u){return typeof u==="string"&&u[0]==="/"&&u.indexOf(B)!==0?B+u:u}`,
-    `history.pushState=function(s,t,u){return p.call(this,s,t,f(u))};`,
-    `history.replaceState=function(s,t,u){return r.call(this,s,t,f(u))};`,
-    `})()</script>`
-  ].join("");
-
-  const snippet = [
+  const conf = [
     `# auto-generated – service ${serviceId}`,
-    `location ${prefix} {`,
-    `    set $${varName} http://${containerName}:${containerPort};`,
+    `server {`,
+    `    listen 80;`,
+    `    server_name ${serverName};`,
     ``,
-    `    # Strip the /s/<id>/ prefix before forwarding to the container`,
-    `    rewrite ^${prefix}(.*)$ /$1 break;`,
-    `    proxy_pass $${varName};`,
+    `    resolver 127.0.0.11 valid=10s;`,
     ``,
-    `    # Disable upstream compression so sub_filter can inspect response bodies`,
-    `    proxy_set_header Accept-Encoding "";`,
-    `    sub_filter_once off;`,
-    `    sub_filter_types text/css application/javascript;`,
+    `    location / {`,
+    `        set $${varName} http://${containerName}:${containerPort};`,
+    `        proxy_pass $${varName};`,
     ``,
-    `    # 1) Inject a History-API patch so SPA client-side routing keeps the prefix`,
-    `    sub_filter '</head>' '${patchScript}\\n</head>';`,
-    ``,
-    `    # 2) Rewrite absolute asset paths in HTML so they route back through the proxy`,
-    `    sub_filter 'href="/' 'href="${prefix}';`,
-    `    sub_filter 'src="/' 'src="${prefix}';`,
-    ``,
-    `    # 3) Rewrite SPA route definitions in JS bundles (e.g. path:"/" → path:"/s/<id>/")`,
-    `    sub_filter 'path:"/' 'path:"${prefix}';`,
-    ``,
-    `    # 4) Rewrite CSS url() and JS import paths`,
-    `    sub_filter 'from "/' 'from "${prefix}';`,
-    `    sub_filter 'url(/' 'url(${prefix}';`,
-    ``,
-    `    proxy_http_version 1.1;`,
-    `    proxy_set_header Host $host;`,
-    `    proxy_set_header X-Real-IP $remote_addr;`,
-    `    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`,
-    `    proxy_set_header X-Forwarded-Proto $scheme;`,
-    `    proxy_set_header Upgrade $http_upgrade;`,
-    `    proxy_set_header Connection "upgrade";`,
+    `        proxy_http_version 1.1;`,
+    `        proxy_set_header Host $host;`,
+    `        proxy_set_header X-Real-IP $remote_addr;`,
+    `        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`,
+    `        proxy_set_header X-Forwarded-Proto $scheme;`,
+    `        proxy_set_header Upgrade $http_upgrade;`,
+    `        proxy_set_header Connection "upgrade";`,
+    `    }`,
     `}`,
     ``
   ].join("\n");
 
   const confPath = path.join(NGINX_ROUTES_DIR, `svc-${serviceId}.conf`);
-  await writeFile(confPath, snippet, "utf-8");
+  await writeFile(confPath, conf, "utf-8");
 
-  // Reload nginx so the new route takes effect
   await reloadNginx();
 }
 

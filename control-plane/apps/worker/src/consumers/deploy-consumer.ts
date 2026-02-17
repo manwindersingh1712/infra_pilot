@@ -8,7 +8,10 @@ import {
   dockerPull,
   dockerRun
 } from "@/apps/worker/src/runtime/docker-runner.js";
-import { upsertServiceRoute } from "@/apps/worker/src/runtime/nginx.js";
+import {
+  upsertServiceRoute,
+  SERVICE_BASE_DOMAIN
+} from "@/apps/worker/src/runtime/nginx.js";
 
 const MAX_RETRIES = 5;
 
@@ -81,8 +84,7 @@ export async function startDeployConsumer() {
         }
       });
 
-      // 4b) Register the service route in nginx
-      const nginxHost = process.env.NGINX_HOST ?? "localhost";
+      // 4b) Register the service subdomain in nginx
       const nginxPort = process.env.NGINX_PORT ?? "80";
 
       await upsertServiceRoute({
@@ -92,7 +94,7 @@ export async function startDeployConsumer() {
       });
 
       const portSuffix = nginxPort === "80" ? "" : `:${nginxPort}`;
-      const runtimeUrl = `http://${nginxHost}${portSuffix}/s/${dep.serviceId}`;
+      const runtimeUrl = `http://${dep.serviceId}.${SERVICE_BASE_DOMAIN}${portSuffix}`;
 
       // 5) Update deployment status
       await prisma.deployment.update({

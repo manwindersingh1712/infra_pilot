@@ -1,4 +1,4 @@
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -64,6 +64,8 @@ export async function upsertServiceRoute(params: {
     `}`,
     ``
   ].join("\n");
+
+  await mkdir(NGINX_ROUTES_DIR, { recursive: true });
 
   const confPath = path.join(NGINX_ROUTES_DIR, `svc-${serviceId}.conf`);
   await writeFile(confPath, conf, "utf-8");

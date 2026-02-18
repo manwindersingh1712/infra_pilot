@@ -42,6 +42,8 @@ export async function detectContainerPort(image: string): Promise<number> {
   return ports.sort((a, b) => a - b)[0];
 }
 
+export const DOCKER_NETWORK = process.env.DOCKER_NETWORK ?? "cp_net";
+
 export async function dockerRun(params: {
   image: string;
   name: string;           // container name
@@ -62,6 +64,8 @@ export async function dockerRun(params: {
     "-d",
     "--name",
     params.name,
+    "--network",
+    DOCKER_NETWORK,
     "-p",
     `${params.hostPort}:${params.containerPort}`,
     ...envArgs,

@@ -4,7 +4,7 @@ const API = import.meta.env.VITE_API_BASE ?? "http://localhost:8080";
 
 type Project = { id: string; name: string; createdAt: string };
 type Service = { id: string; projectId: string; name: string; repoUrl: string; branch: string; createdAt: string };
-type Deployment = { id: string; serviceId: string; commitSha: string; image: string | null; status: string; createdAt: string };
+type Deployment = { id: string; serviceId: string; commitSha: string; image: string | null; runtimeUrl: string | null; status: string; createdAt: string };
 
 async function apiFetch<T>(path: string, opts: RequestInit = {}, token?: string): Promise<T> {
   const headers = new Headers(opts.headers);
@@ -284,7 +284,7 @@ export default function App() {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr>
-                {["id", "status", "commitSha", "image", "createdAt"].map((h) => (
+                {["id", "status", "commitSha", "image", "runtimeUrl", "createdAt"].map((h) => (
                   <th key={h} style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: 8 }}>
                     {h}
                   </th>
@@ -298,12 +298,17 @@ export default function App() {
                   <td style={{ borderBottom: "1px solid #f0f0f0", padding: 8 }}>{d.status}</td>
                   <td style={{ borderBottom: "1px solid #f0f0f0", padding: 8, fontFamily: "monospace" }}>{d.commitSha}</td>
                   <td style={{ borderBottom: "1px solid #f0f0f0", padding: 8, fontFamily: "monospace" }}>{d.image ?? "-"}</td>
+                  <td style={{ borderBottom: "1px solid #f0f0f0", padding: 8, fontFamily: "monospace" }}>
+                    {d.runtimeUrl ? (
+                      <a href={d.runtimeUrl} target="_blank" rel="noopener noreferrer">{d.runtimeUrl}</a>
+                    ) : "-"}
+                  </td>
                   <td style={{ borderBottom: "1px solid #f0f0f0", padding: 8 }}>{new Date(d.createdAt).toLocaleString()}</td>
                 </tr>
               ))}
               {deployments.length === 0 ? (
                 <tr>
-                  <td colSpan={5} style={{ padding: 12, color: "#777" }}>
+                  <td colSpan={6} style={{ padding: 12, color: "#777" }}>
                     No deployments yet.
                   </td>
                 </tr>

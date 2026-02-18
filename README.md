@@ -23,7 +23,7 @@ Flow (happy path):
 
 ## Architecture diagram
 
-![Infra Pilot diagram](public/assets/infrapilot.drawio.svg)
+![Infra Pilot diagram](public/assets/architecture.drawio.svg)
 
 ## Setup
 

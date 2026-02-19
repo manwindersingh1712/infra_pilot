@@ -25,6 +25,10 @@ Flow (happy path):
 
 ![Infra Pilot diagram](public/assets/architecture.drawio.svg)
 
+## Reverse Proxy
+
+![Reverse Proxy diagram](public/assets/proxy.drawio.svg)
+
 ## Setup
 
 ### Prereqs
@@ -44,6 +48,7 @@ This starts:
 - Postgres on `localhost:5432`
 - RabbitMQ on `localhost:5672` (UI on `localhost:15672`)
 - Docker registry on `localhost:5001`
+- Nginx on `localhost:80` (routes to deployed services via subdomains)
 
 ### Install packages
 
@@ -115,4 +120,4 @@ VITE_API_BASE=http://localhost:8080
 ## Notes
 
 - Build worker uses Docker to build/push images. Ensure Docker is running.
-- Deploy worker is stubbed; runner integration is TODO.
+- Deploy worker runs containers and configures nginx routing for service subdomains.

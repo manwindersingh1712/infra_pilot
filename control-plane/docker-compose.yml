@@ -41,6 +41,9 @@ services:
       - cp_net
 
 networks:
+# cp_net is a Docker bridge network whose sole purpose is to create a 
+# private, isolated communication channel between Nginx and the user's 
+# deployed app containers.
   cp_net:
     name: cp_net
     driver: bridge

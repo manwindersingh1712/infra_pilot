@@ -15,6 +15,13 @@ enum DeploymentStatus {
   failed
 }
 
+enum HealthStatus {
+  starting
+  healthy
+  unhealthy
+  crashed
+}
+
 model User {
   id        String   @id @default(cuid())
   githubId  String?  @unique
@@ -67,6 +74,7 @@ model Deployment {
   commitSha String
   image     String?
   status    DeploymentStatus @default(queued)
+  healthStatus HealthStatus? @default(starting)
   containerId String?
   hostPort    Int?
   containerPort Int?
@@ -77,6 +85,7 @@ model Deployment {
   service Service @relation(fields: [serviceId], references: [id])
 
   @@index([serviceId, createdAt])
+  @@index([status, healthStatus])
 }
 
 enum OutboxStatus {

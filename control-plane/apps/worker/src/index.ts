@@ -3,6 +3,7 @@ import { closeAmqp } from "@/packages/shared/src/amqp.js";
 import { startDeployConsumer } from "@/apps/worker/src/consumers/deploy-consumer.js";
 import { startOutboxPublisher } from "./outbox/publisher.js";
 import { startBuildConsumer } from "./consumers/build-consumer.js";
+import { startHealthCheckMonitor } from "./consumers/health-check-monitor.js";
 
 console.log("worker up");
 await prisma.$queryRaw`SELECT 1`;
@@ -10,6 +11,7 @@ await prisma.$queryRaw`SELECT 1`;
 await startBuildConsumer();
 await startDeployConsumer();
 await startOutboxPublisher();
+await startHealthCheckMonitor();
 
 const shutdown = async () => {
   console.log("worker shutting down...");

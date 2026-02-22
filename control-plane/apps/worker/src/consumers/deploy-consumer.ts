@@ -84,19 +84,11 @@ export async function startDeployConsumer() {
         }
       });
 
-      // 4b) Register the service subdomain in nginx
-      const nginxPort = process.env.NGINX_PORT ?? "80";
-
-      await upsertServiceRoute({
-        serviceId: dep.serviceId,
-        containerName,
-        containerPort
-      });
-
-      const portSuffix = nginxPort === "80" ? "" : `:${nginxPort}`;
+      const portSuffix = (process.env.NGINX_PORT ?? "80") === "80" ? "" : `:${process.env.NGINX_PORT ?? "80"}`;
       const runtimeUrl = `http://${dep.serviceId}.${SERVICE_BASE_DOMAIN}${portSuffix}`;
 
-      // 5) Update deployment status
+      // 4b) Update deployment status to "deployed" with healthStatus "starting"
+      // DO NOT route traffic yet - wait for health checks to pass
       await prisma.deployment.update({
         where: { id: dep.id },
         data: {
@@ -104,7 +96,8 @@ export async function startDeployConsumer() {
           hostPort,
           containerPort,
           runtimeUrl,
-          status: "deployed"
+          status: "deployed",
+          healthStatus: "starting"
         }
       });
 

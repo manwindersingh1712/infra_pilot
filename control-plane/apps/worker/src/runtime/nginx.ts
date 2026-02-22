@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, writeFile, unlink } from "node:fs/promises";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -71,6 +71,24 @@ export async function upsertServiceRoute(params: {
   await writeFile(confPath, conf, "utf-8");
 
   await reloadNginx();
+}
+
+/**
+ * Remove the nginx route for a service.
+ * This stops routing traffic to the service.
+ */
+export async function removeServiceRoute(serviceId: string) {
+  const confPath = path.join(NGINX_ROUTES_DIR, `svc-${serviceId}.conf`);
+  
+  try {
+    await unlink(confPath);
+    await reloadNginx();
+  } catch (err: any) {
+    // If file doesn't exist, that's fine - route already removed
+    if (err.code !== "ENOENT") {
+      throw err;
+    }
+  }
 }
 
 /**

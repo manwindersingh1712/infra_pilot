@@ -15,6 +15,13 @@ enum DeploymentStatus {
   failed
 }
 
+enum ServiceType {
+  docker
+  nodejs
+  mongodb
+  redis
+}
+
 model User {
   id        String   @id @default(cuid())
   githubId  String?  @unique
@@ -35,12 +42,13 @@ model Project {
 }
 
 model Service {
-  id        String   @id @default(cuid())
-  projectId String
-  name      String
-  repoUrl   String
-  branch    String   @default("main")
-  createdAt DateTime @default(now())
+  id          String      @id @default(cuid())
+  projectId   String
+  name        String
+  serviceType ServiceType @default(docker)
+  repoUrl     String?
+  branch      String      @default("main")
+  createdAt   DateTime    @default(now())
 
   project     Project      @relation(fields: [projectId], references: [id])
   envVars     EnvVar[]
@@ -71,7 +79,8 @@ model Deployment {
   hostPort    Int?
   containerPort Int?
   runtimeUrl  String?
-  createdAt DateTime         @default(now())
+  volumePath  String?          // for database persistence
+  createdAt   DateTime         @default(now())
   updatedAt DateTime @updatedAt
 
   service Service @relation(fields: [serviceId], references: [id])

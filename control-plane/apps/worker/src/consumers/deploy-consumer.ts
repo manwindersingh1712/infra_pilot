@@ -6,14 +6,32 @@ import { allocateHostPort } from "@/apps/worker/src/runtime/ports.js";
 import {
   detectContainerPort,
   dockerPull,
-  dockerRun
+  dockerRun,
+  dockerRunManaged
 } from "@/apps/worker/src/runtime/docker-runner.js";
+import fs from "node:fs/promises";
 import {
   upsertServiceRoute,
   SERVICE_BASE_DOMAIN
 } from "@/apps/worker/src/runtime/nginx.js";
 
 const MAX_RETRIES = 5;
+
+const MANAGED_SERVICE_IMAGES: Record<string, { image: string; defaultPort: number; env: Record<string, string> }> = {
+  mongodb: {
+    image: "mongo:7",
+    defaultPort: 27017,
+    env: {
+      MONGO_INITDB_ROOT_USERNAME: "admin",
+      MONGO_INITDB_ROOT_PASSWORD: "admin123"
+    }
+  },
+  redis: {
+    image: "redis:7-alpine",
+    defaultPort: 6379,
+    env: {}
+  }
+};
 
 type DeployMsg = { deploymentId: string };
 
@@ -29,10 +47,17 @@ export async function startDeployConsumer() {
     try {
       const body = JSON.parse(msg.content.toString()) as DeployMsg;
 
-      // 1) Fetch deployment
+      // 1) Fetch deployment with service info
       const dep = await prisma.deployment.findUnique({
         where: { id: body.deploymentId },
-        select: { id: true, status: true, image: true, serviceId: true }
+        select: {
+          id: true,
+          status: true,
+          image: true,
+          serviceId: true,
+          volumePath: true,
+          service: { select: { serviceType: true } }
+        }
       });
 
       // If not found, ack (nothing to do)
@@ -41,7 +66,12 @@ export async function startDeployConsumer() {
         return;
       }
 
-      if (!dep.image) throw new Error("image_not_built_yet");
+      const isManagedService = dep.service.serviceType === "mongodb" || dep.service.serviceType === "redis";
+
+      // For managed services, image comes from config, not build
+      if (!dep.image && !isManagedService) {
+        throw new Error("image_not_built_yet");
+      }
 
       // 2) Idempotency: if already progressed, ack and exit
       // queued -> deploying -> deployed/failed
@@ -67,22 +97,50 @@ export async function startDeployConsumer() {
       const hostPort = await allocateHostPort();
       const containerName = `cp-${dep.id}`;
 
-      await dockerPull(dep.image);
+      let image: string;
+      let containerPort: number;
+      let containerId: string;
 
-      const detectedPort = await detectContainerPort(dep.image).catch(() => null);
-      const fallbackPort = Number(process.env.DEFAULT_CONTAINER_PORT ?? 3080);
-      const containerPort = detectedPort ?? fallbackPort;
+      if (isManagedService) {
+        // Managed services: use official image with volume
+        const config = MANAGED_SERVICE_IMAGES[dep.service.serviceType];
+        image = config.image;
+        containerPort = config.defaultPort;
 
-      const { containerId } = await dockerRun({
-        image: dep.image,
-        name: containerName,
-        hostPort,
-        containerPort,
-        env: {
-          // later: inject service env vars
-          NODE_ENV: "production"
-        }
-      });
+        // Create volume directory for persistence
+        const volumePath = dep.volumePath ?? `/tmp/cp-volumes/${dep.serviceId}`;
+        await fs.mkdir(volumePath, { recursive: true });
+
+        const result = await dockerRunManaged({
+          image,
+          name: containerName,
+          hostPort,
+          containerPort,
+          volumePath,
+          env: config.env
+        });
+        containerId = result.containerId;
+      } else {
+        // Regular services: use built image
+        image = dep.image!;
+        await dockerPull(image);
+
+        const detectedPort = await detectContainerPort(image).catch(() => null);
+        const fallbackPort = Number(process.env.DEFAULT_CONTAINER_PORT ?? 3080);
+        containerPort = detectedPort ?? fallbackPort;
+
+        const result = await dockerRun({
+          image,
+          name: containerName,
+          hostPort,
+          containerPort,
+          env: {
+            // later: inject service env vars
+            NODE_ENV: "production"
+          }
+        });
+        containerId = result.containerId;
+      }
 
       // 4b) Register the service subdomain in nginx
       const nginxPort = process.env.NGINX_PORT ?? "80";
@@ -97,15 +155,22 @@ export async function startDeployConsumer() {
       const runtimeUrl = `http://${dep.serviceId}.${SERVICE_BASE_DOMAIN}${portSuffix}`;
 
       // 5) Update deployment status
+      const updateData: any = {
+        containerId,
+        hostPort,
+        containerPort,
+        runtimeUrl,
+        status: "deployed"
+      };
+
+      // For managed services, store the volume path
+      if (isManagedService) {
+        updateData.volumePath = dep.volumePath ?? `/tmp/cp-volumes/${dep.serviceId}`;
+      }
+
       await prisma.deployment.update({
         where: { id: dep.id },
-        data: {
-          containerId,
-          hostPort,
-          containerPort,
-          runtimeUrl,
-          status: "deployed"
-        }
+        data: updateData
       });
 
       // 6) Ack message

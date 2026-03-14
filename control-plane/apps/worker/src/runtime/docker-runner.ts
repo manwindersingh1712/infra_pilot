@@ -74,3 +74,37 @@ export async function dockerRun(params: {
 
   return { containerId: stdout.trim() };
 }
+
+export async function dockerRunManaged(params: {
+  image: string;
+  name: string;
+  hostPort: number;
+  containerPort: number;
+  volumePath: string;
+  env?: Record<string, string>;
+}) {
+  const envArgs: string[] = [];
+  for (const [k, v] of Object.entries(params.env ?? {})) {
+    envArgs.push("-e", `${k}=${v}`);
+  }
+
+  // If container already exists from previous attempt, remove it
+  await run("docker", ["rm", "-f", params.name]).catch(() => {});
+
+  const { stdout } = await run("docker", [
+    "run",
+    "-d",
+    "--name",
+    params.name,
+    "--network",
+    DOCKER_NETWORK,
+    "-p",
+    `${params.hostPort}:${params.containerPort}`,
+    "-v",
+    `${params.volumePath}:/data`,
+    ...envArgs,
+    params.image
+  ]);
+
+  return { containerId: stdout.trim() };
+}

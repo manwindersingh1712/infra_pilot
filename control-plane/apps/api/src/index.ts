@@ -93,15 +93,27 @@ app.post("/services", async (req) => {
     .object({
       projectId: z.string(),
       name: z.string().min(2),
-      repoUrl: z.string().url(),
+      serviceType: z.enum(["docker", "nodejs", "mongodb", "redis"]).optional(),
+      repoUrl: z.string().url().optional(),
       branch: z.string().min(1).optional()
     })
+    .refine((data) => {
+      // repoUrl required for docker and nodejs types
+      const type = data.serviceType ?? "docker";
+      if (type === "docker" || type === "nodejs") {
+        return !!data.repoUrl;
+      }
+      return true;
+    }, { message: "repoUrl required for docker/nodejs services" })
     .parse(req.body);
+
+  const serviceType = body.serviceType ?? "docker";
 
   return prisma.service.create({
     data: {
       projectId: body.projectId,
       name: body.name,
+      serviceType,
       repoUrl: body.repoUrl,
       branch: body.branch ?? "main"
     }
@@ -111,27 +123,33 @@ app.post("/services", async (req) => {
 // Deploy Service
 app.post("/services/:id/deploy", async (req, reply) => {
   const params = z.object({ id: z.string() }).parse(req.params);
-  const body = z.object({ commitSha: z.string().min(7) }).parse(req.body);
+  const body = z.object({ commitSha: z.string().min(4).optional() }).parse(req.body);
 
   const service = await prisma.service.findUnique({
     where: { id: params.id },
-    select: { id: true }
+    select: { id: true, serviceType: true }
   });
 
   if (!service) return reply.status(404).send({ error: "service_not_found" });
+
+  const isManagedService = service.serviceType === "mongodb" || service.serviceType === "redis";
+  const commitSha = body.commitSha ?? (isManagedService ? "latest" : "main");
 
   const result = await prisma.$transaction(async (tx) => {
     const deployment = await tx.deployment.create({
       data: {
         serviceId: service.id,
-        commitSha: body.commitSha,
+        commitSha,
         status: "queued"
       }
     });
 
+    // For managed services (mongodb/redis), skip build and go straight to deploy
+    const eventType = isManagedService ? EVENT_TYPES.DEPLOY_REQUESTED : EVENT_TYPES.BUILD_REQUESTED;
+
     await tx.outboxEvent.create({
       data: {
-        type: EVENT_TYPES.BUILD_REQUESTED,
+        type: eventType,
         payload: { deploymentId: deployment.id }
       }
     });

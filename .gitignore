@@ -22,3 +22,6 @@
 
 # Prisma generated files
 /control-plane/generated/prisma
+
+# ignore Implementation md
+IMPLEMENTATION_PLAN.md

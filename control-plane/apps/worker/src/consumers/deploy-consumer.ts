@@ -93,7 +93,16 @@ export async function startDeployConsumer() {
         return;
       }
 
-      // 4) Run container via data-plane runner
+      // 4) Fetch env vars for the service
+      const envVars = await prisma.envVar.findMany({
+        where: { serviceId: dep.serviceId }
+      });
+      const envMap: Record<string, string> = {};
+      for (const ev of envVars) {
+        envMap[ev.key] = ev.value;
+      }
+
+      // 5) Run container via data-plane runner
       const hostPort = await allocateHostPort();
       const containerName = `cp-${dep.id}`;
 
@@ -111,13 +120,16 @@ export async function startDeployConsumer() {
         const volumePath = dep.volumePath ?? `/tmp/cp-volumes/${dep.serviceId}`;
         await fs.mkdir(volumePath, { recursive: true });
 
+        // Merge config env with user-defined env vars
+        const mergedEnv = { ...config.env, ...envMap };
+
         const result = await dockerRunManaged({
           image,
           name: containerName,
           hostPort,
           containerPort,
           volumePath,
-          env: config.env
+          env: mergedEnv
         });
         containerId = result.containerId;
       } else {
@@ -129,15 +141,18 @@ export async function startDeployConsumer() {
         const fallbackPort = Number(process.env.DEFAULT_CONTAINER_PORT ?? 3080);
         containerPort = detectedPort ?? fallbackPort;
 
+        // Merge default env with user-defined env vars
+        const mergedEnv = {
+          NODE_ENV: "production",
+          ...envMap
+        };
+
         const result = await dockerRun({
           image,
           name: containerName,
           hostPort,
           containerPort,
-          env: {
-            // later: inject service env vars
-            NODE_ENV: "production"
-          }
+          env: mergedEnv
         });
         containerId = result.containerId;
       }

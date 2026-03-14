@@ -190,6 +190,60 @@ app.get("/deployments", async (req) => {
   });
 });
 
+// Get Service Env Vars
+app.get("/services/:id/env", async (req, reply) => {
+  const params = z.object({ id: z.string() }).parse(req.params);
+
+  const service = await prisma.service.findUnique({
+    where: { id: params.id },
+    select: { id: true }
+  });
+
+  if (!service) return reply.status(404).send({ error: "service_not_found" });
+
+  return prisma.envVar.findMany({
+    where: { serviceId: params.id },
+    orderBy: { key: "asc" }
+  });
+});
+
+// Set Service Env Var (create or update)
+app.post("/services/:id/env", async (req, reply) => {
+  const params = z.object({ id: z.string() }).parse(req.params);
+  const body = z.object({ key: z.string().min(1), value: z.string() }).parse(req.body);
+
+  const service = await prisma.service.findUnique({
+    where: { id: params.id },
+    select: { id: true }
+  });
+
+  if (!service) return reply.status(404).send({ error: "service_not_found" });
+
+  return prisma.envVar.upsert({
+    where: { serviceId_key: { serviceId: params.id, key: body.key } },
+    update: { value: body.value },
+    create: { serviceId: params.id, key: body.key, value: body.value }
+  });
+});
+
+// Delete Service Env Var
+app.delete("/services/:id/env/:key", async (req, reply) => {
+  const params = z.object({ id: z.string(), key: z.string() }).parse(req.params);
+
+  const service = await prisma.service.findUnique({
+    where: { id: params.id },
+    select: { id: true }
+  });
+
+  if (!service) return reply.status(404).send({ error: "service_not_found" });
+
+  await prisma.envVar.deleteMany({
+    where: { serviceId: params.id, key: params.key }
+  });
+
+  return { deleted: true };
+});
+
 const port = Number(process.env.API_PORT ?? 8080);
 await app.listen({ port, host: "0.0.0.0" });
 

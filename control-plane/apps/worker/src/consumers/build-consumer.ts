@@ -30,7 +30,7 @@ export async function startBuildConsumer() {
           image: true,
           commitSha: true,
           serviceId: true,
-          service: { select: { repoUrl: true, branch: true, name: true } }
+          service: { select: { repoUrl: true, branch: true, name: true, serviceType: true } }
         }
       });
 
@@ -38,6 +38,17 @@ export async function startBuildConsumer() {
       if (!dep) {
         ch.ack(msg);
         return;
+      }
+
+      // Skip build for managed services - they go straight to deploy
+      if (dep.service.serviceType === "mongodb" || dep.service.serviceType === "redis") {
+        ch.ack(msg);
+        return;
+      }
+
+      // repoUrl is required for docker/nodejs builds
+      if (!dep.service.repoUrl) {
+        throw new Error("repoUrl_required_for_build");
       }
 
       // Idempotency: if image already exists OR status not queued, nothing to do
@@ -60,17 +71,18 @@ export async function startBuildConsumer() {
       // Build and push the image to the registry
       const registry = process.env.REGISTRY_HOST ?? "localhost:5000";
       const baseDir = process.env.BUILD_WORKDIR ?? "/tmp/cp-builds";
-      
+
       const imageRef = `${registry}/${dep.serviceId}:${dep.commitSha}`;
-      
+
       const workDir = path.join(baseDir, dep.id);
-      
+
       await realBuildAndPush({
         repoUrl: dep.service.repoUrl,
         branch: dep.service.branch,
         commitSha: dep.commitSha,
         imageTag: imageRef,
-        workDir
+        workDir,
+        serviceType: dep.service.serviceType as "docker" | "nodejs"
       });
       
       // On success: set image + enqueue deploy via Outbox in ONE txn

@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { generateNodejsDockerfile, parsePackageJson } from "./dockerfile-gen.js";
 
 // Helps to execute the binary without spawing a shell
 const execFileAsync = promisify(execFile);
@@ -34,7 +35,9 @@ export async function realBuildAndPush(params: {
   commitSha: string;
   imageTag: string;     // e.g. localhost:5000/<serviceId>:<sha>
   workDir: string;      // e.g. /tmp/cp-builds/<deploymentId>
+  serviceType?: "docker" | "nodejs";  // defaults to "docker"
 }) {
+  const serviceType = params.serviceType ?? "docker";
   const repoDir = path.join(params.workDir, "repo");
   await fs.rm(params.workDir, { recursive: true, force: true });
   await fs.mkdir(params.workDir, { recursive: true });
@@ -48,13 +51,31 @@ export async function realBuildAndPush(params: {
   await run("git", ["fetch", "--depth", "50", "origin", params.commitSha], { cwd: repoDir }).catch(() => {});
   await run("git", ["checkout", params.commitSha], { cwd: repoDir }).catch(() => {});
 
-  // 2) Docker build
+  // 2) For Node.js services, auto-generate Dockerfile if one doesn't exist
+  if (serviceType === "nodejs") {
+    const dockerfilePath = path.join(repoDir, "Dockerfile");
+    let hasDockerfile = false;
+    try {
+      await fs.access(dockerfilePath);
+      hasDockerfile = true;
+    } catch {
+      hasDockerfile = false;
+    }
+
+    if (!hasDockerfile) {
+      const packageJson = await parsePackageJson(repoDir);
+      const dockerfileContent = await generateNodejsDockerfile(packageJson, repoDir);
+      await fs.writeFile(dockerfilePath, dockerfileContent, "utf-8");
+    }
+  }
+
+  // 3) Docker build
   await run("docker", ["build", "-t", params.imageTag, "."], { cwd: repoDir });
 
-  // 3) Push
+  // 4) Push
   await run("docker", ["push", params.imageTag]);
 
-  // 4) Cleanup workspace (optional)
+  // 5) Cleanup workspace (optional)
   await fs.rm(params.workDir, { recursive: true, force: true });
 
   return { image: params.imageTag };

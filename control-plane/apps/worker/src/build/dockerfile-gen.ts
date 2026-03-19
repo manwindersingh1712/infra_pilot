@@ -15,13 +15,18 @@ export async function generateNodejsDockerfile(
 
   // Detect start command
   const scripts = packageJson.scripts ?? {};
-  const startCommand = scripts.start
+  let startCommand = scripts.start
     ? "npm start"
     : scripts["start:prod"]
       ? "npm run start:prod"
       : scripts.serve
         ? "npm run serve"
         : "node index.js";
+
+  // Replace nodemon with node (nodemon is a devDependency, not installed in production)
+  if (scripts.start?.includes("nodemon")) {
+    startCommand = scripts.start.replace("nodemon", "node");
+  }
 
   // Build command detection (for build step)
   const hasBuildScript = !!scripts.build;

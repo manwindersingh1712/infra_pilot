@@ -49,8 +49,9 @@ export async function startDeployConsumer() {
     const retryCount = Number(msg.properties.headers?.["x-retry-count"] ?? 0);
     console.log("[deploy-consumer] received message, retry count:", retryCount);
 
+    let body: DeployMsg | null = null;
     try {
-      const body = JSON.parse(msg.content.toString()) as DeployMsg;
+      body = JSON.parse(msg.content.toString()) as DeployMsg;
       console.log("[deploy-consumer] deploymentId:", body.deploymentId);
 
       // 1) Fetch deployment with service info
@@ -75,21 +76,25 @@ export async function startDeployConsumer() {
       console.log("[deploy-consumer] found deployment, status:", dep.status, "serviceType:", dep.service.serviceType);
 
       const isManagedService = dep.service.serviceType === "mongodb" || dep.service.serviceType === "redis";
+      console.log("[deploy-consumer] isManagedService:", isManagedService, "serviceType:", dep.service.serviceType);
 
       // For managed services, image comes from config, not build
       if (!dep.image && !isManagedService) {
+        console.log("[deploy-consumer] error: image_not_built_yet for deployment:", dep.id);
         throw new Error("image_not_built_yet");
       }
 
       // 2) Idempotency: if already progressed, ack and exit
       // queued -> deploying -> deployed/failed
       if (dep.status !== "queued") {
+        console.log("[deploy-consumer] deployment not queued, current status:", dep.status, "- skipping");
         ch.ack(msg);
         return;
       }
 
       // 3) Atomic transition: only queued -> deploying
       // This prevents two workers from processing the same deployment.
+      console.log("[deploy-consumer] attempting to claim deployment:", dep.id);
       const updated = await prisma.deployment.updateMany({
         where: { id: dep.id, status: "queued" },
         data: { status: "deploying" }
@@ -97,11 +102,14 @@ export async function startDeployConsumer() {
 
       // Another worker won the race
       if (updated.count !== 1) {
+        console.log("[deploy-consumer] another worker claimed deployment:", dep.id);
         ch.ack(msg);
         return;
       }
+      console.log("[deploy-consumer] successfully claimed deployment:", dep.id);
 
       // 4) Fetch env vars for the service
+      console.log("[deploy-consumer] fetching env vars for service:", dep.serviceId);
       const envVars = await prisma.envVar.findMany({
         where: { serviceId: dep.serviceId }
       });
@@ -109,10 +117,13 @@ export async function startDeployConsumer() {
       for (const ev of envVars) {
         envMap[ev.key] = ev.value;
       }
+      console.log("[deploy-consumer] loaded", envVars.length, "env vars:", Object.keys(envMap).join(", ") || "none");
 
       // 5) Run container via data-plane runner
+      console.log("[deploy-consumer] allocating host port...");
       const hostPort = await allocateHostPort();
       const containerName = `cp-${dep.id}`;
+      console.log("[deploy-consumer] allocated hostPort:", hostPort, "containerName:", containerName);
 
       let image: string;
       let containerPort: number;
@@ -128,10 +139,12 @@ export async function startDeployConsumer() {
 
         // Create volume directory for persistence
         const volumePath = dep.volumePath ?? `/tmp/cp-volumes/${dep.serviceId}`;
+        console.log("[deploy-consumer] creating volume path:", volumePath);
         await fs.mkdir(volumePath, { recursive: true });
 
         // Merge config env with user-defined env vars
         const mergedEnv = { ...config.env, ...envMap };
+        console.log("[deploy-consumer] running dockerRunManaged with env:", Object.keys(mergedEnv).join(", "));
 
         const result = await dockerRunManaged({
           image,
@@ -142,20 +155,26 @@ export async function startDeployConsumer() {
           env: mergedEnv
         });
         containerId = result.containerId;
+        console.log("[deploy-consumer] dockerRunManaged completed, containerId:", containerId);
       } else {
         // Regular services: use built image
         image = dep.image!;
+        console.log("[deploy-consumer] pulling image:", image);
         await dockerPull(image);
+        console.log("[deploy-consumer] image pulled successfully");
 
+        console.log("[deploy-consumer] detecting container port from image...");
         const detectedPort = await detectContainerPort(image).catch(() => null);
         const fallbackPort = Number(process.env.DEFAULT_CONTAINER_PORT ?? 3080);
         containerPort = detectedPort ?? fallbackPort;
+        console.log("[deploy-consumer] using containerPort:", containerPort, "(detected:", detectedPort, ")");
 
         // Merge default env with user-defined env vars
         const mergedEnv = {
           NODE_ENV: "production",
           ...envMap
         };
+        console.log("[deploy-consumer] running dockerRun with env:", Object.keys(mergedEnv).join(", "));
 
         const result = await dockerRun({
           image,
@@ -165,21 +184,24 @@ export async function startDeployConsumer() {
           env: mergedEnv
         });
         containerId = result.containerId;
+        console.log("[deploy-consumer] dockerRun completed, containerId:", containerId);
       }
 
       // 4b) Register the service subdomain in nginx
       const nginxPort = process.env.NGINX_PORT ?? "80";
+      console.log("[deploy-consumer] configuring nginx route for service:", dep.serviceId, "container:", containerName, "port:", containerPort);
 
       await upsertServiceRoute({
         serviceId: dep.serviceId,
         containerName,
         containerPort
       });
+      console.log("[deploy-consumer] nginx route configured successfully");
 
       const portSuffix = nginxPort === "80" ? "" : `:${nginxPort}`;
       const runtimeUrl = `http://${dep.serviceId}.${SERVICE_BASE_DOMAIN}${portSuffix}`;
 
-      console.log("[deploy-consumer] container started:", containerId, "hostPort:", hostPort);
+      console.log("[deploy-consumer] container started:", containerId, "hostPort:", hostPort, "runtimeUrl:", runtimeUrl);
 
       // 5) Update deployment status
       const updateData: any = {
@@ -204,9 +226,26 @@ export async function startDeployConsumer() {
 
       // 6) Ack message
       ch.ack(msg);
-    } catch (err) {
-      console.error("[deploy-consumer] error:", err);
+    } catch (err: any) {
+      console.error("[deploy-consumer] ERROR:", err?.message || err);
+      console.error("[deploy-consumer] stack:", err?.stack);
+      console.error("[deploy-consumer] retryCount:", retryCount, "/", MAX_RETRIES);
+
+      // Reset status to queued so next retry can claim it
+      if (body?.deploymentId) {
+        try {
+          await prisma.deployment.updateMany({
+            where: { id: body.deploymentId, status: "deploying" },
+            data: { status: "queued" }
+          });
+          console.log("[deploy-consumer] reset status to queued for retry");
+        } catch (updateErr) {
+          console.error("[deploy-consumer] failed to reset status:", updateErr);
+        }
+      }
+
       if (retryCount >= MAX_RETRIES) {
+        console.log("[deploy-consumer] max retries reached, sending to DLQ");
         // Send to DLQ
         ch.sendToQueue(MQ.DLQ, msg.content, {
           persistent: true,
@@ -218,10 +257,12 @@ export async function startDeployConsumer() {
           }
         });
         ch.ack(msg);
+        console.log("[deploy-consumer] message sent to DLQ");
         return;
       }
 
       // Requeue by publishing again (simple v0)
+      console.log("[deploy-consumer] requeueing message with retry count:", retryCount + 1);
       ch.publish(MQ.EXCHANGE, MQ.DEPLOY_ROUTING_KEY, msg.content, {
         persistent: true,
         contentType: msg.properties.contentType,
@@ -233,6 +274,7 @@ export async function startDeployConsumer() {
       });
 
       ch.ack(msg);
+      console.log("[deploy-consumer] message requeued");
     }
   });
 }

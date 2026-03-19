@@ -38,14 +38,20 @@ type DeployMsg = { deploymentId: string };
 export async function startDeployConsumer() {
   await ensureTopology();
   const ch = await getAmqpChannel();
+  console.log("[deploy-consumer] started, listening on queue:", MQ.DEPLOY_QUEUE);
 
   await ch.consume(MQ.DEPLOY_QUEUE, async (msg) => {
-    if (!msg) return;
+    if (!msg) {
+      console.log("[deploy-consumer] received null message");
+      return;
+    }
 
     const retryCount = Number(msg.properties.headers?.["x-retry-count"] ?? 0);
+    console.log("[deploy-consumer] received message, retry count:", retryCount);
 
     try {
       const body = JSON.parse(msg.content.toString()) as DeployMsg;
+      console.log("[deploy-consumer] deploymentId:", body.deploymentId);
 
       // 1) Fetch deployment with service info
       const dep = await prisma.deployment.findUnique({
@@ -62,9 +68,11 @@ export async function startDeployConsumer() {
 
       // If not found, ack (nothing to do)
       if (!dep) {
+        console.log("[deploy-consumer] deployment not found:", body.deploymentId);
         ch.ack(msg);
         return;
       }
+      console.log("[deploy-consumer] found deployment, status:", dep.status, "serviceType:", dep.service.serviceType);
 
       const isManagedService = dep.service.serviceType === "mongodb" || dep.service.serviceType === "redis";
 
@@ -112,9 +120,11 @@ export async function startDeployConsumer() {
 
       if (isManagedService) {
         // Managed services: use official image with volume
+        console.log("[deploy-consumer] deploying managed service:", dep.service.serviceType);
         const config = MANAGED_SERVICE_IMAGES[dep.service.serviceType];
         image = config.image;
         containerPort = config.defaultPort;
+        console.log("[deploy-consumer] using image:", image, "port:", containerPort);
 
         // Create volume directory for persistence
         const volumePath = dep.volumePath ?? `/tmp/cp-volumes/${dep.serviceId}`;
@@ -169,6 +179,8 @@ export async function startDeployConsumer() {
       const portSuffix = nginxPort === "80" ? "" : `:${nginxPort}`;
       const runtimeUrl = `http://${dep.serviceId}.${SERVICE_BASE_DOMAIN}${portSuffix}`;
 
+      console.log("[deploy-consumer] container started:", containerId, "hostPort:", hostPort);
+
       // 5) Update deployment status
       const updateData: any = {
         containerId,
@@ -188,10 +200,12 @@ export async function startDeployConsumer() {
         data: updateData
       });
 
+      console.log("[deploy-consumer] deployment complete:", dep.id, "runtimeUrl:", runtimeUrl);
+
       // 6) Ack message
       ch.ack(msg);
     } catch (err) {
-      // Retry strategy: re-publish with incremented header
+      console.error("[deploy-consumer] error:", err);
       if (retryCount >= MAX_RETRIES) {
         // Send to DLQ
         ch.sendToQueue(MQ.DLQ, msg.content, {

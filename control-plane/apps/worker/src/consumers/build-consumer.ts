@@ -14,16 +14,25 @@ export async function startBuildConsumer() {
   await ensureTopology();
   const ch = await getAmqpChannel();
 
+  console.log("[build-consumer] started, listening on queue:", MQ.BUILD_QUEUE);
+
   await ch.consume(MQ.BUILD_QUEUE, async (msg) => {
-    if (!msg) return;
+    if (!msg) {
+      console.log("[build-consumer] received null message");
+      return;
+    }
 
     const retryCount = Number(msg.properties.headers?.["x-retry-count"] ?? 0);
+    console.log("[build-consumer] received message, retry count:", retryCount);
+    let depId = "";
 
     try {
       const body = JSON.parse(msg.content.toString()) as BuildMsg;
+      console.log("[build-consumer] deploymentId:", body.deploymentId);
+      depId = body.deploymentId;
 
       const dep = await prisma.deployment.findUnique({
-        where: { id: body.deploymentId },
+        where: { id: depId },
         select: {
           id: true,
           status: true,
@@ -36,12 +45,15 @@ export async function startBuildConsumer() {
 
       // If deployment doesn't exist, ack
       if (!dep) {
+        console.log("[build-consumer] deployment not found:", depId);
         ch.ack(msg);
         return;
       }
+      console.log("[build-consumer] found deployment, status:", dep.status, "serviceType:", dep.service.serviceType);
 
       // Skip build for managed services - they go straight to deploy
       if (dep.service.serviceType === "mongodb" || dep.service.serviceType === "redis") {
+        console.log("[build-consumer] skipping build for managed service:", dep.service.serviceType);
         ch.ack(msg);
         return;
       }
@@ -76,6 +88,7 @@ export async function startBuildConsumer() {
 
       const workDir = path.join(baseDir, dep.id);
 
+      console.log("[build-consumer] starting build for:", dep.serviceId, "image:", imageRef);
       await realBuildAndPush({
         repoUrl: dep.service.repoUrl,
         branch: dep.service.branch,
@@ -84,7 +97,8 @@ export async function startBuildConsumer() {
         workDir,
         serviceType: dep.service.serviceType as "docker" | "nodejs"
       });
-      
+      console.log("[build-consumer] build successful, enqueuing deploy");
+
       // On success: set image + enqueue deploy via Outbox in ONE txn
       await prisma.$transaction(async (tx) => {
         await tx.deployment.update({
@@ -103,9 +117,11 @@ export async function startBuildConsumer() {
         });
       });
 
+      console.log("[build-consumer] deploy event created");
       ch.ack(msg);
     } catch (err) {
-      // retry republish
+      console.error("[build-consumer] error:", err);
+
       if (retryCount >= MAX_RETRIES) {
         ch.sendToQueue(MQ.DLQ, msg.content, {
           persistent: true,
@@ -114,6 +130,10 @@ export async function startBuildConsumer() {
           headers: { ...msg.properties.headers, "x-retry-count": retryCount }
         });
         ch.ack(msg);
+        await prisma.deployment.update({
+          where: { id: depId },
+          data: { status: "failed" }
+        });
         return;
       }
 
@@ -124,6 +144,14 @@ export async function startBuildConsumer() {
         headers: { ...msg.properties.headers, "x-retry-count": retryCount + 1 }
       });
 
+      if (depId) {
+        await prisma.deployment.update({
+          where: { id: depId },
+          data: { status: "queued" }
+        });
+        console.log("[build-consumer] reset status to queued for retry");
+      }
+      
       ch.ack(msg);
     }
   });

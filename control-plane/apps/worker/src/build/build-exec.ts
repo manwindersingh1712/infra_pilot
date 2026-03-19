@@ -38,12 +38,16 @@ export async function realBuildAndPush(params: {
   serviceType?: "docker" | "nodejs";  // defaults to "docker"
 }) {
   const serviceType = params.serviceType ?? "docker";
+  console.log(`[build-exec] Starting build for ${serviceType}: ${params.imageTag}`);
   const repoDir = path.join(params.workDir, "repo");
   await fs.rm(params.workDir, { recursive: true, force: true });
   await fs.mkdir(params.workDir, { recursive: true });
+  console.log(`[build-exec] Prepared workDir: ${params.workDir}`);
 
   // 1) Clone (shallow)
+  console.log(`[build-exec] Cloning ${params.repoUrl}#${params.branch}`);
   await run("git", ["clone", "--depth", "1", "--branch", params.branch, params.repoUrl, repoDir]);
+  console.log(`[build-exec] Clone complete`);
 
   // (Optional) If you want exact commit SHA checkout:
   // - For short SHAs or non-tip commits, you need fetch.
@@ -63,17 +67,23 @@ export async function realBuildAndPush(params: {
     }
 
     if (!hasDockerfile) {
+      console.log(`[build-exec] Generating Dockerfile for Node.js`);
       const packageJson = await parsePackageJson(repoDir);
       const dockerfileContent = await generateNodejsDockerfile(packageJson, repoDir);
       await fs.writeFile(dockerfilePath, dockerfileContent, "utf-8");
+      console.log(`[build-exec] Dockerfile generated`);
     }
   }
 
   // 3) Docker build
+  console.log(`[build-exec] Building Docker image: ${params.imageTag}`);
   await run("docker", ["build", "-t", params.imageTag, "."], { cwd: repoDir });
+  console.log(`[build-exec] Docker build successful`);
 
   // 4) Push
+  console.log(`[build-exec] Pushing image: ${params.imageTag}`);
   await run("docker", ["push", params.imageTag]);
+  console.log(`[build-exec] Push successful`);
 
   // 5) Cleanup workspace (optional)
   await fs.rm(params.workDir, { recursive: true, force: true });

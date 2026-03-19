@@ -23,6 +23,7 @@ type OutboxEvent = {
 export async function startOutboxPublisher() {
   await ensureTopology();
   const ch = await getAmqpChannel();
+  console.log("[outbox-publisher] started");
 
   // loop
   setInterval(async () => {
@@ -40,6 +41,7 @@ export async function startOutboxPublisher() {
         `;
 
         if (events.length === 0) return;
+        console.log("[outbox-publisher] processing", events.length, "events");
 
         // Mark as publishing (still inside same transaction)
         const ids = events.map((e) => e.id);
@@ -64,6 +66,7 @@ export async function startOutboxPublisher() {
               contentType: "application/json",
               messageId: e.id
             });
+            console.log("[outbox-publisher] published event:", e.type, "->", routingKey, "payload:", e.payload);
 
             await tx.outboxEvent.update({
               where: { id: e.id },

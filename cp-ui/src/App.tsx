@@ -3,8 +3,10 @@ import { useEffect, useMemo, useState } from "react";
 const API = import.meta.env.VITE_API_BASE ?? "http://localhost:8080";
 
 type Project = { id: string; name: string; createdAt: string };
-type Service = { id: string; projectId: string; name: string; repoUrl: string; branch: string; createdAt: string };
+type Service = { id: string; projectId: string; name: string; serviceType: string; repoUrl: string | null; branch: string; createdAt: string };
 type Deployment = { id: string; serviceId: string; commitSha: string; image: string | null; runtimeUrl: string | null; status: string; createdAt: string };
+
+type ServiceType = "docker" | "nodejs" | "mongodb" | "redis";
 
 async function apiFetch<T>(path: string, opts: RequestInit = {}, token?: string): Promise<T> {
   const headers = new Headers(opts.headers);
@@ -34,9 +36,15 @@ export default function App() {
   // create forms
   const [projectName, setProjectName] = useState("infra-pilot");
   const [serviceName, setServiceName] = useState("svc1");
+  const [serviceType, setServiceType] = useState<ServiceType>("docker");
   const [repoUrl, setRepoUrl] = useState("https://github.com/<youruser>/<yourrepo>");
   const [branch, setBranch] = useState("main");
   const [commitSha, setCommitSha] = useState("abc1234");
+
+  // env vars
+  const [envVars, setEnvVars] = useState<{ id: string; key: string; value: string }[]>([]);
+  const [newEnvKey, setNewEnvKey] = useState("");
+  const [newEnvValue, setNewEnvValue] = useState("");
 
   // data
   const [projects, setProjects] = useState<Project[]>([]);
@@ -85,6 +93,32 @@ export default function App() {
     setDeployments(data);
   }
 
+  async function loadEnvVars(serviceId: string) {
+    if (!token) return;
+    const data = await apiFetch<{ id: string; key: string; value: string }[]>(`/services/${serviceId}/env`, {}, token);
+    setEnvVars(data);
+  }
+
+  async function addEnvVar() {
+    if (!token || !selectedServiceId) return;
+    if (!newEnvKey.trim()) return;
+    await apiFetch(`/services/${selectedServiceId}/env`, {
+      method: "POST",
+      body: JSON.stringify({ key: newEnvKey, value: newEnvValue })
+    }, token);
+    setNewEnvKey("");
+    setNewEnvValue("");
+    await loadEnvVars(selectedServiceId);
+  }
+
+  async function deleteEnvVar(key: string) {
+    if (!token || !selectedServiceId) return;
+    await apiFetch(`/services/${selectedServiceId}/env/${encodeURIComponent(key)}`, {
+      method: "DELETE"
+    }, token);
+    await loadEnvVars(selectedServiceId);
+  }
+
   async function createProject() {
     setErr("");
     const p = await apiFetch<Project>(
@@ -99,16 +133,24 @@ export default function App() {
   async function createService() {
     setErr("");
     if (!selectedProjectId) throw new Error("Select a project first");
+
+    const body: any = {
+      projectId: selectedProjectId,
+      name: serviceName,
+      serviceType
+    };
+
+    // Only include repoUrl and branch for docker/nodejs types
+    if (serviceType === "docker" || serviceType === "nodejs") {
+      body.repoUrl = repoUrl;
+      body.branch = branch;
+    }
+
     const s = await apiFetch<Service>(
       "/services",
       {
         method: "POST",
-        body: JSON.stringify({
-          projectId: selectedProjectId,
-          name: serviceName,
-          repoUrl,
-          branch
-        })
+        body: JSON.stringify(body)
       },
       token
     );
@@ -155,6 +197,16 @@ export default function App() {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedProjectId, token]);
+
+  // load env vars when service changes
+  useEffect(() => {
+    if (!token || !selectedServiceId) {
+      setEnvVars([]);
+      return;
+    }
+    loadEnvVars(selectedServiceId).catch((e: any) => setErr(e.message ?? String(e)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedServiceId, token]);
 
   // poll deployments every 2s for selected service
   useEffect(() => {
@@ -236,8 +288,22 @@ export default function App() {
 
           <div style={{ display: "grid", gap: 8, marginBottom: 10 }}>
             <input value={serviceName} onChange={(e) => setServiceName(e.target.value)} placeholder="service name" />
-            <input value={repoUrl} onChange={(e) => setRepoUrl(e.target.value)} placeholder="repo url (must have Dockerfile)" />
-            <input value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="branch" />
+            <select
+              value={serviceType}
+              onChange={(e) => setServiceType(e.target.value as ServiceType)}
+              style={{ padding: 8 }}
+            >
+              <option value="docker">Docker (with Dockerfile)</option>
+              <option value="nodejs">Node.js (auto-detect)</option>
+              <option value="mongodb">MongoDB</option>
+              <option value="redis">Redis</option>
+            </select>
+            {(serviceType === "docker" || serviceType === "nodejs") && (
+              <>
+                <input value={repoUrl} onChange={(e) => setRepoUrl(e.target.value)} placeholder="repo url" />
+                <input value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="branch" />
+              </>
+            )}
             <button disabled={!authed || !selectedProjectId} onClick={() => createService().catch(e => setErr(e.message))}>
               Create Service in Project
             </button>
@@ -252,7 +318,7 @@ export default function App() {
             <option value="">-- select service --</option>
             {services.map((s) => (
               <option key={s.id} value={s.id}>
-                {s.name} ({s.id.slice(0, 6)}) • {s.branch}
+                {s.name} ({s.id.slice(0, 6)}) • {s.serviceType}
               </option>
             ))}
           </select>
@@ -318,9 +384,62 @@ export default function App() {
         </div>
       </section>
 
+      <section style={{ border: "1px solid #ddd", padding: 12, borderRadius: 8, marginTop: 16 }}>
+        <h3>Environment Variables</h3>
+
+        <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+          <input
+            value={newEnvKey}
+            onChange={(e) => setNewEnvKey(e.target.value)}
+            placeholder="KEY"
+            style={{ flex: 1 }}
+            disabled={!authed || !selectedServiceId}
+          />
+          <input
+            value={newEnvValue}
+            onChange={(e) => setNewEnvValue(e.target.value)}
+            placeholder="value"
+            style={{ flex: 2 }}
+            disabled={!authed || !selectedServiceId}
+          />
+          <button disabled={!authed || !selectedServiceId || !newEnvKey.trim()} onClick={() => addEnvVar().catch(e => setErr(e.message))}>
+            Add
+          </button>
+        </div>
+
+        <div style={{ overflowX: "auto" }}>
+          {envVars.length === 0 ? (
+            <div style={{ color: "#777", fontSize: 14 }}>No environment variables set.</div>
+          ) : (
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: 8 }}>Key</th>
+                  <th style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: 8 }}>Value</th>
+                  <th style={{ textAlign: "right", borderBottom: "1px solid #ddd", padding: 8 }}>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {envVars.map((ev) => (
+                  <tr key={ev.id}>
+                    <td style={{ borderBottom: "1px solid #f0f0f0", padding: 8, fontFamily: "monospace" }}>{ev.key}</td>
+                    <td style={{ borderBottom: "1px solid #f0f0f0", padding: 8, fontFamily: "monospace" }}>{ev.value}</td>
+                    <td style={{ borderBottom: "1px solid #f0f0f0", padding: 8, textAlign: "right" }}>
+                      <button onClick={() => deleteEnvVar(ev.key).catch(e => setErr(e.message))} disabled={!authed}>
+                        Delete
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </section>
+
       <section style={{ marginTop: 14, fontSize: 12, color: "#666" }}>
-        <div><b>Note:</b> Your repo must have a Dockerfile for real build + push to work.</div>
-        <div>If build fails, you’ll see status stuck unless your build-consumer resets building→queued/failed on error.</div>
+        <div><b>Note:</b> Docker services need a Dockerfile. Node.js services auto-detect from package.json.</div>
+        <div>MongoDB and Redis are managed services - no repo needed.</div>
       </section>
     </div>
   );

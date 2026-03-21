@@ -6,7 +6,7 @@ type Project = { id: string; name: string; createdAt: string };
 type Service = { id: string; projectId: string; name: string; serviceType: string; repoUrl: string | null; branch: string; createdAt: string };
 type Deployment = { id: string; serviceId: string; commitSha: string; image: string | null; runtimeUrl: string | null; status: string; createdAt: string };
 
-type ServiceType = "docker" | "nodejs" | "mongodb" | "redis";
+type ServiceType = "docker" | "nodejs" | "react" | "mongodb" | "redis";
 
 async function apiFetch<T>(path: string, opts: RequestInit = {}, token?: string): Promise<T> {
   const headers = new Headers(opts.headers);
@@ -140,8 +140,8 @@ export default function App() {
       serviceType
     };
 
-    // Only include repoUrl and branch for docker/nodejs types
-    if (serviceType === "docker" || serviceType === "nodejs") {
+    // Only include repoUrl and branch for docker/nodejs/react types
+    if (serviceType === "docker" || serviceType === "nodejs" || serviceType === "nextjs" || serviceType === "react") {
       body.repoUrl = repoUrl;
       body.branch = branch;
     }
@@ -295,10 +295,11 @@ export default function App() {
             >
               <option value="docker">Docker (with Dockerfile)</option>
               <option value="nodejs">Node.js (auto-detect)</option>
+              <option value="react">React SPA (Vite/CRA)</option>
               <option value="mongodb">MongoDB</option>
               <option value="redis">Redis</option>
             </select>
-            {(serviceType === "docker" || serviceType === "nodejs") && (
+            {(serviceType === "docker" || serviceType === "nodejs" || serviceType === "nextjs" || serviceType === "react") && (
               <>
                 <input value={repoUrl} onChange={(e) => setRepoUrl(e.target.value)} placeholder="repo url" />
                 <input value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="branch" />

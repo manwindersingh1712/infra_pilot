@@ -18,6 +18,8 @@ enum DeploymentStatus {
 enum ServiceType {
   docker
   nodejs
+  nextjs
+  react
   mongodb
   redis
 }

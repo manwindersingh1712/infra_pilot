@@ -95,7 +95,7 @@ export async function startBuildConsumer() {
         commitSha: dep.commitSha,
         imageTag: imageRef,
         workDir,
-        serviceType: dep.service.serviceType as "docker" | "nodejs"
+        serviceType: dep.service.serviceType as "docker" | "nodejs" | "nextjs" | "react"
       });
       console.log("[build-consumer] build successful, enqueuing deploy");
 

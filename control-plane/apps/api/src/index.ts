@@ -93,18 +93,18 @@ app.post("/services", async (req) => {
     .object({
       projectId: z.string(),
       name: z.string().min(2),
-      serviceType: z.enum(["docker", "nodejs", "mongodb", "redis"]).optional(),
+      serviceType: z.enum(["docker", "nodejs", "react", "mongodb", "redis"]).optional(),
       repoUrl: z.string().url().optional(),
       branch: z.string().min(1).optional()
     })
     .refine((data) => {
-      // repoUrl required for docker and nodejs types
+      // repoUrl required for docker, nodejs, nextjs, react types
       const type = data.serviceType ?? "docker";
-      if (type === "docker" || type === "nodejs") {
+      if (type === "docker" || type === "nodejs" || type === "nextjs" || type === "react") {
         return !!data.repoUrl;
       }
       return true;
-    }, { message: "repoUrl required for docker/nodejs services" })
+    }, { message: "repoUrl required for docker/nodejs/nextjs/react services" })
     .parse(req.body);
 
   const serviceType = body.serviceType ?? "docker";

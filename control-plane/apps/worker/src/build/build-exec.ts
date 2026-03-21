@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { generateNodejsDockerfile, parsePackageJson } from "./dockerfile-gen.js";
+import { generateNodejsDockerfile, generateNextjsDockerfile, generateReactDockerfile, parsePackageJson } from "./dockerfile-gen.js";
 
 // Helps to execute the binary without spawing a shell
 const execFileAsync = promisify(execFile);
@@ -35,7 +35,7 @@ export async function realBuildAndPush(params: {
   commitSha: string;
   imageTag: string;     // e.g. localhost:5000/<serviceId>:<sha>
   workDir: string;      // e.g. /tmp/cp-builds/<deploymentId>
-  serviceType?: "docker" | "nodejs";  // defaults to "docker"
+  serviceType?: "docker" | "nodejs" | "nextjs" | "react";  // defaults to "docker"
 }) {
   const serviceType = params.serviceType ?? "docker";
   console.log(`[build-exec] Starting build for ${serviceType}: ${params.imageTag}`);
@@ -55,8 +55,9 @@ export async function realBuildAndPush(params: {
   await run("git", ["fetch", "--depth", "50", "origin", params.commitSha], { cwd: repoDir }).catch(() => {});
   await run("git", ["checkout", params.commitSha], { cwd: repoDir }).catch(() => {});
 
-  // 2) For Node.js services, auto-generate Dockerfile if one doesn't exist
-  if (serviceType === "nodejs") {
+  // 2) Auto-generate Dockerfile for Node.js/Next.js/React services if one doesn't exist
+  const needsDockerfile = serviceType === "nodejs" || serviceType === "nextjs" || serviceType === "react";
+  if (needsDockerfile) {
     const dockerfilePath = path.join(repoDir, "Dockerfile");
     let hasDockerfile = false;
     try {
@@ -67,11 +68,20 @@ export async function realBuildAndPush(params: {
     }
 
     if (!hasDockerfile) {
-      console.log(`[build-exec] Generating Dockerfile for Node.js`);
+      console.log(`[build-exec] Generating Dockerfile for ${serviceType}`);
       const packageJson = await parsePackageJson(repoDir);
-      const dockerfileContent = await generateNodejsDockerfile(packageJson, repoDir);
+      let dockerfileContent: string;
+
+      if (serviceType === "nextjs") {
+        dockerfileContent = await generateNextjsDockerfile(packageJson, repoDir);
+      } else if (serviceType === "react") {
+        dockerfileContent = await generateReactDockerfile(packageJson, repoDir);
+      } else {
+        dockerfileContent = await generateNodejsDockerfile(packageJson, repoDir);
+      }
+
       await fs.writeFile(dockerfilePath, dockerfileContent, "utf-8");
-      console.log(`[build-exec] Dockerfile generated`);
+      console.log(`[build-exec] Dockerfile generated for ${serviceType}`);
     }
   }
 

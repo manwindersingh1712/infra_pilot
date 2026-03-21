@@ -26,9 +26,11 @@ enum ServiceType {
 
 model User {
   id        String   @id @default(cuid())
-  githubId  String?  @unique
-  email     String?  @unique
+  email     String   @unique
+  password  String   // Hashed password
+  name      String?
   createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
 
   projects  Project[]
 }

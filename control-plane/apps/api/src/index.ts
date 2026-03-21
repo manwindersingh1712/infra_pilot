@@ -9,6 +9,7 @@ import { getAmqpChannel, closeAmqp } from "@/packages/shared/src/amqp.js";
 
 import { ensureTopology } from "@/packages/shared/src/topology.js";
 import { EVENT_TYPES } from "@/packages/shared/src/events.js";
+import { authRoutes } from "./routes/auth.js";
 
 const envSchema = {
   type: "object",
@@ -54,7 +55,10 @@ app.post("/dev/login", async () => {
   const user = await prisma.user.upsert({
     where: { email: "dev@local" },
     update: {},
-    create: { email: "dev@local" }
+    create: {
+      email: "dev@local",
+      password: "dev-password-not-used"
+    }
   });
 
   const token = app.jwt.sign({ sub: user.id });
@@ -63,10 +67,13 @@ app.post("/dev/login", async () => {
 
 // Auth hook
 app.addHook("preHandler", async (req, reply) => {
+  const url = req.routeOptions.url ?? "";
   const open =
-    req.routeOptions.url === "/healthz" ||
-    req.routeOptions.url === "/readyz" ||
-    req.routeOptions.url === "/dev/login";
+    url === "/healthz" ||
+    url === "/readyz" ||
+    url === "/dev/login" ||
+    url === "/auth/register" ||
+    url === "/auth/login";
 
   if (open) return;
 
@@ -76,6 +83,9 @@ app.addHook("preHandler", async (req, reply) => {
     return reply.status(401).send({ error: "unauthorized" });
   }
 });
+
+// Register routes
+app.register(authRoutes, { prefix: "/auth" });
 
 // Create Project
 app.post("/projects", async (req) => {
@@ -100,7 +110,7 @@ app.post("/services", async (req) => {
     .refine((data) => {
       // repoUrl required for docker, nodejs, nextjs, react types
       const type = data.serviceType ?? "docker";
-      if (type === "docker" || type === "nodejs" || type === "nextjs" || type === "react") {
+      if (type === "docker" || type === "nodejs" || type === "react") {
         return !!data.repoUrl;
       }
       return true;

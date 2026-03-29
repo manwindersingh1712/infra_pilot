@@ -8,8 +8,10 @@ import { prisma } from "@/packages/shared/src/db.js";
 import { getAmqpChannel, closeAmqp } from "@/packages/shared/src/amqp.js";
 
 import { ensureTopology } from "@/packages/shared/src/topology.js";
-import { EVENT_TYPES } from "@/packages/shared/src/events.js";
 import { authRoutes } from "./routes/auth.js";
+import { projectRoutes } from "./routes/projects.js";
+import { serviceRoutes } from "./routes/services.js";
+import { deploymentRoutes } from "./routes/deployments.js";
 
 const envSchema = {
   type: "object",
@@ -67,7 +69,14 @@ app.post("/dev/login", async () => {
 
 // Auth hook
 app.addHook("preHandler", async (req, reply) => {
-  const url = req.routeOptions.url ?? "";
+  // Use routeOptions.url which gives us the route pattern (e.g., "/healthz", "/:id/deploy")
+  // Combined with the prefix registered, this uniquely identifies the route
+  const routePattern = (req as any).routeOptions?.url ?? "";
+  const routerPath = (req as any).routerPath ?? "";
+
+  // Check both - routerPath includes the prefix when available
+  const url = routerPath || routePattern;
+
   const open =
     url === "/healthz" ||
     url === "/readyz" ||
@@ -86,173 +95,9 @@ app.addHook("preHandler", async (req, reply) => {
 
 // Register routes
 app.register(authRoutes, { prefix: "/auth" });
-
-// Create Project
-app.post("/projects", async (req) => {
-  const body = z.object({ name: z.string().min(2) }).parse(req.body);
-  const userId = (req.user as any).sub as string;
-
-  return prisma.project.create({
-    data: { name: body.name, ownerUserId: userId }
-  });
-});
-
-// Create Service
-app.post("/services", async (req) => {
-  const body = z
-    .object({
-      projectId: z.string(),
-      name: z.string().min(2),
-      serviceType: z.enum(["docker", "nodejs", "react", "mongodb", "redis"]).optional(),
-      repoUrl: z.string().url().optional(),
-      branch: z.string().min(1).optional()
-    })
-    .refine((data) => {
-      // repoUrl required for docker, nodejs, nextjs, react types
-      const type = data.serviceType ?? "docker";
-      if (type === "docker" || type === "nodejs" || type === "react") {
-        return !!data.repoUrl;
-      }
-      return true;
-    }, { message: "repoUrl required for docker/nodejs/nextjs/react services" })
-    .parse(req.body);
-
-  const serviceType = body.serviceType ?? "docker";
-
-  return prisma.service.create({
-    data: {
-      projectId: body.projectId,
-      name: body.name,
-      serviceType,
-      repoUrl: body.repoUrl,
-      branch: body.branch ?? "main"
-    }
-  });
-});
-
-// Deploy Service
-app.post("/services/:id/deploy", async (req, reply) => {
-  const params = z.object({ id: z.string() }).parse(req.params);
-  const body = z.object({ commitSha: z.string().min(4).optional() }).parse(req.body);
-
-  const service = await prisma.service.findUnique({
-    where: { id: params.id },
-    select: { id: true, serviceType: true }
-  });
-
-  if (!service) return reply.status(404).send({ error: "service_not_found" });
-
-  const isManagedService = service.serviceType === "mongodb" || service.serviceType === "redis";
-  const commitSha = body.commitSha ?? (isManagedService ? "latest" : "main");
-
-  const result = await prisma.$transaction(async (tx) => {
-    const deployment = await tx.deployment.create({
-      data: {
-        serviceId: service.id,
-        commitSha,
-        status: "queued"
-      }
-    });
-
-    // For managed services (mongodb/redis), skip build and go straight to deploy
-    const eventType = isManagedService ? EVENT_TYPES.DEPLOY_REQUESTED : EVENT_TYPES.BUILD_REQUESTED;
-
-    await tx.outboxEvent.create({
-      data: {
-        type: eventType,
-        payload: { deploymentId: deployment.id }
-      }
-    });
-
-    return deployment;
-  });
-
-  return { deploymentId: result.id, status: result.status };
-});
-
-// Get Projects
-app.get("/projects", async (req) => {
-  const userId = (req.user as any).sub as string;
-  return prisma.project.findMany({
-    where: { ownerUserId: userId },
-    orderBy: { createdAt: "desc" }
-  });
-});
-
-// Get Services
-app.get("/services", async (req) => {
-  const q = z.object({ projectId: z.string().optional() }).parse(req.query);
-
-  return prisma.service.findMany({
-    where: q.projectId ? { projectId: q.projectId } : undefined,
-    orderBy: { createdAt: "desc" }
-  });
-});
-
-// Get Deployments
-app.get("/deployments", async (req) => {
-  const q = z.object({ serviceId: z.string().optional() }).parse(req.query);
-
-  return prisma.deployment.findMany({
-    where: q.serviceId ? { serviceId: q.serviceId } : undefined,
-    orderBy: { createdAt: "desc" },
-    take: 50
-  });
-});
-
-// Get Service Env Vars
-app.get("/services/:id/env", async (req, reply) => {
-  const params = z.object({ id: z.string() }).parse(req.params);
-
-  const service = await prisma.service.findUnique({
-    where: { id: params.id },
-    select: { id: true }
-  });
-
-  if (!service) return reply.status(404).send({ error: "service_not_found" });
-
-  return prisma.envVar.findMany({
-    where: { serviceId: params.id },
-    orderBy: { key: "asc" }
-  });
-});
-
-// Set Service Env Var (create or update)
-app.post("/services/:id/env", async (req, reply) => {
-  const params = z.object({ id: z.string() }).parse(req.params);
-  const body = z.object({ key: z.string().min(1), value: z.string() }).parse(req.body);
-
-  const service = await prisma.service.findUnique({
-    where: { id: params.id },
-    select: { id: true }
-  });
-
-  if (!service) return reply.status(404).send({ error: "service_not_found" });
-
-  return prisma.envVar.upsert({
-    where: { serviceId_key: { serviceId: params.id, key: body.key } },
-    update: { value: body.value },
-    create: { serviceId: params.id, key: body.key, value: body.value }
-  });
-});
-
-// Delete Service Env Var
-app.delete("/services/:id/env/:key", async (req, reply) => {
-  const params = z.object({ id: z.string(), key: z.string() }).parse(req.params);
-
-  const service = await prisma.service.findUnique({
-    where: { id: params.id },
-    select: { id: true }
-  });
-
-  if (!service) return reply.status(404).send({ error: "service_not_found" });
-
-  await prisma.envVar.deleteMany({
-    where: { serviceId: params.id, key: params.key }
-  });
-
-  return { deleted: true };
-});
+app.register(projectRoutes, { prefix: "/projects" });
+app.register(serviceRoutes, { prefix: "/services" });
+app.register(deploymentRoutes, { prefix: "/deployments" });
 
 const port = Number(process.env.API_PORT ?? 8080);
 await app.listen({ port, host: "0.0.0.0" });

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { LogViewer } from "./components/LogViewer";
 
 const API = import.meta.env.VITE_API_BASE ?? "http://localhost:8080";
 
@@ -53,6 +54,7 @@ export default function App() {
 
   const [selectedProjectId, setSelectedProjectId] = useState<string>("");
   const [selectedServiceId, setSelectedServiceId] = useState<string>("");
+  const [selectedDeploymentId, setSelectedDeploymentId] = useState<string>("");
 
   const authed = useMemo(() => Boolean(token), [token]);
 
@@ -360,7 +362,14 @@ export default function App() {
             </thead>
             <tbody>
               {deployments.map((d) => (
-                <tr key={d.id}>
+                <tr
+                  key={d.id}
+                  onClick={() => setSelectedDeploymentId(d.id)}
+                  style={{
+                    cursor: "pointer",
+                    background: selectedDeploymentId === d.id ? "#eff6ff" : undefined
+                  }}
+                >
                   <td style={{ borderBottom: "1px solid #f0f0f0", padding: 8, fontFamily: "monospace" }}>{d.id}</td>
                   <td style={{ borderBottom: "1px solid #f0f0f0", padding: 8 }}>{d.status}</td>
                   <td style={{ borderBottom: "1px solid #f0f0f0", padding: 8, fontFamily: "monospace" }}>{d.commitSha}</td>
@@ -437,6 +446,16 @@ export default function App() {
           )}
         </div>
       </section>
+
+      {selectedDeploymentId && (
+        <section style={{ border: "1px solid #ddd", padding: 12, borderRadius: 8, marginTop: 16 }}>
+          <h3>Container Logs</h3>
+          <div style={{ marginBottom: 8, fontSize: 12, color: "#666" }}>
+            Deployment: {selectedDeploymentId.slice(0, 8)}...
+          </div>
+          <LogViewer deploymentId={selectedDeploymentId} token={token} />
+        </section>
+      )}
 
       <section style={{ marginTop: 14, fontSize: 12, color: "#666" }}>
         <div><b>Note:</b> Docker services need a Dockerfile. Node.js services auto-detect from package.json.</div>

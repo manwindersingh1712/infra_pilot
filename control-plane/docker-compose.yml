@@ -40,9 +40,40 @@ services:
     networks:
       - cp_net
 
+  redis:
+    image: redis:7-alpine
+    container_name: cp_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+
+  minio:
+    image: minio/minio:latest
+    container_name: cp_minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    container_name: cp_clickhouse
+    ports:
+      - "8123:8123"   # HTTP interface
+      - "9009:9000"   # Native protocol (mapped to avoid conflict with MinIO)
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+
 networks:
-# cp_net is a Docker bridge network whose sole purpose is to create a 
-# private, isolated communication channel between Nginx and the user's 
+# cp_net is a Docker bridge network whose sole purpose is to create a
+# private, isolated communication channel between Nginx and the user's
 # deployed app containers.
   cp_net:
     name: cp_net
@@ -50,3 +81,6 @@ networks:
 
 volumes:
   cp_pgdata:
+  redis_data:
+  minio_data:
+  clickhouse_data:

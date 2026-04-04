@@ -12,6 +12,11 @@ import { authRoutes } from "./routes/auth.js";
 import { projectRoutes } from "./routes/projects.js";
 import { serviceRoutes } from "./routes/services.js";
 import { deploymentRoutes } from "./routes/deployments.js";
+import { logRoutes } from "./routes/logs.js";
+import socketioPlugin from "./plugins/socketio.js";
+import { registerLogHandlers } from "./socket-handlers/logs.js";
+import { setBroadcastCallback } from "./services/log-aggregator.js";
+import { initClickHouse } from "./services/clickhouse.js";
 
 const envSchema = {
   type: "object",
@@ -37,7 +42,14 @@ const app = Fastify({
 await app.register(env, { schema: envSchema, dotenv: true });
 await app.register(cors, { origin: true });
 await app.register(jwt, { secret: process.env.JWT_SECRET! });
+await app.register(socketioPlugin);
+
+// Register Socket.io log handlers and set broadcast callback
+const { broadcastLog } = registerLogHandlers(app.io);
+setBroadcastCallback(broadcastLog);
+
 await ensureTopology();
+await initClickHouse();
 
 
 app.get("/healthz", async () => ({ ok: true }));
@@ -98,6 +110,7 @@ app.register(authRoutes, { prefix: "/auth" });
 app.register(projectRoutes, { prefix: "/projects" });
 app.register(serviceRoutes, { prefix: "/services" });
 app.register(deploymentRoutes, { prefix: "/deployments" });
+app.register(logRoutes, { prefix: "/logs" });
 
 const port = Number(process.env.API_PORT ?? 8080);
 await app.listen({ port, host: "0.0.0.0" });

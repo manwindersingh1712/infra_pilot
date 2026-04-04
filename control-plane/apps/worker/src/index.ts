@@ -3,6 +3,7 @@ import { closeAmqp } from "@/packages/shared/src/amqp.js";
 import { startDeployConsumer } from "@/apps/worker/src/consumers/deploy-consumer.js";
 import { startOutboxPublisher } from "./outbox/publisher.js";
 import { startBuildConsumer } from "./consumers/build-consumer.js";
+import { startFlushJob } from "./jobs/flush-logs-job.js";
 
 console.log("worker up");
 await prisma.$queryRaw`SELECT 1`;
@@ -10,6 +11,9 @@ await prisma.$queryRaw`SELECT 1`;
 await startBuildConsumer();
 await startDeployConsumer();
 await startOutboxPublisher();
+
+// Start background job to flush logs to ClickHouse/S3
+startFlushJob();
 
 const shutdown = async () => {
   console.log("worker shutting down...");

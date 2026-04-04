@@ -1,4 +1,3 @@
-// control-plane/apps/api/src/services/log-aggregator.ts
 import * as redis from "./redis.js";
 import * as s3Logs from "./s3-logs.js";
 import * as clickhouse from "./clickhouse.js";

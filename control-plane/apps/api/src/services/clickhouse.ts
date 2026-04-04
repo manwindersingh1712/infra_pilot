@@ -1,4 +1,3 @@
-// control-plane/apps/api/src/services/clickhouse.ts
 import { createClient } from "@clickhouse/client";
 import { LogEntry } from "./redis.js";
 
@@ -37,20 +36,19 @@ export async function initClickHouse(): Promise<void> {
  * Insert logs in batch
  */
 export async function insertLogs(logs: LogEntry[]): Promise<void> {
-  if (logs.length === 0) return;
+  if (logs.length === 0) return;                                     
+                                                                      
+  // Build VALUES clause with proper string escaping              
+  const values = logs.map(l => {                                                                                                                                                                                                                                                                              
+    const ts = new Date(l.timestamp).toISOString().slice(0, -1); // Remove Z                  
+    // Escape single quotes in message by doubling them                                                                                               
+    const escapedMessage = l.message.replace(/'/g, "''");                                                                                             
+    return `('${l.deploymentId}', '${l.source}', '${escapedMessage}', '${ts}')`;                                                                      
+  }).join(', ');                                                                                                                                      
+                                                                                                                                                      
+  const query = `INSERT INTO ${TABLE_NAME} (deployment_id, source, message, timestamp) VALUES ${values}`;                                             
 
-  const values = logs.map(l => ({
-    deployment_id: l.deploymentId,
-    source: l.source,
-    message: l.message,
-    timestamp: new Date(l.timestamp).getTime() / 1000 // Convert to seconds
-  }));
-
-  await clickhouse.insert({
-    table: TABLE_NAME,
-    values,
-    format: "JSONEachRow"
-  });
+  await clickhouse.exec({ query });                                                                                                                 
 }
 
 /**

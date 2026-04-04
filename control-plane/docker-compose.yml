@@ -68,6 +68,11 @@ services:
     ports:
       - "8123:8123"   # HTTP interface
       - "9009:9000"   # Native protocol (mapped to avoid conflict with MinIO)
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
     volumes:
       - clickhouse_data:/var/lib/clickhouse
 

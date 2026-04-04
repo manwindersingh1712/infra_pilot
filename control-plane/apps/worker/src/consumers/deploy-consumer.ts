@@ -14,6 +14,7 @@ import {
   upsertServiceRoute,
   SERVICE_BASE_DOMAIN
 } from "@/apps/worker/src/runtime/nginx.js";
+import { startLogStreaming } from "@/apps/worker/src/runtime/log-streamer.js";
 
 const MAX_RETRIES = 5;
 
@@ -221,6 +222,9 @@ export async function startDeployConsumer() {
         where: { id: dep.id },
         data: updateData
       });
+
+      // Start streaming logs from the container
+      startLogStreaming(dep.id, containerId);
 
       console.log("[deploy-consumer] deployment complete:", dep.id, "runtimeUrl:", runtimeUrl);
 

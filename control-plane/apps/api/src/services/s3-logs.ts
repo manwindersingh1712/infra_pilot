@@ -1,4 +1,3 @@
-// control-plane/apps/api/src/services/s3-logs.ts
 import { S3Client, PutObjectCommand, GetObjectCommand, ListObjectsV2Command } from "@aws-sdk/client-s3";
 import { LogEntry } from "./redis.js";
 import { gzipSync, gunzipSync } from "zlib";

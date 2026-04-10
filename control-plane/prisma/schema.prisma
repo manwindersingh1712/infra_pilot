@@ -54,11 +54,32 @@ model Service {
   branch      String      @default("main")
   createdAt   DateTime    @default(now())
 
+  // Canvas positioning fields
+  positionX   Float       @default(0)
+  positionY   Float       @default(0)
+
   project     Project      @relation(fields: [projectId], references: [id])
   envVars     EnvVar[]
   deployments Deployment[]
+  connections ServiceConnection[] @relation("SourceService")
+  incomingConnections ServiceConnection[] @relation("TargetService")
 
   @@index([projectId])
+}
+
+model ServiceConnection {
+  id          String   @id @default(cuid())
+  sourceId    String
+  targetId    String
+  label       String?  // e.g., "uses", "depends on"
+  createdAt   DateTime @default(now())
+
+  source      Service  @relation("SourceService", fields: [sourceId], references: [id], onDelete: Cascade)
+  target      Service  @relation("TargetService", fields: [targetId], references: [id], onDelete: Cascade)
+
+  @@unique([sourceId, targetId])
+  @@index([sourceId])
+  @@index([targetId])
 }
 
 model EnvVar {

@@ -3,6 +3,7 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1024.0",
     "@clickhouse/client": "^1.18.2",
+    "@dagrejs/dagre": "^3.0.0",
     "@fastify/cors": "^11.2.0",
     "@fastify/env": "^5.0.3",
     "@fastify/jwt": "^10.0.0",

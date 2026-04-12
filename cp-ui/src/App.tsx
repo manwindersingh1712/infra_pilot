@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { LogViewer } from "./components/LogViewer";
+import { ServiceCanvas } from "./components/ServiceCanvas";
 
 const API = import.meta.env.VITE_API_BASE ?? "http://localhost:8080";
 
@@ -55,6 +56,9 @@ export default function App() {
   const [selectedProjectId, setSelectedProjectId] = useState<string>("");
   const [selectedServiceId, setSelectedServiceId] = useState<string>("");
   const [selectedDeploymentId, setSelectedDeploymentId] = useState<string>("");
+
+  // View mode toggle (list vs canvas)
+  const [viewMode, setViewMode] = useState<"list" | "canvas">("list");
 
   const authed = useMemo(() => Boolean(token), [token]);
 
@@ -394,60 +398,101 @@ export default function App() {
         </div>
       </section>
 
-      <section style={{ border: "1px solid #ddd", padding: 12, borderRadius: 8, marginTop: 16 }}>
-        <h3>Environment Variables</h3>
+      {/* View Toggle */}
+      <div style={{ display: "flex", gap: 8, marginTop: 16, marginBottom: 8 }}>
+        <button
+          onClick={() => setViewMode("list")}
+          style={{
+            padding: "8px 16px",
+            borderRadius: 6,
+            border: "1px solid #ddd",
+            background: viewMode === "list" ? "#3b82f6" : "white",
+            color: viewMode === "list" ? "white" : "#333",
+            cursor: "pointer"
+          }}
+        >
+          List View
+        </button>
+        <button
+          onClick={() => setViewMode("canvas")}
+          disabled={!selectedProjectId}
+          style={{
+            padding: "8px 16px",
+            borderRadius: 6,
+            border: "1px solid #ddd",
+            background: viewMode === "canvas" ? "#3b82f6" : "white",
+            color: viewMode === "canvas" ? "white" : "#333",
+            cursor: !selectedProjectId ? "not-allowed" : "pointer",
+            opacity: !selectedProjectId ? 0.5 : 1
+          }}
+        >
+          Canvas View
+        </button>
+      </div>
 
-        <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-          <input
-            value={newEnvKey}
-            onChange={(e) => setNewEnvKey(e.target.value)}
-            placeholder="KEY"
-            style={{ flex: 1 }}
-            disabled={!authed || !selectedServiceId}
-          />
-          <input
-            value={newEnvValue}
-            onChange={(e) => setNewEnvValue(e.target.value)}
-            placeholder="value"
-            style={{ flex: 2 }}
-            disabled={!authed || !selectedServiceId}
-          />
-          <button disabled={!authed || !selectedServiceId || !newEnvKey.trim()} onClick={() => addEnvVar().catch(e => setErr(e.message))}>
-            Add
-          </button>
-        </div>
+      {/* Canvas View */}
+      {viewMode === "canvas" && selectedProjectId && (
+        <section style={{ marginTop: 8 }}>
+          <ServiceCanvas projectId={selectedProjectId} token={token} />
+        </section>
+      )}
 
-        <div style={{ overflowX: "auto" }}>
-          {envVars.length === 0 ? (
-            <div style={{ color: "#777", fontSize: 14 }}>No environment variables set.</div>
-          ) : (
-            <table style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead>
-                <tr>
-                  <th style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: 8 }}>Key</th>
-                  <th style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: 8 }}>Value</th>
-                  <th style={{ textAlign: "right", borderBottom: "1px solid #ddd", padding: 8 }}>Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                {envVars.map((ev) => (
-                  <tr key={ev.id}>
-                    <td style={{ borderBottom: "1px solid #f0f0f0", padding: 8, fontFamily: "monospace" }}>{ev.key}</td>
-                    <td style={{ borderBottom: "1px solid #f0f0f0", padding: 8, fontFamily: "monospace" }}>{ev.value}</td>
-                    <td style={{ borderBottom: "1px solid #f0f0f0", padding: 8, textAlign: "right" }}>
-                      <button onClick={() => deleteEnvVar(ev.key).catch(e => setErr(e.message))} disabled={!authed}>
-                        Delete
-                      </button>
-                    </td>
+      {viewMode === "list" && (
+        <section style={{ border: "1px solid #ddd", padding: 12, borderRadius: 8, marginTop: 16 }}>
+          <h3>Environment Variables</h3>
+
+          <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+            <input
+              value={newEnvKey}
+              onChange={(e) => setNewEnvKey(e.target.value)}
+              placeholder="KEY"
+              style={{ flex: 1 }}
+              disabled={!authed || !selectedServiceId}
+            />
+            <input
+              value={newEnvValue}
+              onChange={(e) => setNewEnvValue(e.target.value)}
+              placeholder="value"
+              style={{ flex: 2 }}
+              disabled={!authed || !selectedServiceId}
+            />
+            <button disabled={!authed || !selectedServiceId || !newEnvKey.trim()} onClick={() => addEnvVar().catch(e => setErr(e.message))}>
+              Add
+            </button>
+          </div>
+
+          <div style={{ overflowX: "auto" }}>
+            {envVars.length === 0 ? (
+              <div style={{ color: "#777", fontSize: 14 }}>No environment variables set.</div>
+            ) : (
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr>
+                    <th style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: 8 }}>Key</th>
+                    <th style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: 8 }}>Value</th>
+                    <th style={{ textAlign: "right", borderBottom: "1px solid #ddd", padding: 8 }}>Action</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-      </section>
+                </thead>
+                <tbody>
+                  {envVars.map((ev) => (
+                    <tr key={ev.id}>
+                      <td style={{ borderBottom: "1px solid #f0f0f0", padding: 8, fontFamily: "monospace" }}>{ev.key}</td>
+                      <td style={{ borderBottom: "1px solid #f0f0f0", padding: 8, fontFamily: "monospace" }}>{ev.value}</td>
+                      <td style={{ borderBottom: "1px solid #f0f0f0", padding: 8, textAlign: "right" }}>
+                        <button onClick={() => deleteEnvVar(ev.key).catch(e => setErr(e.message))} disabled={!authed}>
+                          Delete
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </section>
+      )}
 
-      {selectedDeploymentId && (
+      {viewMode === "list" && selectedDeploymentId && (
         <section style={{ border: "1px solid #ddd", padding: 12, borderRadius: 8, marginTop: 16 }}>
           <h3>Container Logs</h3>
           <div style={{ marginBottom: 8, fontSize: 12, color: "#666" }}>

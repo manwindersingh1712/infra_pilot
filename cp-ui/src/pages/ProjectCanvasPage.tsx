@@ -73,6 +73,7 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [selectedService, setSelectedService] = useState<Service | null>(null);
   const [isPanelOpen, setIsPanelOpen] = useState(false);
+  const [showUserDropdown, setShowUserDropdown] = useState(false);
 
   // Load project and canvas data
   useEffect(() => {
@@ -102,6 +103,11 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
     }
   }
 
+  function handleLogout() {
+    localStorage.removeItem("cp_token");
+    window.location.href = "/";
+  }
+
   // Convert services to React Flow nodes
   const initialNodes: Node[] = useMemo(() => {
     return services.map(service => ({
@@ -125,7 +131,7 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
       label: conn.label,
       type: "smoothstep",
       animated: true,
-      style: { stroke: "#9ca3af" }
+      style: { stroke: "#8b5cf6" }
     }));
   }, [connections]);
 
@@ -186,7 +192,7 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
         target: connection.target,
         type: "smoothstep",
         animated: true,
-        style: { stroke: "#9ca3af" }
+        style: { stroke: "#8b5cf6" }
       };
       setEdges(eds => addEdge(newEdge, eds));
 
@@ -248,7 +254,15 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
 
   if (loading) {
     return (
-      <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100vh" }}>
+      <div style={{
+        display: "flex",
+        justifyContent: "center",
+        alignItems: "center",
+        height: "100vh",
+        background: "#0a0a0a",
+        color: "#9ca3af",
+        fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+      }}>
         <div>Loading canvas...</div>
       </div>
     );
@@ -256,25 +270,45 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
 
   if (error) {
     return (
-      <div style={{ padding: "40px", textAlign: "center" }}>
-        <div style={{ color: "#991b1b", marginBottom: "16px" }}>Error: {error}</div>
-        <button onClick={loadCanvasData}>Retry</button>
+      <div style={{
+        padding: "40px",
+        textAlign: "center",
+        background: "#0a0a0a",
+        color: "#9ca3af",
+        minHeight: "100vh",
+        fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+      }}>
+        <div style={{ color: "#ef4444", marginBottom: "16px" }}>Error: {error}</div>
+        <button
+          onClick={loadCanvasData}
+          style={{
+            padding: "10px 20px",
+            background: "linear-gradient(135deg, #8b5cf6, #7c3aed)",
+            color: "white",
+            border: "none",
+            borderRadius: "8px",
+            cursor: "pointer",
+            fontSize: "14px",
+            fontWeight: 500,
+          }}
+        >
+          Retry
+        </button>
       </div>
     );
   }
 
   return (
-    <div style={{ height: "100vh", display: "flex", flexDirection: "column" }}>
+    <div style={{ height: "100vh", display: "flex", flexDirection: "column", background: "#0a0a0a" }}>
       {/* Header */}
       <header
         style={{
-          background: "white",
-          borderBottom: "1px solid #e5e7eb",
-          padding: "12px 20px",
+          background: "rgba(255,255,255,0.02)",
+          borderBottom: "1px solid rgba(255,255,255,0.1)",
+          padding: "16px 48px",
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
-          boxShadow: "0 1px 3px rgba(0,0,0,0.1)"
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
@@ -282,34 +316,51 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
             onClick={onBack}
             style={{
               padding: "8px 16px",
-              borderRadius: "6px",
-              border: "1px solid #d1d5db",
-              background: "white",
+              borderRadius: "8px",
+              border: "1px solid rgba(255,255,255,0.1)",
+              background: "rgba(255,255,255,0.05)",
+              color: "#e5e7eb",
               cursor: "pointer",
               fontSize: "14px",
               display: "flex",
               alignItems: "center",
-              gap: "6px"
+              gap: "6px",
+              transition: "background 0.2s",
             }}
+            onMouseEnter={(e) =>
+              (e.currentTarget.style.background = "rgba(255,255,255,0.1)")
+            }
+            onMouseLeave={(e) =>
+              (e.currentTarget.style.background = "rgba(255,255,255,0.05)")
+            }
           >
             ← Back to Projects
           </button>
-          <h1 style={{ margin: 0, fontSize: "20px", fontWeight: 600 }}>
+          <div style={{ width: "1px", height: "24px", background: "rgba(255,255,255,0.1)" }} />
+          <h1 style={{ margin: 0, fontSize: "18px", fontWeight: 600, color: "#fff" }}>
             {projectName}
           </h1>
         </div>
 
-        <div style={{ display: "flex", gap: "12px" }}>
+        <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
           <button
             onClick={runAutoLayout}
             style={{
               padding: "8px 16px",
-              borderRadius: "6px",
-              border: "1px solid #d1d5db",
-              background: "white",
+              borderRadius: "8px",
+              border: "1px solid rgba(255,255,255,0.1)",
+              background: "rgba(255,255,255,0.05)",
+              color: "#e5e7eb",
               cursor: "pointer",
-              fontSize: "14px"
+              fontSize: "14px",
+              transition: "background 0.2s",
             }}
+            onMouseEnter={(e) =>
+              (e.currentTarget.style.background = "rgba(255,255,255,0.1)")
+            }
+            onMouseLeave={(e) =>
+              (e.currentTarget.style.background = "rgba(255,255,255,0.05)")
+            }
           >
             Auto Layout
           </button>
@@ -317,17 +368,177 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
             onClick={() => setIsCreateModalOpen(true)}
             style={{
               padding: "8px 20px",
-              borderRadius: "6px",
+              borderRadius: "8px",
               border: "none",
-              background: "#3b82f6",
+              background: "linear-gradient(135deg, #8b5cf6, #7c3aed)",
               color: "white",
               cursor: "pointer",
               fontSize: "14px",
-              fontWeight: 500
+              fontWeight: 500,
+              transition: "box-shadow 0.2s",
             }}
+            onMouseEnter={(e) =>
+              (e.currentTarget.style.boxShadow = "0 4px 20px rgba(139, 92, 246, 0.4)")
+            }
+            onMouseLeave={(e) =>
+              (e.currentTarget.style.boxShadow = "none")
+            }
           >
             + Add Service
           </button>
+
+          {/* User Avatar Dropdown */}
+          <div style={{ position: "relative" }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+                cursor: "pointer",
+                padding: "4px",
+                borderRadius: "8px",
+                transition: "background 0.2s",
+              }}
+              onClick={() => setShowUserDropdown(!showUserDropdown)}
+              onMouseEnter={(e) =>
+                (e.currentTarget.style.background = "rgba(255,255,255,0.05)")
+              }
+              onMouseLeave={(e) =>
+                (e.currentTarget.style.background = "transparent")
+              }
+            >
+              <div
+                style={{
+                  width: "32px",
+                  height: "32px",
+                  borderRadius: "50%",
+                  background: "linear-gradient(135deg, #8b5cf6, #6366f1)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: "12px",
+                  fontWeight: 600,
+                }}
+              >
+                U
+              </div>
+              <span style={{ fontSize: "12px", color: "#9ca3af" }}>▼</span>
+            </div>
+
+            {/* Dropdown Menu */}
+            {showUserDropdown && (
+              <>
+                <div
+                  style={{
+                    position: "fixed",
+                    inset: 0,
+                    zIndex: 99,
+                  }}
+                  onClick={() => setShowUserDropdown(false)}
+                />
+                <div
+                  style={{
+                    position: "absolute",
+                    top: "calc(100% + 8px)",
+                    right: 0,
+                    width: "240px",
+                    background: "#1a1a1a",
+                    border: "1px solid rgba(255,255,255,0.1)",
+                    borderRadius: "12px",
+                    padding: "8px",
+                    zIndex: 100,
+                    boxShadow: "0 10px 40px rgba(0,0,0,0.5)",
+                  }}
+                >
+                  {/* User Info */}
+                  <div
+                    style={{
+                      padding: "12px",
+                      borderBottom: "1px solid rgba(255,255,255,0.1)",
+                      marginBottom: "4px",
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize: "14px",
+                        fontWeight: 500,
+                        color: "#fff",
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                      }}
+                    >
+                      user@example.com
+                    </div>
+                    <div
+                      style={{
+                        fontSize: "12px",
+                        color: "#6b7280",
+                        marginTop: "2px",
+                      }}
+                    >
+                      Free Plan
+                    </div>
+                  </div>
+
+                  {/* Settings */}
+                  <button
+                    style={{
+                      width: "100%",
+                      padding: "10px 12px",
+                      background: "transparent",
+                      border: "none",
+                      borderRadius: "8px",
+                      color: "#e5e7eb",
+                      fontSize: "14px",
+                      textAlign: "left",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "10px",
+                      transition: "background 0.2s",
+                    }}
+                    onMouseEnter={(e) =>
+                      (e.currentTarget.style.background = "rgba(255,255,255,0.05)")
+                    }
+                    onMouseLeave={(e) =>
+                      (e.currentTarget.style.background = "transparent")
+                    }
+                  >
+                    <span>⚙️</span> Settings
+                  </button>
+
+                  {/* Sign Out */}
+                  <button
+                    onClick={handleLogout}
+                    style={{
+                      width: "100%",
+                      padding: "10px 12px",
+                      background: "transparent",
+                      border: "none",
+                      borderRadius: "8px",
+                      color: "#f87171",
+                      fontSize: "14px",
+                      textAlign: "left",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "10px",
+                      transition: "background 0.2s",
+                    }}
+                    onMouseEnter={(e) =>
+                      (e.currentTarget.style.background = "rgba(239,68,68,0.1)")
+                    }
+                    onMouseLeave={(e) =>
+                      (e.currentTarget.style.background = "transparent")
+                    }
+                  >
+                    <span>→</span> Sign out
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </header>
 
@@ -348,31 +559,39 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
           attributionPosition="bottom-right"
           deleteKeyCode="Delete"
         >
-          <Background gap={20} size={1} color="#e5e7eb" />
-          <Controls />
+          <Background gap={20} size={1} color="rgba(255,255,255,0.05)" />
+          <Controls
+            style={{
+              background: "rgba(255,255,255,0.05)",
+              border: "1px solid rgba(255,255,255,0.1)",
+              borderRadius: "8px",
+            }}
+          />
           <MiniMap
             nodeStrokeWidth={3}
             zoomable
             pannable
             style={{
-              backgroundColor: "#f9fafb",
-              border: "1px solid #e5e7eb"
+              backgroundColor: "rgba(255,255,255,0.05)",
+              border: "1px solid rgba(255,255,255,0.1)",
+              borderRadius: "8px",
             }}
+            maskColor="rgba(0,0,0,0.7)"
+            nodeBorderRadius={8}
           />
 
           <Panel position="top-left" style={{ marginLeft: "10px", marginTop: "10px" }}>
             <div
               style={{
-                background: "white",
+                background: "rgba(255,255,255,0.05)",
                 padding: "12px 16px",
                 borderRadius: "8px",
                 fontSize: "13px",
-                color: "#6b7280",
-                boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
-                border: "1px solid #e5e7eb"
+                color: "#9ca3af",
+                border: "1px solid rgba(255,255,255,0.1)",
               }}
             >
-              <div><strong>Tip:</strong> Drag nodes to reposition</div>
+              <div><strong style={{ color: "#fff" }}>Tip:</strong> Drag nodes to reposition</div>
               <div>Drag from handles to connect services</div>
               <div>Click a service to view details</div>
             </div>
@@ -381,13 +600,12 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
           <Panel position="bottom-center" style={{ marginBottom: "10px" }}>
             <div
               style={{
-                background: "white",
+                background: "rgba(255,255,255,0.05)",
                 padding: "8px 16px",
                 borderRadius: "20px",
                 fontSize: "13px",
-                color: "#6b7280",
-                boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
-                border: "1px solid #e5e7eb"
+                color: "#9ca3af",
+                border: "1px solid rgba(255,255,255,0.1)",
               }}
             >
               {services.length} service{services.length !== 1 ? "s" : ""}

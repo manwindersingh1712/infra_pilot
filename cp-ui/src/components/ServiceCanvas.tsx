@@ -24,12 +24,11 @@ const nodeTypes = {
 
 interface ServiceCanvasProps {
   projectId: string;
-  token?: string;
 }
 
-export function ServiceCanvas({ projectId, token }: ServiceCanvasProps) {
+export function ServiceCanvas({ projectId }: ServiceCanvasProps) {
   const { state, loading, error, refresh, updatePosition, createConnection, deleteConnection, runAutoLayout } =
-    useCanvas({ projectId, token });
+    useCanvas({ projectId });
 
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
 

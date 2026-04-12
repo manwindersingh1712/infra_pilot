@@ -25,11 +25,15 @@ interface CanvasState {
 
 interface UseCanvasOptions {
   projectId: string;
-  token?: string;
 }
 
-async function apiFetch<T>(path: string, opts: RequestInit = {}, token?: string): Promise<T> {
+function getToken() {
+  return localStorage.getItem("cp_token") ?? "";
+}
+
+async function apiFetch<T>(path: string, opts: RequestInit = {}): Promise<T> {
   const headers = new Headers(opts.headers);
+  const token = getToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
   if (opts.body && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
@@ -43,40 +47,37 @@ async function apiFetch<T>(path: string, opts: RequestInit = {}, token?: string)
   return res.json();
 }
 
-export function useCanvas({ projectId, token }: UseCanvasOptions) {
+export function useCanvas({ projectId }: UseCanvasOptions) {
   const [state, setState] = useState<CanvasState | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Fetch canvas state
   const loadCanvas = useCallback(async () => {
-    if (!projectId || !token) return;
+    if (!projectId) return;
 
     setLoading(true);
     setError(null);
 
     try {
-      const data = await apiFetch<CanvasState>(`/projects/${projectId}/canvas`, {}, token);
+      const data = await apiFetch<CanvasState>(`/projects/${projectId}/canvas`);
       setState(data);
     } catch (err: any) {
       setError(err.message);
     } finally {
       setLoading(false);
     }
-  }, [projectId, token]);
+  }, [projectId]);
 
   // Update single service position
   const updatePosition = useCallback(
     async (serviceId: string, positionX: number, positionY: number) => {
-      if (!token) return;
-
       await apiFetch(
         `/services/${serviceId}/position`,
         {
           method: "POST",
           body: JSON.stringify({ positionX, positionY })
-        },
-        token
+        }
       );
 
       // Optimistically update local state
@@ -90,21 +91,18 @@ export function useCanvas({ projectId, token }: UseCanvasOptions) {
         };
       });
     },
-    [token]
+    []
   );
 
   // Create connection between services
   const createConnection = useCallback(
     async (sourceId: string, targetId: string, label?: string) => {
-      if (!token) return;
-
       const connection = await apiFetch<Connection>(
         "/services/connections",
         {
           method: "POST",
           body: JSON.stringify({ sourceId, targetId, label })
-        },
-        token
+        }
       );
 
       setState(prev => {
@@ -117,18 +115,15 @@ export function useCanvas({ projectId, token }: UseCanvasOptions) {
 
       return connection;
     },
-    [token]
+    []
   );
 
   // Delete connection
   const deleteConnection = useCallback(
     async (connectionId: string) => {
-      if (!token) return;
-
       await apiFetch(
         `/services/connections/${connectionId}`,
-        { method: "DELETE" },
-        token
+        { method: "DELETE" }
       );
 
       setState(prev => {
@@ -139,17 +134,16 @@ export function useCanvas({ projectId, token }: UseCanvasOptions) {
         };
       });
     },
-    [token]
+    []
   );
 
   // Run auto-layout
   const runAutoLayout = useCallback(async () => {
-    if (!projectId || !token) return;
+    if (!projectId) return;
 
     const result = await apiFetch<{ services: Array<{ id: string; positionX: number; positionY: number }> }>(
       `/projects/${projectId}/canvas/auto-layout`,
-      { method: "POST" },
-      token
+      { method: "POST" }
     );
 
     // Update local state with new positions
@@ -164,7 +158,7 @@ export function useCanvas({ projectId, token }: UseCanvasOptions) {
         })
       };
     });
-  }, [projectId, token]);
+  }, [projectId]);
 
   // Load on mount and when projectId/token changes
   useEffect(() => {

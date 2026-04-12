@@ -12,4 +12,8 @@ export async function projectRoutes(app: FastifyInstance) {
   app.get("/", async (req, reply) => {
     return projectController.getProjects(req, reply);
   });
+
+  app.get("/:id", async (req, reply) => {
+    return projectController.getProjectById(req, reply);
+  });
 }

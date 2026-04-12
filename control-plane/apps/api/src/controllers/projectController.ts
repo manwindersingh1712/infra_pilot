@@ -18,3 +18,18 @@ export async function getProjects(req: FastifyRequest, reply: FastifyReply) {
     orderBy: { createdAt: "desc" }
   });
 }
+
+export async function getProjectById(req: FastifyRequest, reply: FastifyReply) {
+  const userId = (req.user as any).sub as string;
+  const { id } = req.params as { id: string };
+
+  const project = await prisma.project.findFirst({
+    where: { id, ownerUserId: userId }
+  });
+
+  if (!project) {
+    return reply.status(404).send({ error: "Project not found" });
+  }
+
+  return project;
+}

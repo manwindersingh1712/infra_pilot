@@ -3,7 +3,6 @@ import { useLogs, type LogEntry } from "../hooks/useLogs";
 
 interface LogViewerProps {
   deploymentId: string;
-  token?: string;
 }
 
 const sourceColors: Record<LogEntry["source"], string> = {
@@ -28,8 +27,8 @@ function formatTimestamp(timestamp: string): string {
   });
 }
 
-export function LogViewer({ deploymentId, token }: LogViewerProps) {
-  const { logs, meta, isConnected, error, clearLogs } = useLogs({ deploymentId, token });
+export function LogViewer({ deploymentId }: LogViewerProps) {
+  const { logs, meta, isConnected, error, clearLogs } = useLogs({ deploymentId });
   const scrollRef = useRef<HTMLDivElement>(null);
   const shouldAutoScroll = useRef(true);
 
@@ -48,7 +47,7 @@ export function LogViewer({ deploymentId, token }: LogViewerProps) {
   };
 
   return (
-    <div style={{ border: "1px solid #ddd", borderRadius: 8, overflow: "hidden" }}>
+    <div style={{ border: "1px solid #ddd", borderRadius: 8, overflow: "hidden", height: "100%", display: "flex", flexDirection: "column" }}>
       {/* Header */}
       <div
         style={{
@@ -106,7 +105,7 @@ export function LogViewer({ deploymentId, token }: LogViewerProps) {
         ref={scrollRef}
         onScroll={handleScroll}
         style={{
-          height: 400,
+          flex: 1,
           overflow: "auto",
           background: "#1a1a1a",
           fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Consolas, monospace',

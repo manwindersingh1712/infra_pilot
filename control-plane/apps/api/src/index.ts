@@ -13,6 +13,7 @@ import { projectRoutes } from "./routes/projects.js";
 import { serviceRoutes } from "./routes/services.js";
 import { deploymentRoutes } from "./routes/deployments.js";
 import { logRoutes } from "./routes/logs.js";
+import { canvasRoutes } from "./routes/canvas.js";
 import socketioPlugin from "./plugins/socketio.js";
 import { registerLogHandlers } from "./socket-handlers/logs.js";
 import { setBroadcastCallback } from "./services/log-aggregator.js";
@@ -111,6 +112,7 @@ app.register(projectRoutes, { prefix: "/projects" });
 app.register(serviceRoutes, { prefix: "/services" });
 app.register(deploymentRoutes, { prefix: "/deployments" });
 app.register(logRoutes, { prefix: "/logs" });
+app.register(canvasRoutes);
 
 const port = Number(process.env.API_PORT ?? 8080);
 await app.listen({ port, host: "0.0.0.0" });

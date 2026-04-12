@@ -17,10 +17,13 @@ interface LogMeta {
 
 interface UseLogsOptions {
   deploymentId: string;
-  token?: string;
 }
 
-export function useLogs({ deploymentId, token }: UseLogsOptions) {
+function getToken() {
+  return localStorage.getItem("cp_token") ?? "";
+}
+
+export function useLogs({ deploymentId }: UseLogsOptions) {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [meta, setMeta] = useState<LogMeta | null>(null);
   const [isConnected, setIsConnected] = useState(false);
@@ -29,6 +32,7 @@ export function useLogs({ deploymentId, token }: UseLogsOptions) {
 
   // Initialize Socket.io connection
   useEffect(() => {
+    const token = getToken();
     if (!token) return;
 
     const newSocket = io(API, {
@@ -58,7 +62,7 @@ export function useLogs({ deploymentId, token }: UseLogsOptions) {
     return () => {
       newSocket.close();
     };
-  }, [token]);
+  }, []);
 
   // Subscribe to deployment logs
   useEffect(() => {

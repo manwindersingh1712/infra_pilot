@@ -580,23 +580,6 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
             nodeBorderRadius={8}
           />
 
-          <Panel position="top-left" style={{ marginLeft: "10px", marginTop: "10px" }}>
-            <div
-              style={{
-                background: "rgba(255,255,255,0.05)",
-                padding: "12px 16px",
-                borderRadius: "8px",
-                fontSize: "13px",
-                color: "#9ca3af",
-                border: "1px solid rgba(255,255,255,0.1)",
-              }}
-            >
-              <div><strong style={{ color: "#fff" }}>Tip:</strong> Drag nodes to reposition</div>
-              <div>Drag from handles to connect services</div>
-              <div>Click a service to view details</div>
-            </div>
-          </Panel>
-
           <Panel position="bottom-center" style={{ marginBottom: "10px" }}>
             <div
               style={{

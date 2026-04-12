@@ -58,7 +58,7 @@ export function ServiceCanvas({ projectId }: ServiceCanvasProps) {
       label: conn.label,
       type: "smoothstep",
       animated: true,
-      style: { stroke: "#9ca3af" }
+      style: { stroke: "#8b5cf6" }
     }));
   }, [state]);
 
@@ -94,7 +94,7 @@ export function ServiceCanvas({ projectId }: ServiceCanvasProps) {
         target: connection.target,
         type: "smoothstep",
         animated: true,
-        style: { stroke: "#9ca3af" }
+        style: { stroke: "#8b5cf6" }
       };
       setEdges(eds => addEdge(newEdge, eds));
 
@@ -138,9 +138,10 @@ export function ServiceCanvas({ projectId }: ServiceCanvasProps) {
       <div
         style={{
           padding: "20px",
-          background: "#fee2e2",
-          color: "#991b1b",
-          borderRadius: "8px"
+          background: "rgba(239,68,68,0.1)",
+          color: "#ef4444",
+          borderRadius: "8px",
+          border: "1px solid rgba(239,68,68,0.2)",
         }}
       >
         <strong>Error loading canvas:</strong> {error}
@@ -154,10 +155,10 @@ export function ServiceCanvas({ projectId }: ServiceCanvasProps) {
         display: "flex",
         flexDirection: "column",
         height: "600px",
-        border: "1px solid #e5e7eb",
+        border: "1px solid rgba(255,255,255,0.1)",
         borderRadius: "8px",
         overflow: "hidden",
-        background: "#f3f4f6"
+        background: "#0a0a0a",
       }}
     >
       <CanvasToolbar
@@ -184,27 +185,36 @@ export function ServiceCanvas({ projectId }: ServiceCanvasProps) {
           attributionPosition="bottom-right"
           deleteKeyCode="Delete"
         >
-          <Background gap={20} size={1} color="#e5e7eb" />
-          <Controls />
+          <Background gap={20} size={1} color="rgba(255,255,255,0.05)" />
+          <Controls
+            style={{
+              background: "rgba(255,255,255,0.05)",
+              border: "1px solid rgba(255,255,255,0.1)",
+              borderRadius: "8px",
+            }}
+          />
           <MiniMap
             nodeStrokeWidth={3}
             zoomable
             pannable
             style={{
-              backgroundColor: "#f9fafb",
-              border: "1px solid #e5e7eb"
+              backgroundColor: "rgba(255,255,255,0.05)",
+              border: "1px solid rgba(255,255,255,0.1)",
+              borderRadius: "8px",
             }}
+            maskColor="rgba(0,0,0,0.7)"
+            nodeBorderRadius={8}
           />
 
           <Panel position="top-right" style={{ marginTop: "10px" }}>
             <div
               style={{
-                background: "white",
-                padding: "8px 12px",
-                borderRadius: "6px",
-                fontSize: "12px",
-                color: "#6b7280",
-                boxShadow: "0 1px 3px rgba(0,0,0,0.1)"
+                background: "rgba(255,255,255,0.05)",
+                padding: "12px 16px",
+                borderRadius: "8px",
+                fontSize: "13px",
+                color: "#9ca3af",
+                border: "1px solid rgba(255,255,255,0.1)",
               }}
             >
               <div>Drag nodes to reposition</div>
@@ -221,10 +231,12 @@ export function ServiceCanvas({ projectId }: ServiceCanvasProps) {
               top: "50%",
               left: "50%",
               transform: "translate(-50%, -50%)",
-              background: "rgba(255,255,255,0.9)",
+              background: "rgba(17,17,17,0.95)",
               padding: "16px 24px",
               borderRadius: "8px",
-              boxShadow: "0 4px 12px rgba(0,0,0,0.15)"
+              border: "1px solid rgba(255,255,255,0.1)",
+              color: "#e5e7eb",
+              boxShadow: "0 4px 12px rgba(0,0,0,0.5)",
             }}
           >
             Loading canvas...

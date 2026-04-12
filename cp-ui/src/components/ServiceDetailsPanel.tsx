@@ -112,16 +112,29 @@ function EnvVarSection({ serviceId }: { serviceId: string }) {
     });
   }
 
+  const inputStyle = {
+    flex: 1,
+    padding: "10px 12px",
+    borderRadius: "6px",
+    border: "1px solid rgba(255,255,255,0.1)",
+    fontSize: "14px",
+    background: "rgba(255,255,255,0.05)",
+    color: "#fff",
+    fontFamily: "monospace",
+    outline: "none",
+  };
+
   return (
     <div style={{ padding: "20px" }}>
       {error && (
         <div style={{
-          background: "#fee2e2",
-          color: "#991b1b",
+          background: "rgba(239,68,68,0.1)",
+          color: "#ef4444",
           padding: "12px",
           borderRadius: "6px",
           marginBottom: "16px",
-          fontSize: "14px"
+          fontSize: "14px",
+          border: "1px solid rgba(239,68,68,0.2)",
         }}>
           {error}
         </div>
@@ -134,27 +147,14 @@ function EnvVarSection({ serviceId }: { serviceId: string }) {
             placeholder="KEY"
             value={newKey}
             onChange={(e) => setNewKey(e.target.value)}
-            style={{
-              flex: 1,
-              padding: "10px 12px",
-              borderRadius: "6px",
-              border: "1px solid #d1d5db",
-              fontSize: "14px",
-              fontFamily: "monospace"
-            }}
+            style={inputStyle}
           />
           <input
             type="text"
             placeholder="value"
             value={newValue}
             onChange={(e) => setNewValue(e.target.value)}
-            style={{
-              flex: 1.5,
-              padding: "10px 12px",
-              borderRadius: "6px",
-              border: "1px solid #d1d5db",
-              fontSize: "14px"
-            }}
+            style={{ ...inputStyle, flex: 1.5, fontFamily: "inherit" }}
           />
           <button
             type="submit"
@@ -163,12 +163,12 @@ function EnvVarSection({ serviceId }: { serviceId: string }) {
               padding: "10px 20px",
               borderRadius: "6px",
               border: "none",
-              background: "#3b82f6",
+              background: "linear-gradient(135deg, #8b5cf6, #7c3aed)",
               color: "white",
               cursor: newKey.trim() ? "pointer" : "not-allowed",
               opacity: newKey.trim() ? 1 : 0.6,
               fontSize: "14px",
-              fontWeight: 500
+              fontWeight: 500,
             }}
           >
             Add
@@ -177,16 +177,17 @@ function EnvVarSection({ serviceId }: { serviceId: string }) {
       </form>
 
       {loading ? (
-        <div style={{ textAlign: "center", padding: "40px", color: "#6b7280" }}>
+        <div style={{ textAlign: "center", padding: "40px", color: "#9ca3af" }}>
           Loading...
         </div>
       ) : envVars.length === 0 ? (
         <div style={{
           textAlign: "center",
           padding: "40px",
-          color: "#6b7280",
-          background: "#f9fafb",
-          borderRadius: "8px"
+          color: "#9ca3af",
+          background: "rgba(255,255,255,0.03)",
+          borderRadius: "8px",
+          border: "1px solid rgba(255,255,255,0.1)",
         }}>
           <p>No environment variables set.</p>
           <p style={{ fontSize: "14px" }}>Add variables above to configure your service.</p>
@@ -201,16 +202,16 @@ function EnvVarSection({ serviceId }: { serviceId: string }) {
                 alignItems: "center",
                 gap: "12px",
                 padding: "12px 16px",
-                background: "#f9fafb",
+                background: "rgba(255,255,255,0.03)",
                 borderRadius: "6px",
-                border: "1px solid #e5e7eb"
+                border: "1px solid rgba(255,255,255,0.1)",
               }}
             >
               <span style={{
                 fontFamily: "monospace",
                 fontSize: "14px",
                 fontWeight: 600,
-                color: "#111827",
+                color: "#fff",
                 minWidth: "120px"
               }}>
                 {env.key}
@@ -218,7 +219,7 @@ function EnvVarSection({ serviceId }: { serviceId: string }) {
               <span style={{
                 flex: 1,
                 fontSize: "14px",
-                color: visibleValues.has(env.key) ? "#374151" : "#9ca3af",
+                color: visibleValues.has(env.key) ? "#e5e7eb" : "#6b7280",
                 fontFamily: "monospace",
                 overflow: "hidden",
                 textOverflow: "ellipsis",
@@ -231,11 +232,18 @@ function EnvVarSection({ serviceId }: { serviceId: string }) {
                 style={{
                   padding: "6px 10px",
                   borderRadius: "4px",
-                  border: "1px solid #d1d5db",
-                  background: "white",
+                  border: "1px solid rgba(255,255,255,0.1)",
+                  background: "rgba(255,255,255,0.05)",
                   cursor: "pointer",
                   fontSize: "14px",
-                  color: "#6b7280"
+                  color: "#9ca3af",
+                  transition: "background 0.2s",
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = "rgba(255,255,255,0.1)";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = "rgba(255,255,255,0.05)";
                 }}
                 title={visibleValues.has(env.key) ? "Hide value" : "Show value"}
               >
@@ -246,11 +254,18 @@ function EnvVarSection({ serviceId }: { serviceId: string }) {
                 style={{
                   padding: "6px 12px",
                   borderRadius: "4px",
-                  border: "1px solid #d1d5db",
-                  background: "white",
+                  border: "1px solid rgba(239,68,68,0.3)",
+                  background: "rgba(239,68,68,0.1)",
                   cursor: "pointer",
                   fontSize: "12px",
-                  color: "#991b1b"
+                  color: "#f87171",
+                  transition: "background 0.2s",
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = "rgba(239,68,68,0.2)";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = "rgba(239,68,68,0.1)";
                 }}
               >
                 Delete
@@ -349,7 +364,7 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
         style={{
           position: "fixed",
           inset: 0,
-          background: "rgba(0,0,0,0.3)",
+          background: "rgba(0,0,0,0.5)",
           zIndex: 100,
           opacity: isOpen ? 1 : 0,
           pointerEvents: isOpen ? "auto" : "none",
@@ -368,35 +383,37 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
           minWidth: "350px",
           maxWidth: "800px",
           height: "100vh",
-          background: "white",
-          boxShadow: "-4px 0 20px rgba(0,0,0,0.15)",
+          background: "#0a0a0a",
+          boxShadow: "-4px 0 20px rgba(0,0,0,0.5)",
           zIndex: 101,
           transform: isOpen ? "translateX(0)" : "translateX(100%)",
           transition: "transform 0.3s ease-out",
           display: "flex",
-          flexDirection: "column"
+          flexDirection: "column",
+          fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+          borderLeft: "1px solid rgba(255,255,255,0.1)",
         }}
       >
         {/* Header */}
         <div
           style={{
             padding: "20px 24px",
-            borderBottom: "1px solid #e5e7eb",
+            borderBottom: "1px solid rgba(255,255,255,0.1)",
             display: "flex",
             alignItems: "center",
             justifyContent: "space-between",
-            background: "#f9fafb"
+            background: "rgba(255,255,255,0.02)",
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
             <span style={{ fontSize: "24px" }}>{serviceIcons[service.serviceType] || "📦"}</span>
             <div>
-              <h2 style={{ margin: 0, fontSize: "18px", fontWeight: 600 }}>{service.name}</h2>
+              <h2 style={{ margin: 0, fontSize: "18px", fontWeight: 600, color: "#fff" }}>{service.name}</h2>
               <p
                 style={{
                   margin: "2px 0 0 0",
                   fontSize: "13px",
-                  color: "#6b7280",
+                  color: "#9ca3af",
                   textTransform: "capitalize"
                 }}
               >
@@ -411,8 +428,18 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
               border: "none",
               fontSize: "24px",
               cursor: "pointer",
-              color: "#6b7280",
-              padding: "4px"
+              color: "#9ca3af",
+              padding: "4px",
+              borderRadius: "6px",
+              transition: "background 0.2s, color 0.2s",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = "rgba(255,255,255,0.05)";
+              e.currentTarget.style.color = "#fff";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = "transparent";
+              e.currentTarget.style.color = "#9ca3af";
             }}
           >
             ×
@@ -420,19 +447,30 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
         </div>
 
         {/* Tabs */}
-        <div style={{ display: "flex", borderBottom: "1px solid #e5e7eb" }}>
+        <div style={{ display: "flex", borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
           <button
             onClick={() => setActiveTab("deployments")}
             style={{
               flex: 1,
               padding: "14px",
-              background: activeTab === "deployments" ? "white" : "#f3f4f6",
+              background: activeTab === "deployments" ? "rgba(139,92,246,0.1)" : "transparent",
               border: "none",
-              borderBottom: activeTab === "deployments" ? "2px solid #3b82f6" : "none",
+              borderBottom: activeTab === "deployments" ? "2px solid #8b5cf6" : "none",
               cursor: "pointer",
               fontSize: "14px",
               fontWeight: 500,
-              color: activeTab === "deployments" ? "#3b82f6" : "#6b7280"
+              color: activeTab === "deployments" ? "#8b5cf6" : "#9ca3af",
+              transition: "background 0.2s, color 0.2s",
+            }}
+            onMouseEnter={(e) => {
+              if (activeTab !== "deployments") {
+                e.currentTarget.style.background = "rgba(255,255,255,0.03)";
+              }
+            }}
+            onMouseLeave={(e) => {
+              if (activeTab !== "deployments") {
+                e.currentTarget.style.background = "transparent";
+              }
             }}
           >
             Deployments
@@ -442,13 +480,24 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
             style={{
               flex: 1,
               padding: "14px",
-              background: activeTab === "env" ? "white" : "#f3f4f6",
+              background: activeTab === "env" ? "rgba(139,92,246,0.1)" : "transparent",
               border: "none",
-              borderBottom: activeTab === "env" ? "2px solid #3b82f6" : "none",
+              borderBottom: activeTab === "env" ? "2px solid #8b5cf6" : "none",
               cursor: "pointer",
               fontSize: "14px",
               fontWeight: 500,
-              color: activeTab === "env" ? "#3b82f6" : "#6b7280"
+              color: activeTab === "env" ? "#8b5cf6" : "#9ca3af",
+              transition: "background 0.2s, color 0.2s",
+            }}
+            onMouseEnter={(e) => {
+              if (activeTab !== "env") {
+                e.currentTarget.style.background = "rgba(255,255,255,0.03)";
+              }
+            }}
+            onMouseLeave={(e) => {
+              if (activeTab !== "env") {
+                e.currentTarget.style.background = "transparent";
+              }
             }}
           >
             Env Vars
@@ -458,13 +507,24 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
             style={{
               flex: 1,
               padding: "14px",
-              background: activeTab === "logs" ? "white" : "#f3f4f6",
+              background: activeTab === "logs" ? "rgba(139,92,246,0.1)" : "transparent",
               border: "none",
-              borderBottom: activeTab === "logs" ? "2px solid #3b82f6" : "none",
+              borderBottom: activeTab === "logs" ? "2px solid #8b5cf6" : "none",
               cursor: "pointer",
               fontSize: "14px",
               fontWeight: 500,
-              color: activeTab === "logs" ? "#3b82f6" : "#6b7280"
+              color: activeTab === "logs" ? "#8b5cf6" : "#9ca3af",
+              transition: "background 0.2s, color 0.2s",
+            }}
+            onMouseEnter={(e) => {
+              if (activeTab !== "logs") {
+                e.currentTarget.style.background = "rgba(255,255,255,0.03)";
+              }
+            }}
+            onMouseLeave={(e) => {
+              if (activeTab !== "logs") {
+                e.currentTarget.style.background = "transparent";
+              }
             }}
           >
             Logs
@@ -478,12 +538,13 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
               {error && (
                 <div
                   style={{
-                    background: "#fee2e2",
-                    color: "#991b1b",
+                    background: "rgba(239,68,68,0.1)",
+                    color: "#ef4444",
                     padding: "12px",
                     borderRadius: "6px",
                     marginBottom: "16px",
-                    fontSize: "14px"
+                    fontSize: "14px",
+                    border: "1px solid rgba(239,68,68,0.2)",
                   }}
                 >
                   {error}
@@ -495,21 +556,28 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
                 style={{
                   width: "100%",
                   padding: "12px",
-                  background: "#3b82f6",
+                  background: "linear-gradient(135deg, #8b5cf6, #7c3aed)",
                   color: "white",
                   border: "none",
-                  borderRadius: "6px",
+                  borderRadius: "8px",
                   cursor: "pointer",
                   fontSize: "14px",
                   fontWeight: 500,
-                  marginBottom: "20px"
+                  marginBottom: "20px",
+                  transition: "box-shadow 0.2s",
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.boxShadow = "0 4px 20px rgba(139, 92, 246, 0.4)";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.boxShadow = "none";
                 }}
               >
                 🚀 Deploy Latest
               </button>
 
               {loading ? (
-                <div style={{ textAlign: "center", padding: "40px", color: "#6b7280" }}>
+                <div style={{ textAlign: "center", padding: "40px", color: "#9ca3af" }}>
                   Loading deployments...
                 </div>
               ) : deployments.length === 0 ? (
@@ -517,9 +585,10 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
                   style={{
                     textAlign: "center",
                     padding: "40px",
-                    color: "#6b7280",
-                    background: "#f9fafb",
-                    borderRadius: "8px"
+                    color: "#9ca3af",
+                    background: "rgba(255,255,255,0.03)",
+                    borderRadius: "8px",
+                    border: "1px solid rgba(255,255,255,0.1)",
                   }}
                 >
                   <p>No deployments yet.</p>
@@ -533,8 +602,8 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
                       style={{
                         padding: "16px",
                         borderRadius: "8px",
-                        border: "1px solid #e5e7eb",
-                        background: "white"
+                        border: "1px solid rgba(255,255,255,0.1)",
+                        background: "rgba(255,255,255,0.03)",
                       }}
                     >
                       <div
@@ -561,20 +630,27 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
                             borderRadius: "4px",
                             background:
                               deployment.status === "deployed"
-                                ? "#dcfce7"
+                                ? "rgba(34,197,94,0.1)"
                                 : deployment.status === "failed"
-                                  ? "#fee2e2"
-                                  : "#fef3c7",
+                                  ? "rgba(239,68,68,0.1)"
+                                  : "rgba(234,179,8,0.1)",
                             color:
                               deployment.status === "deployed"
-                                ? "#166534"
+                                ? "#22c55e"
                                 : deployment.status === "failed"
-                                  ? "#991b1b"
-                                  : "#92400e",
+                                  ? "#ef4444"
+                                  : "#eab308",
                             fontWeight: 500,
                             display: "flex",
                             alignItems: "center",
-                            gap: "4px"
+                            gap: "4px",
+                            border: `1px solid ${
+                              deployment.status === "deployed"
+                                ? "rgba(34,197,94,0.2)"
+                                : deployment.status === "failed"
+                                  ? "rgba(239,68,68,0.2)"
+                                  : "rgba(234,179,8,0.2)"
+                            }`,
                           }}
                         >
                           {isDeploymentPending(deployment.status) && (
@@ -594,8 +670,8 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
                         </span>
                       </div>
 
-                      <div style={{ fontSize: "13px", marginBottom: "4px" }}>
-                        <strong>Commit:</strong>{" "}
+                      <div style={{ fontSize: "13px", marginBottom: "4px", color: "#e5e7eb" }}>
+                        <strong style={{ color: "#9ca3af" }}>Commit:</strong>{" "}
                         <span style={{ fontFamily: "monospace" }}>{deployment.commitSha.slice(0, 8)}</span>
                       </div>
 
@@ -604,7 +680,7 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
                           style={{
                             fontSize: "13px",
                             marginBottom: "4px",
-                            color: "#6b7280",
+                            color: "#9ca3af",
                             overflow: "hidden",
                             textOverflow: "ellipsis"
                           }}
@@ -614,20 +690,26 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
                       )}
 
                       {deployment.runtimeUrl && (
-                        <div style={{ fontSize: "13px", marginBottom: "4px" }}>
-                          <strong>URL:</strong>{" "}
+                        <div style={{ fontSize: "13px", marginBottom: "4px", color: "#e5e7eb" }}>
+                          <strong style={{ color: "#9ca3af" }}>URL:</strong>{" "}
                           <a
                             href={deployment.runtimeUrl}
                             target="_blank"
                             rel="noopener noreferrer"
-                            style={{ color: "#3b82f6" }}
+                            style={{ color: "#8b5cf6", textDecoration: "none" }}
+                            onMouseEnter={(e) => {
+                              e.currentTarget.style.textDecoration = "underline";
+                            }}
+                            onMouseLeave={(e) => {
+                              e.currentTarget.style.textDecoration = "none";
+                            }}
                           >
                             {deployment.runtimeUrl}
                           </a>
                         </div>
                       )}
 
-                      <div style={{ fontSize: "12px", color: "#9ca3af", marginTop: "8px" }}>
+                      <div style={{ fontSize: "12px", color: "#6b7280", marginTop: "8px" }}>
                         {new Date(deployment.createdAt).toLocaleString()}
                       </div>
                     </div>
@@ -648,9 +730,10 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
                   style={{
                     textAlign: "center",
                     padding: "40px",
-                    color: "#6b7280",
-                    background: "#f9fafb",
-                    borderRadius: "8px"
+                    color: "#9ca3af",
+                    background: "rgba(255,255,255,0.03)",
+                    borderRadius: "8px",
+                    border: "1px solid rgba(255,255,255,0.1)",
                   }}
                 >
                   <p>No deployments to show logs for.</p>

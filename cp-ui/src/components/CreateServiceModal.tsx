@@ -89,34 +89,62 @@ export function CreateServiceModal({ projectId, isOpen, onClose, onCreated }: Cr
     }
   }
 
+  const inputStyle = {
+    width: "100%",
+    padding: "12px 16px",
+    borderRadius: "8px",
+    border: "1px solid rgba(255,255,255,0.1)",
+    fontSize: "14px",
+    boxSizing: "border-box" as const,
+    background: "rgba(255,255,255,0.05)",
+    color: "#fff",
+    outline: "none",
+    transition: "border-color 0.2s",
+  };
+
+  const labelStyle = {
+    display: "block",
+    fontSize: "14px",
+    fontWeight: 500,
+    marginBottom: "8px",
+    color: "#e5e7eb",
+  };
+
   return (
     <div style={{
       position: "fixed",
       inset: 0,
-      background: "rgba(0,0,0,0.5)",
+      background: "rgba(0,0,0,0.7)",
       display: "flex",
       alignItems: "center",
       justifyContent: "center",
-      zIndex: 1000
+      zIndex: 1000,
+      fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
     }} onClick={onClose}>
       <div style={{
-        background: "white",
-        borderRadius: "12px",
+        background: "#111111",
+        borderRadius: "16px",
         width: "100%",
         maxWidth: "500px",
         maxHeight: "90vh",
         overflow: "auto",
-        boxShadow: "0 20px 25px -5px rgba(0,0,0,0.1)"
+        border: "1px solid rgba(255,255,255,0.1)",
+        boxShadow: "0 25px 50px -12px rgba(0,0,0,0.5)",
       }} onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div style={{
           padding: "20px 24px",
-          borderBottom: "1px solid #e5e7eb",
+          borderBottom: "1px solid rgba(255,255,255,0.1)",
           display: "flex",
           justifyContent: "space-between",
-          alignItems: "center"
+          alignItems: "center",
         }}>
-          <h2 style={{ margin: 0, fontSize: "18px", fontWeight: 600 }}>
+          <h2 style={{
+            margin: 0,
+            fontSize: "18px",
+            fontWeight: 600,
+            color: "#fff",
+          }}>
             Create New Service
           </h2>
           <button
@@ -126,7 +154,19 @@ export function CreateServiceModal({ projectId, isOpen, onClose, onCreated }: Cr
               border: "none",
               fontSize: "24px",
               cursor: "pointer",
-              color: "#6b7280"
+              color: "#9ca3af",
+              lineHeight: 1,
+              padding: "4px",
+              borderRadius: "6px",
+              transition: "background 0.2s, color 0.2s",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = "rgba(255,255,255,0.05)";
+              e.currentTarget.style.color = "#fff";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = "transparent";
+              e.currentTarget.style.color = "#9ca3af";
             }}
           >
             ×
@@ -137,19 +177,20 @@ export function CreateServiceModal({ projectId, isOpen, onClose, onCreated }: Cr
         <form onSubmit={handleSubmit} style={{ padding: "24px" }}>
           {error && (
             <div style={{
-              background: "#fee2e2",
-              color: "#991b1b",
-              padding: "12px",
-              borderRadius: "6px",
-              marginBottom: "16px",
-              fontSize: "14px"
+              background: "rgba(239,68,68,0.1)",
+              color: "#ef4444",
+              padding: "12px 16px",
+              borderRadius: "8px",
+              marginBottom: "20px",
+              fontSize: "14px",
+              border: "1px solid rgba(239,68,68,0.2)",
             }}>
               {error}
             </div>
           )}
 
-          <div style={{ marginBottom: "16px" }}>
-            <label style={{ display: "block", fontSize: "14px", fontWeight: 500, marginBottom: "6px" }}>
+          <div style={{ marginBottom: "20px" }}>
+            <label style={labelStyle}>
               Service Name
             </label>
             <input
@@ -158,46 +199,46 @@ export function CreateServiceModal({ projectId, isOpen, onClose, onCreated }: Cr
               onChange={(e) => setName(e.target.value)}
               placeholder="my-service"
               required
-              style={{
-                width: "100%",
-                padding: "10px 12px",
-                borderRadius: "6px",
-                border: "1px solid #d1d5db",
-                fontSize: "14px",
-                boxSizing: "border-box"
+              style={inputStyle}
+              onFocus={(e) => {
+                e.currentTarget.style.borderColor = "rgba(139,92,246,0.5)";
+              }}
+              onBlur={(e) => {
+                e.currentTarget.style.borderColor = "rgba(255,255,255,0.1)";
               }}
             />
           </div>
 
-          <div style={{ marginBottom: "16px" }}>
-            <label style={{ display: "block", fontSize: "14px", fontWeight: 500, marginBottom: "6px" }}>
+          <div style={{ marginBottom: "20px" }}>
+            <label style={labelStyle}>
               Service Type
             </label>
             <select
               value={serviceType}
               onChange={(e) => setServiceType(e.target.value as ServiceType)}
               style={{
-                width: "100%",
-                padding: "10px 12px",
-                borderRadius: "6px",
-                border: "1px solid #d1d5db",
-                fontSize: "14px",
-                background: "white"
+                ...inputStyle,
+                cursor: "pointer",
+                appearance: "none",
+                backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%239ca3af' d='M6 8L1 3h10z'/%3E%3C/svg%3E")`,
+                backgroundRepeat: "no-repeat",
+                backgroundPosition: "right 16px center",
+                paddingRight: "40px",
               }}
             >
-              <option value="docker">Docker (with Dockerfile)</option>
-              <option value="nodejs">Node.js (auto-detect)</option>
-              <option value="nextjs">Next.js</option>
-              <option value="react">React SPA</option>
-              <option value="mongodb">MongoDB (managed)</option>
-              <option value="redis">Redis (managed)</option>
+              <option value="docker" style={{ background: "#1a1a1a" }}>Docker (with Dockerfile)</option>
+              <option value="nodejs" style={{ background: "#1a1a1a" }}>Node.js (auto-detect)</option>
+              <option value="nextjs" style={{ background: "#1a1a1a" }}>Next.js</option>
+              <option value="react" style={{ background: "#1a1a1a" }}>React SPA</option>
+              <option value="mongodb" style={{ background: "#1a1a1a" }}>MongoDB (managed)</option>
+              <option value="redis" style={{ background: "#1a1a1a" }}>Redis (managed)</option>
             </select>
           </div>
 
           {needsRepo && (
             <>
-              <div style={{ marginBottom: "16px" }}>
-                <label style={{ display: "block", fontSize: "14px", fontWeight: 500, marginBottom: "6px" }}>
+              <div style={{ marginBottom: "20px" }}>
+                <label style={labelStyle}>
                   Repository URL
                 </label>
                 <input
@@ -206,19 +247,18 @@ export function CreateServiceModal({ projectId, isOpen, onClose, onCreated }: Cr
                   onChange={(e) => setRepoUrl(e.target.value)}
                   placeholder="https://github.com/username/repo"
                   required={needsRepo}
-                  style={{
-                    width: "100%",
-                    padding: "10px 12px",
-                    borderRadius: "6px",
-                    border: "1px solid #d1d5db",
-                    fontSize: "14px",
-                    boxSizing: "border-box"
+                  style={inputStyle}
+                  onFocus={(e) => {
+                    e.currentTarget.style.borderColor = "rgba(139,92,246,0.5)";
+                  }}
+                  onBlur={(e) => {
+                    e.currentTarget.style.borderColor = "rgba(255,255,255,0.1)";
                   }}
                 />
               </div>
 
               <div style={{ marginBottom: "24px" }}>
-                <label style={{ display: "block", fontSize: "14px", fontWeight: 500, marginBottom: "6px" }}>
+                <label style={labelStyle}>
                   Branch
                 </label>
                 <input
@@ -226,13 +266,12 @@ export function CreateServiceModal({ projectId, isOpen, onClose, onCreated }: Cr
                   value={branch}
                   onChange={(e) => setBranch(e.target.value)}
                   placeholder="main"
-                  style={{
-                    width: "100%",
-                    padding: "10px 12px",
-                    borderRadius: "6px",
-                    border: "1px solid #d1d5db",
-                    fontSize: "14px",
-                    boxSizing: "border-box"
+                  style={inputStyle}
+                  onFocus={(e) => {
+                    e.currentTarget.style.borderColor = "rgba(139,92,246,0.5)";
+                  }}
+                  onBlur={(e) => {
+                    e.currentTarget.style.borderColor = "rgba(255,255,255,0.1)";
                   }}
                 />
               </div>
@@ -245,11 +284,20 @@ export function CreateServiceModal({ projectId, isOpen, onClose, onCreated }: Cr
               onClick={onClose}
               style={{
                 padding: "10px 20px",
-                borderRadius: "6px",
-                border: "1px solid #d1d5db",
-                background: "white",
+                borderRadius: "8px",
+                border: "1px solid rgba(255,255,255,0.1)",
+                background: "rgba(255,255,255,0.05)",
+                color: "#e5e7eb",
                 cursor: "pointer",
-                fontSize: "14px"
+                fontSize: "14px",
+                fontWeight: 500,
+                transition: "background 0.2s",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = "rgba(255,255,255,0.1)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "rgba(255,255,255,0.05)";
               }}
             >
               Cancel
@@ -259,14 +307,23 @@ export function CreateServiceModal({ projectId, isOpen, onClose, onCreated }: Cr
               disabled={loading || !name.trim() || (needsRepo && !repoUrl.trim())}
               style={{
                 padding: "10px 20px",
-                borderRadius: "6px",
+                borderRadius: "8px",
                 border: "none",
-                background: "#3b82f6",
+                background: "linear-gradient(135deg, #8b5cf6, #7c3aed)",
                 color: "white",
                 cursor: loading ? "not-allowed" : "pointer",
                 opacity: loading ? 0.6 : 1,
                 fontSize: "14px",
-                fontWeight: 500
+                fontWeight: 500,
+                transition: "box-shadow 0.2s, opacity 0.2s",
+              }}
+              onMouseEnter={(e) => {
+                if (!loading) {
+                  e.currentTarget.style.boxShadow = "0 4px 20px rgba(139, 92, 246, 0.4)";
+                }
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.boxShadow = "none";
               }}
             >
               {loading ? "Creating..." : "Create Service"}

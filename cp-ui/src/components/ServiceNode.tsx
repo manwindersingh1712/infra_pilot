@@ -12,7 +12,7 @@ const serviceIcons: Record<string, string> = {
 const serviceColors: Record<string, string> = {
   docker: "#2496ed",
   nodejs: "#339933",
-  nextjs: "#000000",
+  nextjs: "#fff",
   react: "#61dafb",
   mongodb: "#47a248",
   redis: "#dc382d"
@@ -33,7 +33,7 @@ interface ServiceNodeProps {
 
 export function ServiceNode({ id, data, selected }: ServiceNodeProps) {
   const icon = serviceIcons[data.serviceType] || "📦";
-  const color = serviceColors[data.serviceType] || "#666";
+  const color = serviceColors[data.serviceType] || "#8b5cf6";
   const hasDeployments = data.deploymentCount > 0;
 
   return (
@@ -41,14 +41,15 @@ export function ServiceNode({ id, data, selected }: ServiceNodeProps) {
       style={{
         padding: "12px 16px",
         borderRadius: "10px",
-        background: "white",
-        border: `2px solid ${selected ? "#3b82f6" : color}`,
+        background: "rgba(255,255,255,0.03)",
+        border: `2px solid ${selected ? "#8b5cf6" : color}`,
         boxShadow: selected
-          ? "0 0 0 3px rgba(59, 130, 246, 0.3), 0 4px 12px rgba(0,0,0,0.15)"
-          : "0 2px 8px rgba(0,0,0,0.1)",
+          ? "0 0 0 3px rgba(139, 92, 246, 0.3), 0 4px 12px rgba(0,0,0,0.3)"
+          : "0 2px 8px rgba(0,0,0,0.3)",
         minWidth: "160px",
-        transition: "box-shadow 0.15s ease",
-        cursor: "grab"
+        transition: "box-shadow 0.15s ease, transform 0.15s ease",
+        cursor: "grab",
+        backdropFilter: "blur(8px)",
       }}
     >
       {/* Input handle (left side) */}
@@ -59,7 +60,7 @@ export function ServiceNode({ id, data, selected }: ServiceNodeProps) {
           width: "10px",
           height: "10px",
           background: color,
-          border: "2px solid white"
+          border: "2px solid #0a0a0a",
         }}
       />
 
@@ -71,10 +72,10 @@ export function ServiceNode({ id, data, selected }: ServiceNodeProps) {
             style={{
               fontWeight: 600,
               fontSize: "14px",
-              color: "#1f2937",
+              color: "#fff",
               whiteSpace: "nowrap",
               overflow: "hidden",
-              textOverflow: "ellipsis"
+              textOverflow: "ellipsis",
             }}
             title={data.name}
           >
@@ -83,11 +84,11 @@ export function ServiceNode({ id, data, selected }: ServiceNodeProps) {
           <div
             style={{
               fontSize: "11px",
-              color: "#6b7280",
+              color: "#9ca3af",
               textTransform: "capitalize",
               display: "flex",
               alignItems: "center",
-              gap: "6px"
+              gap: "6px",
             }}
           >
             {data.serviceType}
@@ -97,7 +98,7 @@ export function ServiceNode({ id, data, selected }: ServiceNodeProps) {
                   width: "6px",
                   height: "6px",
                   borderRadius: "50%",
-                  background: "#22c55e"
+                  background: "#22c55e",
                 }}
                 title={`${data.deploymentCount} deployment(s)`}
               />
@@ -114,7 +115,7 @@ export function ServiceNode({ id, data, selected }: ServiceNodeProps) {
           width: "10px",
           height: "10px",
           background: color,
-          border: "2px solid white"
+          border: "2px solid #0a0a0a",
         }}
       />
     </div>

@@ -9,6 +9,7 @@ import {
 } from "react-router-dom";
 import { ProjectsPage } from "./pages/ProjectsPage";
 import { ProjectCanvasPage } from "./pages/ProjectCanvasPage";
+import { LandingPage } from "./pages/LandingPage";
 
 const API = import.meta.env.VITE_API_BASE ?? "http://localhost:8080";
 
@@ -116,13 +117,15 @@ function LoginPage() {
   const { login } = useAuth();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
 
   const handleLogin = async () => {
     setLoading(true);
     setError(null);
     try {
       await login();
-      navigate("/");
+      navigate("/projects");
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -135,60 +138,245 @@ function LoginPage() {
       style={{
         minHeight: "100vh",
         display: "flex",
+        flexDirection: "column",
         alignItems: "center",
         justifyContent: "center",
-        background: "#f5f5f5",
-        fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial",
+        background: "#0a0a0a",
+        fontFamily:
+          'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+        padding: "24px",
       }}
     >
+      {/* Logo */}
       <div
         style={{
-          background: "white",
-          padding: "40px",
-          borderRadius: "12px",
-          boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
-          textAlign: "center",
-          minWidth: "300px",
+          display: "flex",
+          alignItems: "center",
+          gap: "12px",
+          marginBottom: "40px",
         }}
       >
-        <h1 style={{ margin: "0 0 8px 0", fontSize: "28px" }}>Infra Pilot</h1>
-        <p style={{ margin: "0 0 24px 0", color: "#6b7280" }}>
-          Infrastructure management made simple
+        <div
+          style={{
+            width: "32px",
+            height: "32px",
+            background: "linear-gradient(135deg, #8b5cf6, #6366f1)",
+            borderRadius: "8px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: "18px",
+          }}
+        >
+          🧭
+        </div>
+        <span
+          style={{
+            fontSize: "24px",
+            fontWeight: 600,
+            color: "#fff",
+          }}
+        >
+          Infra Pilot
+        </span>
+      </div>
+
+      {/* Card */}
+      <div
+        style={{
+          background: "rgba(255,255,255,0.03)",
+          border: "1px solid rgba(255,255,255,0.1)",
+          borderRadius: "16px",
+          padding: "40px",
+          width: "100%",
+          maxWidth: "400px",
+        }}
+      >
+        <h1
+          style={{
+            margin: "0 0 8px 0",
+            fontSize: "24px",
+            fontWeight: 600,
+            color: "#fff",
+            textAlign: "center",
+          }}
+        >
+          Sign in
+        </h1>
+        <p
+          style={{
+            margin: "0 0 32px 0",
+            color: "#9ca3af",
+            fontSize: "14px",
+            textAlign: "center",
+          }}
+        >
+          Enter your email and password to access your account
         </p>
 
         {error && (
           <div
             style={{
-              background: "#fee2e2",
-              color: "#991b1b",
+              background: "rgba(239,68,68,0.1)",
+              color: "#ef4444",
               padding: "12px",
-              borderRadius: "6px",
-              marginBottom: "16px",
+              borderRadius: "8px",
+              marginBottom: "24px",
               fontSize: "14px",
+              border: "1px solid rgba(239,68,68,0.2)",
             }}
           >
             {error}
           </div>
         )}
 
+        {/* Email Field */}
+        <div style={{ marginBottom: "20px" }}>
+          <label
+            style={{
+              display: "block",
+              fontSize: "14px",
+              fontWeight: 500,
+              color: "#fff",
+              marginBottom: "8px",
+            }}
+          >
+            Email
+          </label>
+          <input
+            type="email"
+            placeholder="john@doe.com"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            style={{
+              width: "100%",
+              padding: "12px 16px",
+              background: "rgba(255,255,255,0.05)",
+              border: "1px solid rgba(255,255,255,0.1)",
+              borderRadius: "8px",
+              fontSize: "14px",
+              color: "#fff",
+              outline: "none",
+              boxSizing: "border-box",
+              transition: "border-color 0.2s",
+            }}
+            onFocus={(e) =>
+              (e.currentTarget.style.borderColor = "rgba(139,92,246,0.5)")
+            }
+            onBlur={(e) =>
+              (e.currentTarget.style.borderColor = "rgba(255,255,255,0.1)")
+            }
+          />
+        </div>
+
+        {/* Password Field */}
+        <div style={{ marginBottom: "8px" }}>
+          <label
+            style={{
+              display: "block",
+              fontSize: "14px",
+              fontWeight: 500,
+              color: "#fff",
+              marginBottom: "8px",
+            }}
+          >
+            Password
+          </label>
+          <input
+            type="password"
+            placeholder="Enter your password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            style={{
+              width: "100%",
+              padding: "12px 16px",
+              background: "rgba(255,255,255,0.05)",
+              border: "1px solid rgba(255,255,255,0.1)",
+              borderRadius: "8px",
+              fontSize: "14px",
+              color: "#fff",
+              outline: "none",
+              boxSizing: "border-box",
+              transition: "border-color 0.2s",
+            }}
+            onFocus={(e) =>
+              (e.currentTarget.style.borderColor = "rgba(139,92,246,0.5)")
+            }
+            onBlur={(e) =>
+              (e.currentTarget.style.borderColor = "rgba(255,255,255,0.1)")
+            }
+          />
+        </div>
+
+        {/* Forgot Password */}
+        <div style={{ textAlign: "right", marginBottom: "24px" }}>
+          <a
+            href="#"
+            style={{
+              fontSize: "14px",
+              color: "#9ca3af",
+              textDecoration: "none",
+              transition: "color 0.2s",
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.color = "#fff")}
+            onMouseLeave={(e) => (e.currentTarget.style.color = "#9ca3af")}
+          >
+            Forgot password?
+          </a>
+        </div>
+
+        {/* Sign In Button */}
         <button
           onClick={handleLogin}
           disabled={loading}
           style={{
             width: "100%",
             padding: "12px",
-            background: "#3b82f6",
+            background: "linear-gradient(135deg, #8b5cf6, #7c3aed)",
             color: "white",
             border: "none",
             borderRadius: "8px",
-            fontSize: "16px",
+            fontSize: "14px",
             fontWeight: 500,
             cursor: loading ? "not-allowed" : "pointer",
-            opacity: loading ? 0.6 : 1,
+            opacity: loading ? 0.7 : 1,
+            transition: "box-shadow 0.2s, opacity 0.2s",
+            marginBottom: "24px",
+          }}
+          onMouseEnter={(e) => {
+            if (!loading) {
+              e.currentTarget.style.boxShadow =
+                "0 4px 20px rgba(139, 92, 246, 0.4)";
+            }
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.boxShadow = "none";
           }}
         >
-          {loading ? "Logging in..." : "Login (Dev Mode)"}
+          {loading ? "Signing in..." : "Sign in"}
         </button>
+
+        {/* Sign Up Link */}
+        <p
+          style={{
+            margin: 0,
+            fontSize: "14px",
+            color: "#9ca3af",
+            textAlign: "center",
+          }}
+        >
+          Don't have an account?{" "}
+          <a
+            href="#"
+            style={{
+              color: "#fff",
+              textDecoration: "none",
+              fontWeight: 500,
+            }}
+          >
+            Sign up
+          </a>
+        </p>
       </div>
     </div>
   );
@@ -203,45 +391,18 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+// Home route - shows landing page if not authenticated, projects if authenticated
+function HomeRoute() {
+  const token = localStorage.getItem("cp_token");
+  if (token) {
+    return <Navigate to="/projects" replace />;
+  }
+  return <LandingPage />;
+}
+
 // Projects list with logout
 function ProjectsRoute() {
-  const navigate = useNavigate();
-  const { logout } = useAuth();
-
-  const handleLogout = () => {
-    logout();
-    navigate("/login");
-  };
-
-  return (
-    <>
-      <div
-        style={{
-          position: "fixed",
-          top: 0,
-          right: 0,
-          padding: "12px 16px",
-          zIndex: 1000,
-        }}
-      >
-        <button
-          onClick={handleLogout}
-          style={{
-            padding: "8px 16px",
-            borderRadius: "6px",
-            border: "1px solid #d1d5db",
-            background: "white",
-            cursor: "pointer",
-            fontSize: "13px",
-            color: "#6b7280",
-          }}
-        >
-          Logout
-        </button>
-      </div>
-      <ProjectsPage />
-    </>
-  );
+  return <ProjectsPage />;
 }
 
 // Canvas route with projectId from URL
@@ -250,13 +411,13 @@ function CanvasRoute() {
   const navigate = useNavigate();
 
   if (!projectId) {
-    return <Navigate to="/" replace />;
+    return <Navigate to="/projects" replace />;
   }
 
   return (
     <ProjectCanvasPage
       projectId={projectId}
-      onBack={() => navigate("/")}
+      onBack={() => navigate("/projects")}
     />
   );
 }
@@ -267,9 +428,10 @@ function AppRoutes() {
     <>
       <MobileCheck />
       <Routes>
+        <Route path="/" element={<HomeRoute />} />
         <Route path="/login" element={<LoginPage />} />
         <Route
-          path="/"
+          path="/projects"
           element={
             <ProtectedRoute>
               <ProjectsRoute />

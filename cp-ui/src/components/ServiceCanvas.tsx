@@ -7,10 +7,10 @@ import {
   useNodesState,
   useEdgesState,
   addEdge,
-  Connection,
-  Edge,
-  Node,
-  Panel
+  type Edge,
+  type Node,
+  Panel,
+  type Connection
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 

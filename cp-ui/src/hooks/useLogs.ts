@@ -68,6 +68,10 @@ export function useLogs({ deploymentId }: UseLogsOptions) {
   useEffect(() => {
     if (!socket || !deploymentId) return;
 
+    // Clear old logs immediately when deploymentId changes
+    setLogs([]);
+    setMeta(null);
+
     socket.emit("subscribe:logs", deploymentId, (response: { error?: string; success?: boolean }) => {
       if (response?.error) {
         console.error("[socket.io] subscribe error:", response.error);

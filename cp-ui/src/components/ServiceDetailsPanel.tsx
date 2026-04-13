@@ -285,11 +285,20 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
   const [error, setError] = useState<string | null>(null);
   const [latestDeploymentId, setLatestDeploymentId] = useState<string | null>(null);
 
+  // Reset deploymentId when service changes
   useEffect(() => {
-    if (service && isOpen && activeTab === "deployments") {
+    if (service?.id) {
+      setLatestDeploymentId(null);
+      setDeployments([]);
+    }
+  }, [service?.id]);
+
+  // Load deployments whenever service changes or panel opens
+  useEffect(() => {
+    if (service && isOpen) {
       loadDeployments();
     }
-  }, [service, isOpen, activeTab]);
+  }, [service?.id, isOpen]);
 
   // Poll deployment status for non-terminal states
   useEffect(() => {
@@ -306,7 +315,7 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [service, isOpen, deployments]);
+  }, [service?.id, isOpen, deployments]);
 
   useEffect(() => {
     if (deployments.length > 0) {
@@ -723,7 +732,7 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
             <div style={{ padding: "20px", height: "100%", boxSizing: "border-box" }}>
               {latestDeploymentId ? (
                 <div style={{ height: "100%" }}>
-                  <LogViewer deploymentId={latestDeploymentId} />
+                  <LogViewer key={latestDeploymentId} deploymentId={latestDeploymentId} />
                 </div>
               ) : (
                 <div

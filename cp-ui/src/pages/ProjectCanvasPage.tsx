@@ -304,16 +304,42 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
   }
 
   return (
-    <div style={{ height: "100vh", display: "flex", flexDirection: "column", background: "#0a0a0a" }}>
+    <div style={{
+      height: "100vh",
+      display: "flex",
+      flexDirection: "column",
+      background: `
+        radial-gradient(ellipse at 20% 20%, rgba(99, 102, 241, 0.15) 0%, transparent 50%),
+        radial-gradient(ellipse at 80% 80%, rgba(139, 92, 246, 0.12) 0%, transparent 50%),
+        radial-gradient(ellipse at 50% 50%, rgba(124, 58, 237, 0.08) 0%, transparent 70%),
+        linear-gradient(135deg, #1a1a2e 0%, #16162a 50%, #0f0f1a 100%)
+      `,
+      position: "relative",
+    }}>
+      {/* Dotted Grid Pattern */}
+      <div
+        style={{
+          position: "absolute",
+          inset: 0,
+          backgroundImage: `radial-gradient(rgba(139, 92, 246, 0.15) 1px, transparent 1px)`,
+          backgroundSize: "24px 24px",
+          pointerEvents: "none",
+          zIndex: 0,
+        }}
+      />
+
       {/* Header */}
       <header
         style={{
-          background: "rgba(255,255,255,0.02)",
-          borderBottom: "1px solid rgba(255,255,255,0.1)",
+          background: "rgba(10, 10, 15, 0.7)",
+          backdropFilter: "blur(10px)",
+          borderBottom: "1px solid rgba(139, 92, 246, 0.15)",
           padding: "16px 48px",
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
+          position: "relative",
+          zIndex: 10,
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
@@ -548,7 +574,7 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
       </header>
 
       {/* Canvas */}
-      <div style={{ flex: 1, position: "relative" }}>
+      <div style={{ flex: 1, position: "relative", zIndex: 1 }}>
         <ReactFlow
           nodes={nodes}
           edges={edges}
@@ -564,7 +590,12 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
           attributionPosition="bottom-right"
           deleteKeyCode="Delete"
         >
-          <Background gap={20} size={1} color="rgba(255,255,255,0.05)" />
+          <Background
+            gap={24}
+            size={2}
+            color="rgba(139, 92, 246, 0.25)"
+            variant="dots"
+          />
           <Controls
             style={{
               background: "rgba(255,255,255,0.05)",

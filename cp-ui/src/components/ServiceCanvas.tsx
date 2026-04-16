@@ -3,7 +3,6 @@ import {
   ReactFlow,
   Background,
   Controls,
-  MiniMap,
   useNodesState,
   useEdgesState,
   addEdge,
@@ -187,25 +186,44 @@ export function ServiceCanvas({ projectId }: ServiceCanvasProps) {
         >
           <Background gap={20} size={1} color="rgba(255,255,255,0.05)" />
           <Controls
+            className="dark-controls"
             style={{
-              background: "rgba(255,255,255,0.05)",
+              background: "rgba(30, 30, 40, 0.8)",
               border: "1px solid rgba(255,255,255,0.1)",
-              borderRadius: "8px",
+              borderRadius: "12px",
+              overflow: "hidden",
             }}
           />
-          <MiniMap
-            nodeStrokeWidth={3}
-            zoomable
-            pannable
-            style={{
-              backgroundColor: "rgba(255,255,255,0.05)",
-              border: "1px solid rgba(255,255,255,0.1)",
-              borderRadius: "8px",
-            }}
-            maskColor="rgba(0,0,0,0.7)"
-            nodeBorderRadius={8}
-          />
-
+          <style>{`
+            .dark-controls {
+              box-shadow: 0 4px 20px rgba(0,0,0,0.3) !important;
+            }
+            .dark-controls button {
+              background: transparent !important;
+              border-bottom: 1px solid rgba(255,255,255,0.05) !important;
+              color: #9ca3af !important;
+              width: 36px !important;
+              height: 36px !important;
+              display: flex !important;
+              align-items: center !important;
+              justify-content: center !important;
+            }
+            .dark-controls button:last-child {
+              border-bottom: none !important;
+            }
+            .dark-controls button svg {
+              fill: #9ca3af !important;
+              width: 16px !important;
+              height: 16px !important;
+            }
+            .dark-controls button:hover {
+              background: rgba(255,255,255,0.05) !important;
+              color: #e5e7eb !important;
+            }
+            .dark-controls button:hover svg {
+              fill: #e5e7eb !important;
+            }
+          `}</style>
           <Panel position="top-right" style={{ marginTop: "10px" }}>
             <div
               style={{

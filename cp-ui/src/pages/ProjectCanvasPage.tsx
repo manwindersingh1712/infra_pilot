@@ -3,7 +3,6 @@ import {
   ReactFlow,
   Background,
   Controls,
-  MiniMap,
   useNodesState,
   useEdgesState,
   addEdge,
@@ -374,50 +373,6 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
         </div>
 
         <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
-          <button
-            onClick={runAutoLayout}
-            style={{
-              padding: "8px 16px",
-              borderRadius: "8px",
-              border: "1px solid rgba(255,255,255,0.1)",
-              background: "rgba(255,255,255,0.05)",
-              color: "#e5e7eb",
-              cursor: "pointer",
-              fontSize: "14px",
-              transition: "background 0.2s",
-            }}
-            onMouseEnter={(e) =>
-              (e.currentTarget.style.background = "rgba(255,255,255,0.1)")
-            }
-            onMouseLeave={(e) =>
-              (e.currentTarget.style.background = "rgba(255,255,255,0.05)")
-            }
-          >
-            Auto Layout
-          </button>
-          <button
-            onClick={() => setIsCreateModalOpen(true)}
-            style={{
-              padding: "8px 20px",
-              borderRadius: "8px",
-              border: "none",
-              background: "linear-gradient(135deg, #8b5cf6, #7c3aed)",
-              color: "white",
-              cursor: "pointer",
-              fontSize: "14px",
-              fontWeight: 500,
-              transition: "box-shadow 0.2s",
-            }}
-            onMouseEnter={(e) =>
-              (e.currentTarget.style.boxShadow = "0 4px 20px rgba(139, 92, 246, 0.4)")
-            }
-            onMouseLeave={(e) =>
-              (e.currentTarget.style.boxShadow = "none")
-            }
-          >
-            + Add Service
-          </button>
-
           {/* User Avatar Dropdown */}
           <div style={{ position: "relative" }}>
             <div
@@ -574,7 +529,7 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
       </header>
 
       {/* Canvas */}
-      <div style={{ flex: 1, position: "relative", zIndex: 1 }}>
+      <div style={{ flex: 1, position: "relative", zIndex: 1, borderRadius: "16px", overflow: "hidden", margin: "16px" }}>
         <ReactFlow
           nodes={nodes}
           edges={edges}
@@ -594,28 +549,47 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
             gap={24}
             size={2}
             color="rgba(139, 92, 246, 0.25)"
-            variant="dots"
+            // variant="dots"
           />
           <Controls
+            className="dark-controls"
             style={{
-              background: "rgba(255,255,255,0.05)",
+              background: "rgba(30, 30, 40, 0.8)",
               border: "1px solid rgba(255,255,255,0.1)",
-              borderRadius: "8px",
+              borderRadius: "12px",
+              overflow: "hidden",
             }}
           />
-          <MiniMap
-            nodeStrokeWidth={3}
-            zoomable
-            pannable
-            style={{
-              backgroundColor: "rgba(255,255,255,0.05)",
-              border: "1px solid rgba(255,255,255,0.1)",
-              borderRadius: "8px",
-            }}
-            maskColor="rgba(0,0,0,0.7)"
-            nodeBorderRadius={8}
-          />
-
+          <style>{`
+            .dark-controls {
+              box-shadow: 0 4px 20px rgba(0,0,0,0.3) !important;
+            }
+            .dark-controls button {
+              background: transparent !important;
+              border-bottom: 1px solid rgba(255,255,255,0.05) !important;
+              color: #9ca3af !important;
+              width: 36px !important;
+              height: 36px !important;
+              display: flex !important;
+              align-items: center !important;
+              justify-content: center !important;
+            }
+            .dark-controls button:last-child {
+              border-bottom: none !important;
+            }
+            .dark-controls button svg {
+              fill: #9ca3af !important;
+              width: 16px !important;
+              height: 16px !important;
+            }
+            .dark-controls button:hover {
+              background: rgba(255,255,255,0.05) !important;
+              color: #e5e7eb !important;
+            }
+            .dark-controls button:hover svg {
+              fill: #e5e7eb !important;
+            }
+          `}</style>
           <Panel position="bottom-center" style={{ marginBottom: "10px" }}>
             <div
               style={{
@@ -630,6 +604,37 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
               {services.length} service{services.length !== 1 ? "s" : ""}
               {connections.length > 0 && ` • ${connections.length} connection${connections.length !== 1 ? "s" : ""}`}
             </div>
+          </Panel>
+
+          <Panel position="top-right" style={{ marginTop: "10px", marginRight: "10px" }}>
+            <button
+              onClick={() => setIsCreateModalOpen(true)}
+              style={{
+                padding: "8px 16px",
+                borderRadius: "10px",
+                border: "1px solid rgba(255,255,255,0.15)",
+                background: "rgba(30, 30, 40, 0.8)",
+                color: "#e5e7eb",
+                cursor: "pointer",
+                fontSize: "14px",
+                fontWeight: 500,
+                transition: "background 0.2s, border-color 0.2s",
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+                backdropFilter: "blur(8px)",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = "rgba(40, 40, 50, 0.9)";
+                e.currentTarget.style.borderColor = "rgba(255,255,255,0.25)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "rgba(30, 30, 40, 0.8)";
+                e.currentTarget.style.borderColor = "rgba(255,255,255,0.15)";
+              }}
+            >
+              <span style={{ fontSize: "16px", fontWeight: 300, opacity: 0.8 }}>+</span> Add
+            </button>
           </Panel>
         </ReactFlow>
       </div>

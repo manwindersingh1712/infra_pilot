@@ -311,7 +311,7 @@ export function LandingPage() {
         >
           Design, deploy, and manage your services on an interactive 2D canvas.
           Visualize connections, monitor deployments, and configure everything
-          in one place — no YAML required.
+          in one place.
         </p>
 
         <div

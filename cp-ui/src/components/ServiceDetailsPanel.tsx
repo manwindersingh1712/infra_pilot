@@ -1,5 +1,6 @@
 import { useEffect, useState, ReactNode } from "react";
 import { LogViewer } from "./LogViewer";
+import { DeploymentStageTracker } from "./DeploymentStageTracker";
 
 const API = import.meta.env.VITE_API_BASE ?? "http://localhost:8080";
 
@@ -284,6 +285,8 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [latestDeploymentId, setLatestDeploymentId] = useState<string | null>(null);
+  const [expandedDeploymentIds, setExpandedDeploymentIds] = useState<Set<string>>(new Set());
+  const [isHistoryExpanded, setIsHistoryExpanded] = useState(false);
 
   // Reset deploymentId when service changes
   useEffect(() => {
@@ -311,7 +314,7 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
     if (!hasPendingDeployments) return;
 
     const interval = setInterval(() => {
-      loadDeployments();
+      loadDeployments(false);
     }, 2000);
 
     return () => clearInterval(interval);
@@ -323,9 +326,9 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
     }
   }, [deployments]);
 
-  async function loadDeployments() {
+  async function loadDeployments(showLoading = true) {
     if (!service) return;
-    setLoading(true);
+    if (showLoading) setLoading(true);
     setError(null);
     try {
       const data = await apiFetch<Deployment[]>(`/deployments?serviceId=${service.id}`);
@@ -333,7 +336,7 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
     } catch (err: any) {
       setError(err.message);
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
   }
 
@@ -644,124 +647,129 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
                 </div>
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-                  {deployments.map((deployment) => (
-                    <div
-                      key={deployment.id}
-                      style={{
-                        padding: "16px",
-                        borderRadius: "8px",
-                        border: "1px solid rgba(255,255,255,0.1)",
-                        background: "rgba(255,255,255,0.03)",
+                  {/* Current Deployment */}
+                  <DeploymentStageTracker
+                    key={deployments[0].id}
+                    deployment={deployments[0]}
+                    isExpanded={expandedDeploymentIds.has(deployments[0].id)}
+                    onToggle={() => {
+                      setExpandedDeploymentIds(prev => {
+                        const next = new Set(prev);
+                        if (next.has(deployments[0].id)) {
+                          next.delete(deployments[0].id);
+                        } else {
+                          next.add(deployments[0].id);
+                        }
+                        return next;
+                      });
+                    }}
+                    onViewLogs={(id) => {
+                      setLatestDeploymentId(id);
+                      setActiveTab("logs");
+                    }}
+                  />
+
+                  {/* Previous Deployment - shown only if current is not deployed */}
+                  {deployments.length > 1 && deployments[0].status !== "deployed" && (
+                    <DeploymentStageTracker
+                      key={deployments[1].id}
+                      deployment={deployments[1]}
+                      isExpanded={expandedDeploymentIds.has(deployments[1].id)}
+                      onToggle={() => {
+                        setExpandedDeploymentIds(prev => {
+                          const next = new Set(prev);
+                          if (next.has(deployments[1].id)) {
+                            next.delete(deployments[1].id);
+                          } else {
+                            next.add(deployments[1].id);
+                          }
+                          return next;
+                        });
                       }}
-                    >
+                      onViewLogs={(id) => {
+                        setLatestDeploymentId(id);
+                        setActiveTab("logs");
+                      }}
+                    />
+                  )}
+
+                  {/* History - show deployments starting from index 2 if current not deployed, else from index 1 */}
+                  {deployments.length > (deployments[0].status === "deployed" ? 1 : 2) && (
+                    <div style={{ marginTop: "8px" }}>
                       <div
+                        onClick={() => setIsHistoryExpanded(!isHistoryExpanded)}
                         style={{
                           display: "flex",
-                          justifyContent: "space-between",
                           alignItems: "center",
-                          marginBottom: "8px"
+                          gap: "8px",
+                          padding: "12px 16px",
+                          cursor: "pointer",
+                          color: "#9ca3af",
+                          fontSize: "13px",
+                          fontWeight: 500,
+                          textTransform: "uppercase",
+                          letterSpacing: "0.5px",
+                          borderTop: "1px solid rgba(255, 255, 255, 0.05)",
                         }}
                       >
                         <span
                           style={{
-                            fontSize: "12px",
-                            fontFamily: "monospace",
-                            color: "#6b7280"
+                            transform: isHistoryExpanded ? "rotate(90deg)" : "rotate(0deg)",
+                            transition: "transform 0.2s",
+                            fontSize: "10px",
                           }}
                         >
-                          {deployment.id.slice(0, 8)}
+                          ▶
                         </span>
-                        <span
-                          style={{
-                            fontSize: "12px",
-                            padding: "4px 8px",
-                            borderRadius: "4px",
-                            background:
-                              deployment.status === "deployed"
-                                ? "rgba(34,197,94,0.1)"
-                                : deployment.status === "failed"
-                                  ? "rgba(239,68,68,0.1)"
-                                  : "rgba(234,179,8,0.1)",
-                            color:
-                              deployment.status === "deployed"
-                                ? "#22c55e"
-                                : deployment.status === "failed"
-                                  ? "#ef4444"
-                                  : "#eab308",
-                            fontWeight: 500,
-                            display: "flex",
-                            alignItems: "center",
-                            gap: "4px",
-                            border: `1px solid ${
-                              deployment.status === "deployed"
-                                ? "rgba(34,197,94,0.2)"
-                                : deployment.status === "failed"
-                                  ? "rgba(239,68,68,0.2)"
-                                  : "rgba(234,179,8,0.2)"
-                            }`,
-                          }}
-                        >
-                          {isDeploymentPending(deployment.status) && (
-                            <span
-                              style={{
-                                display: "inline-block",
-                                width: "10px",
-                                height: "10px",
-                                border: "2px solid currentColor",
-                                borderTopColor: "transparent",
-                                borderRadius: "50%",
-                                animation: "spin 1s linear infinite"
-                              }}
-                            />
-                          )}
-                          {deployment.status}
-                        </span>
+                        History
                       </div>
 
-                      <div style={{ fontSize: "13px", marginBottom: "4px", color: "#e5e7eb" }}>
-                        <strong style={{ color: "#9ca3af" }}>Commit:</strong>{" "}
-                        <span style={{ fontFamily: "monospace" }}>{deployment.commitSha.slice(0, 8)}</span>
-                      </div>
-
-                      {deployment.image && (
-                        <div
-                          style={{
-                            fontSize: "13px",
-                            marginBottom: "4px",
-                            color: "#9ca3af",
-                            overflow: "hidden",
-                            textOverflow: "ellipsis"
-                          }}
-                        >
-                          <strong>Image:</strong> {deployment.image}
+                      {isHistoryExpanded && (
+                        <div style={{ display: "flex", flexDirection: "column", gap: "8px", paddingTop: "8px" }}>
+                          {deployments
+                            .slice(deployments[0].status === "deployed" ? 1 : 2)
+                            .map((deployment) => (
+                              <div
+                                key={deployment.id}
+                                style={{
+                                  padding: "16px",
+                                  borderRadius: "8px",
+                                  border: "1px solid rgba(255, 255, 255, 0.1)",
+                                  background: "rgba(255, 255, 255, 0.03)",
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "space-between",
+                                }}
+                              >
+                                <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                                  <span
+                                    style={{
+                                      fontSize: "12px",
+                                      padding: "4px 10px",
+                                      borderRadius: "4px",
+                                      background: "rgba(107, 114, 128, 0.2)",
+                                      color: "#9ca3af",
+                                      fontWeight: 600,
+                                      textTransform: "uppercase",
+                                    }}
+                                  >
+                                    REMOVED
+                                  </span>
+                                  <div>
+                                    <div style={{ fontSize: "14px", color: "#e5e7eb", fontWeight: 500 }}>
+                                      {deployment.commitSha.slice(0, 8)}
+                                    </div>
+                                    <div style={{ fontSize: "12px", color: "#6b7280" }}>
+                                      {new Date(deployment.createdAt).toLocaleString()}
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
                         </div>
                       )}
-
-                      {deployment.runtimeUrl && (
-                        <div style={{ fontSize: "13px", marginBottom: "4px", color: "#e5e7eb" }}>
-                          <strong style={{ color: "#9ca3af" }}>URL:</strong>{" "}
-                          <a
-                            href={deployment.runtimeUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            style={{ color: "#8b5cf6", textDecoration: "none" }}
-                            onMouseEnter={(e) => {
-                              e.currentTarget.style.textDecoration = "underline";
-                            }}
-                            onMouseLeave={(e) => {
-                              e.currentTarget.style.textDecoration = "none";
-                            }}
-                          >
-                            {deployment.runtimeUrl}
-                          </a>
-                        </div>
-                      )}
-
-                      <div style={{ fontSize: "12px", color: "#6b7280", marginTop: "8px" }}>
-                        {new Date(deployment.createdAt).toLocaleString()}
-                      </div>
                     </div>
-                  ))}
+                  )}
                 </div>
               )}
             </div>

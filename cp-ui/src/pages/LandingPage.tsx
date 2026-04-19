@@ -43,8 +43,8 @@ export function LandingPage() {
     if (glowRef.current) {
       animate(
         glowRef.current,
-        { scale: [1, 1.1, 1], opacity: [0.15, 0.25, 0.15] },
-        { duration: 4, repeat: Infinity, easing: "easeInOut" }
+        { scale: [1, 1.15, 1], opacity: [0.8, 1, 0.8] },
+        { duration: 5, repeat: Infinity, easing: "easeInOut" }
       );
     }
 
@@ -243,14 +243,17 @@ export function LandingPage() {
           ref={glowRef}
           style={{
             position: "absolute",
-            top: "50%",
-            left: "50%",
+            top: "35%",
+            left: "33%",
             transform: "translate(-50%, -50%)",
-            width: "600px",
-            height: "600px",
+            width: "500px",
+            height: "250px",
             background:
-              "radial-gradient(circle, rgba(139,92,246,0.15) 0%, transparent 70%)",
+              "radial-gradient(ellipse at center, rgba(139,92,246,0.6) 0%, rgba(124,58,237,0.4) 25%, rgba(59,130,246,0.2) 50%, transparent 70%)",
             pointerEvents: "none",
+            filter: "blur(40px)",
+            opacity: 1,
+            zIndex: 0,
           }}
         />
 
@@ -266,6 +269,8 @@ export function LandingPage() {
             borderRadius: "20px",
             marginBottom: "32px",
             opacity: 0,
+            position: "relative",
+            zIndex: 1,
           }}
         >
           <span>⚡</span>
@@ -282,6 +287,8 @@ export function LandingPage() {
             margin: "0 0 24px 0",
             lineHeight: 1.1,
             opacity: 0,
+            position: "relative",
+            zIndex: 1,
           }}
         >
           Visualize your
@@ -307,6 +314,8 @@ export function LandingPage() {
             margin: "0 auto 40px",
             lineHeight: 1.6,
             opacity: 0,
+            position: "relative",
+            zIndex: 1,
           }}
         >
           Design, deploy, and manage your services on an interactive 2D canvas.
@@ -322,6 +331,8 @@ export function LandingPage() {
             justifyContent: "center",
             marginBottom: "40px",
             opacity: 0,
+            position: "relative",
+            zIndex: 1,
           }}
         >
           <button
@@ -366,6 +377,8 @@ export function LandingPage() {
             overflow: "hidden",
             opacity: 0,
             transition: "box-shadow 0.3s",
+            position: "relative",
+            zIndex: 1,
           }}
         >
           <div

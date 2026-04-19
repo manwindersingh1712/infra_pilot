@@ -54,13 +54,24 @@ function useAuth() {
     () => localStorage.getItem("cp_token") ?? ""
   );
 
-  const login = async () => {
-    const r = await apiFetch<{ token: string }>(`/dev/login`, {
+  const login = async (email: string, password: string) => {
+    const r = await apiFetch<{ token: string; user: { id: string; email: string; name: string | null } }>(`/auth/login`, {
       method: "POST",
+      body: JSON.stringify({ email, password }),
     });
     localStorage.setItem("cp_token", r.token);
     setToken(r.token);
-    return r.token;
+    return r;
+  };
+
+  const register = async (email: string, password: string, name?: string) => {
+    const r = await apiFetch<{ token: string; user: { id: string; email: string; name: string | null } }>(`/auth/register`, {
+      method: "POST",
+      body: JSON.stringify({ email, password, name }),
+    });
+    localStorage.setItem("cp_token", r.token);
+    setToken(r.token);
+    return r;
   };
 
   const logout = () => {
@@ -68,7 +79,7 @@ function useAuth() {
     setToken("");
   };
 
-  return { token, login, logout };
+  return { token, login, register, logout };
 }
 
 // Mobile check component
@@ -122,13 +133,17 @@ function LoginPage() {
   const [password, setPassword] = useState("");
 
   const handleLogin = async () => {
+    if (!email || !password) {
+      setError("Please enter email and password");
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
-      await login();
+      await login(email, password);
       navigate("/projects");
     } catch (err: any) {
-      setError(err.message);
+      setError(err.message.includes("401") ? "Invalid email or password" : err.message);
     } finally {
       setLoading(false);
     }
@@ -364,14 +379,366 @@ function LoginPage() {
         >
           Don't have an account?{" "}
           <a
-            href="#"
+            href="/signup"
+            onClick={(e) => {
+              e.preventDefault();
+              navigate("/signup");
+            }}
             style={{
               color: "#fff",
               textDecoration: "none",
               fontWeight: 500,
+              cursor: "pointer",
             }}
           >
             Sign up
+          </a>
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// Signup page
+function SignupPage() {
+  const navigate = useNavigate();
+  const { register } = useAuth();
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+
+  const handleSignup = async () => {
+    if (!email || !password) {
+      setError("Please enter email and password");
+      return;
+    }
+    if (password.length < 8) {
+      setError("Password must be at least 8 characters");
+      return;
+    }
+    if (password !== confirmPassword) {
+      setError("Passwords do not match");
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      await register(email, password, name || undefined);
+      navigate("/projects");
+    } catch (err: any) {
+      setError(err.message.includes("409") ? "Email already registered" : err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div
+      style={{
+        minHeight: "100vh",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "#0a0a0a",
+        fontFamily:
+          'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+        padding: "24px",
+      }}
+    >
+      {/* Logo */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: "12px",
+          marginBottom: "40px",
+          cursor: "pointer",
+        }}
+        onClick={() => navigate("/")}
+      >
+        <img
+          src={logoSvg}
+          alt="Infra Pilot"
+          style={{
+            width: "32px",
+            height: "32px",
+          }}
+        />
+        <span
+          style={{
+            fontSize: "24px",
+            fontWeight: 600,
+            color: "#fff",
+          }}
+        >
+          Infra Pilot
+        </span>
+      </div>
+
+      {/* Card */}
+      <div
+        style={{
+          background: "rgba(255,255,255,0.03)",
+          border: "1px solid rgba(255,255,255,0.1)",
+          borderRadius: "16px",
+          padding: "40px",
+          width: "100%",
+          maxWidth: "400px",
+        }}
+      >
+        <h1
+          style={{
+            margin: "0 0 8px 0",
+            fontSize: "24px",
+            fontWeight: 600,
+            color: "#fff",
+            textAlign: "center",
+          }}
+        >
+          Create account
+        </h1>
+        <p
+          style={{
+            margin: "0 0 32px 0",
+            color: "#9ca3af",
+            fontSize: "14px",
+            textAlign: "center",
+          }}
+        >
+          Enter your details to get started
+        </p>
+
+        {error && (
+          <div
+            style={{
+              background: "rgba(239,68,68,0.1)",
+              color: "#ef4444",
+              padding: "12px",
+              borderRadius: "8px",
+              marginBottom: "24px",
+              fontSize: "14px",
+              border: "1px solid rgba(239,68,68,0.2)",
+            }}
+          >
+            {error}
+          </div>
+        )}
+
+        {/* Name Field */}
+        <div style={{ marginBottom: "20px" }}>
+          <label
+            style={{
+              display: "block",
+              fontSize: "14px",
+              fontWeight: 500,
+              color: "#fff",
+              marginBottom: "8px",
+            }}
+          >
+            Name (optional)
+          </label>
+          <input
+            type="text"
+            placeholder="John Doe"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            style={{
+              width: "100%",
+              padding: "12px 16px",
+              background: "rgba(255,255,255,0.05)",
+              border: "1px solid rgba(255,255,255,0.1)",
+              borderRadius: "8px",
+              fontSize: "14px",
+              color: "#fff",
+              outline: "none",
+              boxSizing: "border-box",
+              transition: "border-color 0.2s",
+            }}
+            onFocus={(e) =>
+              (e.currentTarget.style.borderColor = "rgba(139,92,246,0.5)")
+            }
+            onBlur={(e) =>
+              (e.currentTarget.style.borderColor = "rgba(255,255,255,0.1)")
+            }
+          />
+        </div>
+
+        {/* Email Field */}
+        <div style={{ marginBottom: "20px" }}>
+          <label
+            style={{
+              display: "block",
+              fontSize: "14px",
+              fontWeight: 500,
+              color: "#fff",
+              marginBottom: "8px",
+            }}
+          >
+            Email
+          </label>
+          <input
+            type="email"
+            placeholder="john@doe.com"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            style={{
+              width: "100%",
+              padding: "12px 16px",
+              background: "rgba(255,255,255,0.05)",
+              border: "1px solid rgba(255,255,255,0.1)",
+              borderRadius: "8px",
+              fontSize: "14px",
+              color: "#fff",
+              outline: "none",
+              boxSizing: "border-box",
+              transition: "border-color 0.2s",
+            }}
+            onFocus={(e) =>
+              (e.currentTarget.style.borderColor = "rgba(139,92,246,0.5)")
+            }
+            onBlur={(e) =>
+              (e.currentTarget.style.borderColor = "rgba(255,255,255,0.1)")
+            }
+          />
+        </div>
+
+        {/* Password Field */}
+        <div style={{ marginBottom: "20px" }}>
+          <label
+            style={{
+              display: "block",
+              fontSize: "14px",
+              fontWeight: 500,
+              color: "#fff",
+              marginBottom: "8px",
+            }}
+          >
+            Password
+          </label>
+          <input
+            type="password"
+            placeholder="Min 8 characters"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            style={{
+              width: "100%",
+              padding: "12px 16px",
+              background: "rgba(255,255,255,0.05)",
+              border: "1px solid rgba(255,255,255,0.1)",
+              borderRadius: "8px",
+              fontSize: "14px",
+              color: "#fff",
+              outline: "none",
+              boxSizing: "border-box",
+              transition: "border-color 0.2s",
+            }}
+            onFocus={(e) =>
+              (e.currentTarget.style.borderColor = "rgba(139,92,246,0.5)")
+            }
+            onBlur={(e) =>
+              (e.currentTarget.style.borderColor = "rgba(255,255,255,0.1)")
+            }
+          />
+        </div>
+
+        {/* Confirm Password Field */}
+        <div style={{ marginBottom: "24px" }}>
+          <label
+            style={{
+              display: "block",
+              fontSize: "14px",
+              fontWeight: 500,
+              color: "#fff",
+              marginBottom: "8px",
+            }}
+          >
+            Confirm Password
+          </label>
+          <input
+            type="password"
+            placeholder="Confirm your password"
+            value={confirmPassword}
+            onChange={(e) => setConfirmPassword(e.target.value)}
+            style={{
+              width: "100%",
+              padding: "12px 16px",
+              background: "rgba(255,255,255,0.05)",
+              border: "1px solid rgba(255,255,255,0.1)",
+              borderRadius: "8px",
+              fontSize: "14px",
+              color: "#fff",
+              outline: "none",
+              boxSizing: "border-box",
+              transition: "border-color 0.2s",
+            }}
+            onFocus={(e) =>
+              (e.currentTarget.style.borderColor = "rgba(139,92,246,0.5)")
+            }
+            onBlur={(e) =>
+              (e.currentTarget.style.borderColor = "rgba(255,255,255,0.1)")
+            }
+          />
+        </div>
+
+        {/* Sign Up Button */}
+        <button
+          onClick={handleSignup}
+          disabled={loading}
+          style={{
+            width: "100%",
+            padding: "12px",
+            background: "linear-gradient(135deg, #8b5cf6, #7c3aed)",
+            color: "white",
+            border: "none",
+            borderRadius: "8px",
+            fontSize: "14px",
+            fontWeight: 500,
+            cursor: loading ? "not-allowed" : "pointer",
+            opacity: loading ? 0.7 : 1,
+            transition: "box-shadow 0.2s, opacity 0.2s",
+            marginBottom: "24px",
+          }}
+          onMouseEnter={(e) => {
+            if (!loading) {
+              e.currentTarget.style.boxShadow =
+                "0 4px 20px rgba(139, 92, 246, 0.4)";
+            }
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.boxShadow = "none";
+          }}
+        >
+          {loading ? "Creating account..." : "Create account"}
+        </button>
+
+        {/* Sign In Link */}
+        <p
+          style={{
+            margin: 0,
+            fontSize: "14px",
+            color: "#9ca3af",
+            textAlign: "center",
+          }}
+        >
+          Already have an account?{" "}
+          <a
+            href="/login"
+            onClick={(e) => {
+              e.preventDefault();
+              navigate("/login");
+            }}
+            style={{
+              color: "#fff",
+              textDecoration: "none",
+              fontWeight: 500,
+              cursor: "pointer",
+            }}
+          >
+            Sign in
           </a>
         </p>
       </div>
@@ -427,6 +794,7 @@ function AppRoutes() {
       <Routes>
         <Route path="/" element={<HomeRoute />} />
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/signup" element={<SignupPage />} />
         <Route
           path="/projects"
           element={

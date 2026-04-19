@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import logoSvg from "../assets/logo.svg";
 
 const API = import.meta.env.VITE_API_BASE ?? "http://localhost:8080";
 
@@ -127,21 +128,18 @@ export function ProjectsPage() {
       >
         <div style={{ display: "flex", alignItems: "center", gap: "32px" }}>
           {/* Logo */}
-          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-            <div
+          <div
+            style={{ display: "flex", alignItems: "center", gap: "10px", cursor: "pointer" }}
+            onClick={() => navigate("/")}
+          >
+            <img
+              src={logoSvg}
+              alt="Infra Pilot"
               style={{
                 width: "28px",
                 height: "28px",
-                background: "linear-gradient(135deg, #8b5cf6, #6366f1)",
-                borderRadius: "6px",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                fontSize: "16px",
               }}
-            >
-              🧭
-            </div>
+            />
             <span style={{ fontSize: "18px", fontWeight: 600 }}>Infra Pilot</span>
           </div>
 

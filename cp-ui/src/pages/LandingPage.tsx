@@ -1,6 +1,7 @@
 import { useNavigate } from "react-router-dom";
 import { useEffect, useRef, useState } from "react";
 import { animate, inView, hover, stagger } from "motion";
+import logoSvg from "../assets/logo.svg";
 
 export function LandingPage() {
   const navigate = useNavigate();
@@ -11,7 +12,6 @@ export function LandingPage() {
   const heroTitleRef = useRef<HTMLHeadingElement>(null);
   const heroSubtitleRef = useRef<HTMLParagraphElement>(null);
   const heroButtonsRef = useRef<HTMLDivElement>(null);
-  const heroStatsRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<HTMLDivElement>(null);
   const featuresRef = useRef<HTMLDivElement>(null);
   const stepsRef = useRef<HTMLDivElement>(null);
@@ -26,7 +26,6 @@ export function LandingPage() {
       heroTitleRef.current,
       heroSubtitleRef.current,
       heroButtonsRef.current,
-      heroStatsRef.current,
       terminalRef.current,
     ].filter(Boolean);
 
@@ -136,21 +135,18 @@ export function LandingPage() {
           transition: "opacity 0.5s ease",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-          <div
+        <div
+          style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer" }}
+          onClick={() => navigate("/")}
+        >
+          <img
+            src={logoSvg}
+            alt="Infra Pilot"
             style={{
               width: "28px",
               height: "28px",
-              background: "linear-gradient(135deg, #8b5cf6, #6366f1)",
-              borderRadius: "6px",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontSize: "16px",
             }}
-          >
-            🧭
-          </div>
+          />
           <span style={{ fontSize: "18px", fontWeight: 600 }}>Infra Pilot</span>
         </div>
 
@@ -186,22 +182,6 @@ export function LandingPage() {
             onMouseLeave={(e) => (e.currentTarget.style.color = "#9ca3af")}
           >
             How it Works
-          </button>
-          <button
-            onClick={() => scrollToSection("pricing")}
-            style={{
-              background: "none",
-              border: "none",
-              color: "#9ca3af",
-              cursor: "pointer",
-              fontSize: "14px",
-              padding: "8px 0",
-              transition: "color 0.2s",
-            }}
-            onMouseEnter={(e) => (e.currentTarget.style.color = "#fff")}
-            onMouseLeave={(e) => (e.currentTarget.style.color = "#9ca3af")}
-          >
-            Pricing
           </button>
         </div>
 
@@ -252,7 +232,7 @@ export function LandingPage() {
       {/* Hero Section */}
       <section
         style={{
-          padding: "80px 48px",
+          padding: "60px 48px",
           textAlign: "center",
           position: "relative",
           overflow: "hidden",
@@ -340,7 +320,7 @@ export function LandingPage() {
             display: "flex",
             gap: "16px",
             justifyContent: "center",
-            marginBottom: "64px",
+            marginBottom: "40px",
             opacity: 0,
           }}
         >
@@ -369,95 +349,9 @@ export function LandingPage() {
               (e.currentTarget.style.boxShadow = "none")
             }
           >
-            Get Started Free
+            Get Started
             <span>→</span>
           </button>
-          <a
-            href="https://github.com"
-            target="_blank"
-            rel="noopener noreferrer"
-            style={{
-              background: "rgba(255,255,255,0.05)",
-              border: "1px solid rgba(255,255,255,0.1)",
-              color: "#fff",
-              cursor: "pointer",
-              fontSize: "16px",
-              padding: "14px 28px",
-              borderRadius: "8px",
-              fontWeight: 500,
-              display: "flex",
-              alignItems: "center",
-              gap: "8px",
-              textDecoration: "none",
-              transition: "background 0.2s, border-color 0.2s",
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = "rgba(255,255,255,0.1)";
-              e.currentTarget.style.borderColor = "rgba(255,255,255,0.2)";
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = "rgba(255,255,255,0.05)";
-              e.currentTarget.style.borderColor = "rgba(255,255,255,0.1)";
-            }}
-          >
-            <span>⭐</span>
-            View on GitHub
-          </a>
-        </div>
-
-        {/* Stats */}
-        <div
-          ref={heroStatsRef}
-          style={{
-            display: "flex",
-            justifyContent: "center",
-            gap: "64px",
-            marginBottom: "64px",
-            opacity: 0,
-          }}
-        >
-          <div style={{ textAlign: "center" }}>
-            <div
-              style={{
-                fontSize: "36px",
-                fontWeight: 700,
-                marginBottom: "4px",
-              }}
-            >
-              Visual
-            </div>
-            <div style={{ fontSize: "14px", color: "#6b7280" }}>
-              2D Canvas Editor
-            </div>
-          </div>
-          <div style={{ textAlign: "center" }}>
-            <div
-              style={{
-                fontSize: "36px",
-                fontWeight: 700,
-                marginBottom: "4px",
-              }}
-            >
-              Docker
-            </div>
-            <div style={{ fontSize: "14px", color: "#6b7280" }}>
-              Container Deployments
-            </div>
-          </div>
-          <div style={{ textAlign: "center" }}>
-            <div
-              style={{
-                fontSize: "36px",
-                fontWeight: 700,
-                marginBottom: "4px",
-              }}
-            >
-              Real-Time
-            </div>
-            <div style={{ fontSize: "14px", color: "#6b7280" }}>
-              Logs & Monitoring
-            </div>
-          </div>
         </div>
 
         {/* Terminal Demo */}
@@ -516,7 +410,7 @@ export function LandingPage() {
                 fontFamily: "monospace",
               }}
             >
-              infrapilot deploy
+              deployment.log
             </span>
           </div>
           <div
@@ -528,9 +422,6 @@ export function LandingPage() {
               lineHeight: 1.8,
             }}
           >
-            <div style={{ color: "#22d3ee" }}>
-              $ infrapilot service create --name api --type nodejs
-            </div>
             <div style={{ color: "#9ca3af" }}>→ Creating service...</div>
             <div style={{ color: "#9ca3af" }}>
               → Building Docker image:{" "}
@@ -539,15 +430,6 @@ export function LandingPage() {
             <div style={{ color: "#9ca3af" }}>→ Pushing to registry...</div>
             <div style={{ color: "#9ca3af" }}>→ Deploying container...</div>
             <div style={{ color: "#22c55e" }}>✓ Service deployed!</div>
-            <div style={{ color: "#9ca3af" }}>
-              → URL:{" "}
-              <a
-                href="#"
-                style={{ color: "#22d3ee", textDecoration: "underline" }}
-              >
-                http://api.localhost
-              </a>
-            </div>
           </div>
         </div>
 
@@ -557,7 +439,7 @@ export function LandingPage() {
             display: "flex",
             justifyContent: "center",
             gap: "32px",
-            marginTop: "32px",
+            marginTop: "24px",
           }}
         >
           <div
@@ -597,7 +479,7 @@ export function LandingPage() {
       </section>
 
       {/* Features Section */}
-      <section id="features" style={{ padding: "80px 48px" }}>
+      <section id="features" style={{ padding: "60px 48px" }}>
         <div style={{ textAlign: "center", marginBottom: "64px" }}>
           <h2
             style={{ fontSize: "42px", fontWeight: 700, marginBottom: "16px" }}
@@ -746,7 +628,7 @@ export function LandingPage() {
       </section>
 
       {/* How it Works Section */}
-      <section id="how-it-works" style={{ padding: "80px 48px" }}>
+      <section id="how-it-works" style={{ padding: "60px 48px" }}>
         <div style={{ textAlign: "center", marginBottom: "64px" }}>
           <h2
             style={{ fontSize: "42px", fontWeight: 700, marginBottom: "16px" }}
@@ -886,108 +768,6 @@ export function LandingPage() {
           ))}
         </div>
 
-        {/* Config file demo */}
-        <div
-          style={{
-            maxWidth: "600px",
-            margin: "0 auto",
-            background: "rgba(255,255,255,0.03)",
-            border: "1px solid rgba(255,255,255,0.1)",
-            borderRadius: "12px",
-            overflow: "hidden",
-            transition: "border-color 0.3s, box-shadow 0.3s",
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.borderColor = "rgba(139,92,246,0.4)";
-            e.currentTarget.style.boxShadow = "0 0 30px rgba(139,92,246,0.15)";
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.borderColor = "rgba(255,255,255,0.1)";
-            e.currentTarget.style.boxShadow = "none";
-          }}
-        >
-          <div
-            style={{
-              padding: "12px 16px",
-              background: "rgba(255,255,255,0.03)",
-              borderBottom: "1px solid rgba(255,255,255,0.1)",
-              display: "flex",
-              alignItems: "center",
-              gap: "8px",
-            }}
-          >
-            <div
-              style={{
-                width: "12px",
-                height: "12px",
-                borderRadius: "50%",
-                background: "#ef4444",
-              }}
-            />
-            <div
-              style={{
-                width: "12px",
-                height: "12px",
-                borderRadius: "50%",
-                background: "#f59e0b",
-              }}
-            />
-            <div
-              style={{
-                width: "12px",
-                height: "12px",
-                borderRadius: "50%",
-                background: "#22c55e",
-              }}
-            />
-            <span
-              style={{
-                marginLeft: "12px",
-                fontSize: "13px",
-                color: "#6b7280",
-                fontFamily: "monospace",
-              }}
-            >
-              service.config.js
-            </span>
-          </div>
-          <div
-            style={{
-              padding: "20px",
-              fontFamily: "monospace",
-              fontSize: "13px",
-              textAlign: "left",
-              lineHeight: 1.8,
-            }}
-          >
-            <div style={{ color: "#c084fc" }}>export default</div>
-            <div style={{ color: "#fff" }}>
-              {"  "}name: <span style={{ color: "#4ade80" }}>"api-service"</span>,
-            </div>
-            <div style={{ color: "#fff" }}>
-              {"  "}type: <span style={{ color: "#4ade80" }}>"nodejs"</span>,
-            </div>
-            <div style={{ color: "#fff" }}>
-              {"  "}dockerfile: <span style={{ color: "#4ade80" }}>"./Dockerfile"</span>,
-            </div>
-            <div style={{ color: "#fff" }}>
-              {"  "}port: <span style={{ color: "#f97316" }}>8080</span>,
-            </div>
-            <div style={{ color: "#fff" }}>
-              {"  "}env:{" "}
-              {"{"}
-            </div>
-            <div style={{ color: "#fff" }}>
-              {"    "}NODE_ENV: <span style={{ color: "#4ade80" }}>"production"</span>,
-            </div>
-            <div style={{ color: "#fff" }}>
-              {"    "}API_KEY:{" "}
-              <span style={{ color: "#4ade80" }}>"••••••••"</span>
-            </div>
-            <div style={{ color: "#fff" }}>{"  "}</div>
-            <div style={{ color: "#fff" }}>{"}"}</div>
-          </div>
-        </div>
       </section>
 
       {/* Pricing Section - Hidden
@@ -1180,102 +960,46 @@ export function LandingPage() {
       {/* Footer */}
       <footer
         style={{
-          padding: "64px 48px 32px",
+          padding: "40px 48px",
           borderTop: "1px solid rgba(255,255,255,0.1)",
+          textAlign: "center",
         }}
       >
         <div
           style={{
-            maxWidth: "1200px",
-            margin: "0 auto",
-          }}
-        >
-          {/* Brand */}
-          <div>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "8px",
-                marginBottom: "16px",
-              }}
-            >
-              <div
-                style={{
-                  width: "28px",
-                  height: "28px",
-                  background: "linear-gradient(135deg, #8b5cf6, #6366f1)",
-                  borderRadius: "6px",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  fontSize: "16px",
-                }}
-              >
-                🧭
-              </div>
-              <span style={{ fontSize: "18px", fontWeight: 600 }}>
-                Infra Pilot
-              </span>
-            </div>
-            <p
-              style={{
-                fontSize: "14px",
-                color: "#9ca3af",
-                lineHeight: 1.6,
-                margin: "0 0 16px 0",
-                maxWidth: "400px",
-              }}
-            >
-              Visual infrastructure management with a 2D canvas. Deploy Docker
-              containers, monitor logs, and connect services with ease.
-            </p>
-            <div style={{ display: "flex", gap: "12px" }}>
-              <a href="#" style={{ color: "#6b7280", fontSize: "20px" }}>
-                ⭐
-              </a>
-              <a href="#" style={{ color: "#6b7280", fontSize: "20px" }}>
-                🐦
-              </a>
-            </div>
-          </div>
-
-        </div>
-
-        <div
-          style={{
-            maxWidth: "1200px",
-            margin: "48px auto 0",
-            paddingTop: "32px",
-            borderTop: "1px solid rgba(255,255,255,0.1)",
             display: "flex",
-            justifyContent: "space-between",
             alignItems: "center",
+            justifyContent: "center",
+            gap: "8px",
+            marginBottom: "12px",
+            cursor: "pointer",
+          }}
+          onClick={() => navigate("/")}
+        >
+          <img
+            src={logoSvg}
+            alt="Infra Pilot"
+            style={{
+              width: "24px",
+              height: "24px",
+            }}
+          />
+          <span style={{ fontSize: "16px", fontWeight: 600 }}>
+            Infra Pilot
+          </span>
+        </div>
+        <p
+          style={{
+            fontSize: "13px",
+            color: "#6b7280",
+            margin: "0 0 16px 0",
           }}
         >
-          <p style={{ fontSize: "14px", color: "#6b7280", margin: 0 }}>
-            © 2026 Infra Pilot. All rights reserved.
-          </p>
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "8px",
-              fontSize: "14px",
-              color: "#6b7280",
-            }}
-          >
-            <span
-              style={{
-                width: "8px",
-                height: "8px",
-                background: "#22c55e",
-                borderRadius: "50%",
-              }}
-            ></span>
-            All systems operational
-          </div>
-        </div>
+          Visual infrastructure management for modern development teams
+        </p>
+        <p style={{ fontSize: "13px", color: "#9ca3af", margin: 0 }}>
+          Made with ❤️ @2026 by MANWINDER SINGH
+        </p>
       </footer>
     </div>
   );

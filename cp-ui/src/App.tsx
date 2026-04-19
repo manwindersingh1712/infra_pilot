@@ -10,6 +10,7 @@ import {
 import { ProjectsPage } from "./pages/ProjectsPage";
 import { ProjectCanvasPage } from "./pages/ProjectCanvasPage";
 import { LandingPage } from "./pages/LandingPage";
+import logoSvg from "./assets/logo.svg";
 
 const API = import.meta.env.VITE_API_BASE ?? "http://localhost:8080";
 
@@ -154,22 +155,18 @@ function LoginPage() {
           alignItems: "center",
           gap: "12px",
           marginBottom: "40px",
+          cursor: "pointer",
         }}
+        onClick={() => window.location.reload()}
       >
-        <div
+        <img
+          src={logoSvg}
+          alt="Infra Pilot"
           style={{
             width: "32px",
             height: "32px",
-            background: "linear-gradient(135deg, #8b5cf6, #6366f1)",
-            borderRadius: "8px",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            fontSize: "18px",
           }}
-        >
-          🧭
-        </div>
+        />
         <span
           style={{
             fontSize: "24px",

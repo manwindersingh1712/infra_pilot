@@ -364,7 +364,7 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
               (e.currentTarget.style.background = "rgba(255,255,255,0.05)")
             }
           >
-            ← Back to Projects
+            ←
           </button>
           <div style={{ width: "1px", height: "24px", background: "rgba(255,255,255,0.1)" }} />
           <h1 style={{ margin: 0, fontSize: "18px", fontWeight: 600, color: "#fff" }}>

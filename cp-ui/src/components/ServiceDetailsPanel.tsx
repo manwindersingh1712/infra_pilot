@@ -11,6 +11,8 @@ interface Deployment {
   image: string | null;
   runtimeUrl: string | null;
   status: string;
+  hostPort: number | null;
+  containerPort: number | null;
   createdAt: string;
 }
 
@@ -279,8 +281,138 @@ function EnvVarSection({ serviceId }: { serviceId: string }) {
   );
 }
 
+function isManagedDbService(serviceType: string): boolean {
+  return serviceType === "redis" || serviceType === "mongodb";
+}
+
+function ConnectionSection({ service, deployment }: { service: Service; deployment: Deployment | null }) {
+  const [copiedField, setCopiedField] = useState<string | null>(null);
+
+  function copyToClipboard(text: string, field: string) {
+    navigator.clipboard.writeText(text);
+    setCopiedField(field);
+    setTimeout(() => setCopiedField(null), 2000);
+  }
+
+  function getRedisConnectionInfo(dep: Deployment | null) {
+    const host = "localhost";
+    const port = dep?.hostPort ?? 6379;
+    return {
+      host,
+      port: String(port),
+      url: `redis://${host}:${port}`,
+      cli: `redis-cli -h ${host} -p ${port}`,
+    };
+  }
+
+  const info = getRedisConnectionInfo(deployment);
+
+  const rowStyle: React.CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    gap: "12px",
+    padding: "14px 16px",
+    background: "rgba(255,255,255,0.03)",
+    borderRadius: "8px",
+    border: "1px solid rgba(255,255,255,0.1)",
+  };
+
+  const labelStyle: React.CSSProperties = {
+    fontSize: "13px",
+    color: "#9ca3af",
+    textTransform: "uppercase",
+    letterSpacing: "0.5px",
+    fontWeight: 600,
+    minWidth: "100px",
+  };
+
+  const valueStyle: React.CSSProperties = {
+    flex: 1,
+    fontSize: "14px",
+    color: "#e5e7eb",
+    fontFamily: "monospace",
+    wordBreak: "break-all",
+  };
+
+  const copyButtonStyle: React.CSSProperties = {
+    padding: "6px 12px",
+    borderRadius: "6px",
+    border: "1px solid rgba(255,255,255,0.1)",
+    background: "rgba(255,255,255,0.05)",
+    cursor: "pointer",
+    fontSize: "12px",
+    color: "#9ca3af",
+    transition: "background 0.2s",
+    whiteSpace: "nowrap",
+  };
+
+  if (!deployment || deployment.status !== "deployed") {
+    return (
+      <div style={{ padding: "20px" }}>
+        <div
+          style={{
+            textAlign: "center",
+            padding: "40px",
+            color: "#9ca3af",
+            background: "rgba(255,255,255,0.03)",
+            borderRadius: "8px",
+            border: "1px solid rgba(255,255,255,0.1)",
+          }}
+        >
+          <p>Not deployed yet.</p>
+          <p style={{ fontSize: "14px" }}>Deploy the service to see connection details.</p>
+        </div>
+      </div>
+    );
+  }
+
+  const connectionRows = [
+    { label: "Host", value: info.host, field: "host" },
+    { label: "Port", value: info.port, field: "port" },
+    { label: "URL", value: info.url, field: "url" },
+    { label: "CLI", value: info.cli, field: "cli" },
+  ];
+
+  return (
+    <div style={{ padding: "20px", display: "flex", flexDirection: "column", gap: "10px" }}>
+      <div
+        style={{
+          background: "rgba(139,92,246,0.1)",
+          border: "1px solid rgba(139,92,246,0.2)",
+          borderRadius: "8px",
+          padding: "12px 16px",
+          marginBottom: "8px",
+        }}
+      >
+        <p style={{ margin: 0, fontSize: "13px", color: "#c4b5fd", lineHeight: 1.5 }}>
+          Connect to this Redis instance using the details below. The port is dynamically allocated on deploy.
+        </p>
+      </div>
+
+      {connectionRows.map((row) => (
+        <div key={row.field} style={rowStyle}>
+          <span style={labelStyle}>{row.label}</span>
+          <span style={valueStyle}>{row.value}</span>
+          <button
+            onClick={() => copyToClipboard(row.value, row.field)}
+            style={copyButtonStyle}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = "rgba(255,255,255,0.1)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = "rgba(255,255,255,0.05)";
+            }}
+          >
+            {copiedField === row.field ? "Copied!" : "Copy"}
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetailsPanelProps) {
-  const [activeTab, setActiveTab] = useState<"deployments" | "logs" | "env">("deployments");
+  const [activeTab, setActiveTab] = useState<"deployments" | "logs" | "env" | "connection">("deployments");
   const [deployments, setDeployments] = useState<Deployment[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -293,6 +425,7 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
     if (service?.id) {
       setLatestDeploymentId(null);
       setDeployments([]);
+      setActiveTab("deployments");
     }
   }, [service?.id]);
 
@@ -526,60 +659,92 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
           >
             Deployments
           </button>
-          <button
-            onClick={() => setActiveTab("env")}
-            style={{
-              flex: 1,
-              padding: "14px",
-              background: activeTab === "env" ? "rgba(139,92,246,0.1)" : "transparent",
-              border: "none",
-              borderBottom: activeTab === "env" ? "2px solid #8b5cf6" : "none",
-              cursor: "pointer",
-              fontSize: "14px",
-              fontWeight: 500,
-              color: activeTab === "env" ? "#8b5cf6" : "#9ca3af",
-              transition: "background 0.2s, color 0.2s",
-            }}
-            onMouseEnter={(e) => {
-              if (activeTab !== "env") {
-                e.currentTarget.style.background = "rgba(255,255,255,0.03)";
-              }
-            }}
-            onMouseLeave={(e) => {
-              if (activeTab !== "env") {
-                e.currentTarget.style.background = "transparent";
-              }
-            }}
-          >
-            Env Vars
-          </button>
-          <button
-            onClick={() => setActiveTab("logs")}
-            style={{
-              flex: 1,
-              padding: "14px",
-              background: activeTab === "logs" ? "rgba(139,92,246,0.1)" : "transparent",
-              border: "none",
-              borderBottom: activeTab === "logs" ? "2px solid #8b5cf6" : "none",
-              cursor: "pointer",
-              fontSize: "14px",
-              fontWeight: 500,
-              color: activeTab === "logs" ? "#8b5cf6" : "#9ca3af",
-              transition: "background 0.2s, color 0.2s",
-            }}
-            onMouseEnter={(e) => {
-              if (activeTab !== "logs") {
-                e.currentTarget.style.background = "rgba(255,255,255,0.03)";
-              }
-            }}
-            onMouseLeave={(e) => {
-              if (activeTab !== "logs") {
-                e.currentTarget.style.background = "transparent";
-              }
-            }}
-          >
-            Logs
-          </button>
+          {!isManagedDbService(service.serviceType) && (
+            <button
+              onClick={() => setActiveTab("env")}
+              style={{
+                flex: 1,
+                padding: "14px",
+                background: activeTab === "env" ? "rgba(139,92,246,0.1)" : "transparent",
+                border: "none",
+                borderBottom: activeTab === "env" ? "2px solid #8b5cf6" : "none",
+                cursor: "pointer",
+                fontSize: "14px",
+                fontWeight: 500,
+                color: activeTab === "env" ? "#8b5cf6" : "#9ca3af",
+                transition: "background 0.2s, color 0.2s",
+              }}
+              onMouseEnter={(e) => {
+                if (activeTab !== "env") {
+                  e.currentTarget.style.background = "rgba(255,255,255,0.03)";
+                }
+              }}
+              onMouseLeave={(e) => {
+                if (activeTab !== "env") {
+                  e.currentTarget.style.background = "transparent";
+                }
+              }}
+            >
+              Env Vars
+            </button>
+          )}
+          {isManagedDbService(service.serviceType) ? (
+            <button
+              onClick={() => setActiveTab("connection")}
+              style={{
+                flex: 1,
+                padding: "14px",
+                background: activeTab === "connection" ? "rgba(139,92,246,0.1)" : "transparent",
+                border: "none",
+                borderBottom: activeTab === "connection" ? "2px solid #8b5cf6" : "none",
+                cursor: "pointer",
+                fontSize: "14px",
+                fontWeight: 500,
+                color: activeTab === "connection" ? "#8b5cf6" : "#9ca3af",
+                transition: "background 0.2s, color 0.2s",
+              }}
+              onMouseEnter={(e) => {
+                if (activeTab !== "connection") {
+                  e.currentTarget.style.background = "rgba(255,255,255,0.03)";
+                }
+              }}
+              onMouseLeave={(e) => {
+                if (activeTab !== "connection") {
+                  e.currentTarget.style.background = "transparent";
+                }
+              }}
+            >
+              Connection
+            </button>
+          ) : (
+            <button
+              onClick={() => setActiveTab("logs")}
+              style={{
+                flex: 1,
+                padding: "14px",
+                background: activeTab === "logs" ? "rgba(139,92,246,0.1)" : "transparent",
+                border: "none",
+                borderBottom: activeTab === "logs" ? "2px solid #8b5cf6" : "none",
+                cursor: "pointer",
+                fontSize: "14px",
+                fontWeight: 500,
+                color: activeTab === "logs" ? "#8b5cf6" : "#9ca3af",
+                transition: "background 0.2s, color 0.2s",
+              }}
+              onMouseEnter={(e) => {
+                if (activeTab !== "logs") {
+                  e.currentTarget.style.background = "rgba(255,255,255,0.03)";
+                }
+              }}
+              onMouseLeave={(e) => {
+                if (activeTab !== "logs") {
+                  e.currentTarget.style.background = "transparent";
+                }
+              }}
+            >
+              Logs
+            </button>
+          )}
         </div>
 
         {/* Content */}
@@ -665,8 +830,11 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
                     }}
                     onViewLogs={(id) => {
                       setLatestDeploymentId(id);
-                      setActiveTab("logs");
+                      if (service && !isManagedDbService(service.serviceType)) {
+                        setActiveTab("logs");
+                      }
                     }}
+                    serviceType={service.serviceType}
                   />
 
                   {/* Previous Deployment - shown only if current is not deployed */}
@@ -688,8 +856,11 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
                       }}
                       onViewLogs={(id) => {
                         setLatestDeploymentId(id);
-                        setActiveTab("logs");
+                        if (service && !isManagedDbService(service.serviceType)) {
+                          setActiveTab("logs");
+                        }
                       }}
+                      serviceType={service.serviceType}
                     />
                   )}
 
@@ -775,6 +946,11 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
             </div>
           ) : activeTab === "env" ? (
             <EnvVarSection serviceId={service.id} />
+          ) : activeTab === "connection" ? (
+            <ConnectionSection
+              service={service}
+              deployment={deployments.find((d) => d.status === "deployed") ?? null}
+            />
           ) : (
             <div style={{ padding: "20px", height: "100%", boxSizing: "border-box" }}>
               {latestDeploymentId ? (

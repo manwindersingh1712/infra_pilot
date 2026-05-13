@@ -11,6 +11,7 @@ interface DeploymentStageTrackerProps {
   isExpanded: boolean;
   onToggle: () => void;
   onViewLogs: (deploymentId: string) => void;
+  serviceType?: string;
 }
 
 type StageStatus = "pending" | "running" | "completed";
@@ -93,7 +94,12 @@ function EmptyCircle() {
   );
 }
 
-export function DeploymentStageTracker({ deployment, isExpanded, onToggle, onViewLogs }: DeploymentStageTrackerProps) {
+function isManagedDbService(serviceType: string): boolean {
+  return serviceType === "redis" || serviceType === "mongodb";
+}
+
+export function DeploymentStageTracker({ deployment, isExpanded, onToggle, onViewLogs, serviceType }: DeploymentStageTrackerProps) {
+  const isDbService = serviceType ? isManagedDbService(serviceType) : false;
   const isPending = deployment.status === "queued" || deployment.status === "building" || deployment.status === "deploying";
   const isSuccessful = deployment.status === "deployed";
   const isFailed = deployment.status === "failed";
@@ -156,7 +162,7 @@ export function DeploymentStageTracker({ deployment, isExpanded, onToggle, onVie
             <div style={{ fontSize: "12px", color: "#6b7280" }}>
               {new Date(deployment.createdAt).toLocaleString()}
             </div>
-            {deployment.runtimeUrl && (
+            {deployment.runtimeUrl && !isDbService && (
               <a
                 href={deployment.runtimeUrl}
                 target="_blank"
@@ -182,32 +188,34 @@ export function DeploymentStageTracker({ deployment, isExpanded, onToggle, onVie
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onViewLogs(deployment.id);
-            }}
-            style={{
-              padding: "6px 12px",
-              borderRadius: "6px",
-              border: "1px solid rgba(255, 255, 255, 0.1)",
-              background: "rgba(255, 255, 255, 0.05)",
-              color: "#9ca3af",
-              fontSize: "13px",
-              cursor: "pointer",
-              transition: "background 0.2s, color 0.2s",
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = "rgba(255, 255, 255, 0.1)";
-              e.currentTarget.style.color = "#e5e7eb";
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = "rgba(255, 255, 255, 0.05)";
-              e.currentTarget.style.color = "#9ca3af";
-            }}
-          >
-            View logs
-          </button>
+          {!isDbService && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onViewLogs(deployment.id);
+              }}
+              style={{
+                padding: "6px 12px",
+                borderRadius: "6px",
+                border: "1px solid rgba(255, 255, 255, 0.1)",
+                background: "rgba(255, 255, 255, 0.05)",
+                color: "#9ca3af",
+                fontSize: "13px",
+                cursor: "pointer",
+                transition: "background 0.2s, color 0.2s",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = "rgba(255, 255, 255, 0.1)";
+                e.currentTarget.style.color = "#e5e7eb";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "rgba(255, 255, 255, 0.05)";
+                e.currentTarget.style.color = "#9ca3af";
+              }}
+            >
+              View logs
+            </button>
+          )}
 
           {/* Expand/Collapse Chevron */}
           <span

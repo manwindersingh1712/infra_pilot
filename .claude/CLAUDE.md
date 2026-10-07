@@ -45,7 +45,7 @@ cd control-plane && npm install
 cd ../cp-ui && npm install
 
 # Run database migrations
-cd control-plane && npm run prisma:migrate
+cd control-plane-go && go run ./cmd/migrate up   # goose owns the schema now; never `npm run prisma:migrate` (see Prisma Commands)
 ```
 
 ### Running the Application

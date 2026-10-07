@@ -75,8 +75,9 @@ Update this section as the work moves. The orchestrating session should tick box
 | Plan 3 — hardening | Not started | | | | Requires Plan 1's rollback window to be closed |
 
 - **Branch:** `go-migration` (created 2026-10-07 off `go`; first commit holds these docs).
-- **Current task:** Plan 1, Task 3 (Database connection, migrations, `migrate` command). Tasks 1, 1a and 2 passed their gates 2026-10-07.
-- **Not pushed yet:** first push waits for the gate in Plan 1 Task 1 Step 10 (Task 1 fixes, Task 1a, Task 2) and needs user approval.
+- **Current task:** Plan 1, Task 4 (Test helpers). Tasks 1, 1a, 2 and 3 passed their gates 2026-10-07.
+- **Dev DB:** baselined by goose on 2026-10-07 (pre-baseline backup in that session's scratchpad). Never run `npm run prisma:migrate` again.
+- **Pushed:** `go-migration` first pushed 2026-10-07 (CI green). Every later push needs user approval.
 
 ## 6. Prompts to paste into a new Claude session
 

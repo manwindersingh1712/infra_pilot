@@ -3,11 +3,14 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+var errInvalidURL = errors.New("parse DATABASE_URL: invalid URL")
 
 // Connect opens a pool. Sessions run in UTC because the schema stores UTC
 // values in TIMESTAMP(3) WITHOUT TIME ZONE columns.
@@ -40,7 +43,9 @@ func Connect(ctx context.Context, rawURL string) (*pgxpool.Pool, error) {
 func normalizeURL(raw string) (string, string, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return "", "", fmt.Errorf("parse DATABASE_URL: %w", err)
+		// url.Error embeds the raw URL (and EscapeError part of it), which
+		// may contain the password, so the cause is deliberately dropped.
+		return "", "", errInvalidURL
 	}
 	q := u.Query()
 	schema := q.Get("schema")

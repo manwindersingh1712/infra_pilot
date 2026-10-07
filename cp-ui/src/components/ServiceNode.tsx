@@ -1,3 +1,4 @@
+import type { JSX } from "react";
 import { Handle, Position } from "@xyflow/react";
 
 const serviceIcons: Record<string, string | JSX.Element> = {
@@ -62,7 +63,7 @@ interface ServiceNodeProps {
   selected: boolean;
 }
 
-export function ServiceNode({ id, data, selected }: ServiceNodeProps) {
+export function ServiceNode({ data, selected }: ServiceNodeProps) {
   const icon = serviceIcons[data.serviceType] || serviceIcons.nodejs;
   const hasDeployments = data.deploymentCount > 0;
 

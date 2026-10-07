@@ -18,6 +18,7 @@ export function LandingPage() {
   const glowRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: flip after first paint so the navbar opacity transition runs on mount
     setIsLoaded(true);
 
     // Hero entrance animations - staggered fade in + slide up
@@ -34,7 +35,7 @@ export function LandingPage() {
         animate(
           el,
           { opacity: [0, 1], y: [30, 0] },
-          { duration: 0.6, delay: i * 0.1, easing: [0.25, 0.46, 0.45, 0.94] }
+          { duration: 0.6, delay: i * 0.1 }
         );
       }
     });
@@ -44,7 +45,7 @@ export function LandingPage() {
       animate(
         glowRef.current,
         { scale: [1, 1.15, 1], opacity: [0.8, 1, 0.8] },
-        { duration: 5, repeat: Infinity, easing: "easeInOut" }
+        { duration: 5, repeat: Infinity }
       );
     }
 
@@ -71,7 +72,7 @@ export function LandingPage() {
           animate(
             cards,
             { opacity: [0, 1], y: [40, 0], scale: [0.95, 1] },
-            { duration: 0.5, delay: stagger(0.08), easing: [0.25, 0.46, 0.45, 0.94] }
+            { duration: 0.5, delay: stagger(0.08) }
           );
         },
         { margin: "-100px" }
@@ -87,7 +88,7 @@ export function LandingPage() {
           animate(
             stepCards,
             { opacity: [0, 1], x: [-30, 0] },
-            { duration: 0.5, delay: stagger(0.15), easing: [0.25, 0.46, 0.45, 0.94] }
+            { duration: 0.5, delay: stagger(0.15) }
           );
         },
         { margin: "-100px" }

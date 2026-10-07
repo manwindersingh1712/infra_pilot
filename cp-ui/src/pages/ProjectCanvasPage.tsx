@@ -100,8 +100,8 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
       if (canvas.services.length === 0) {
         setIsCreateModalOpen(true);
       }
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
@@ -236,25 +236,6 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
     },
     []
   );
-
-  // Auto-layout
-  async function runAutoLayout() {
-    try {
-      const result = await apiFetch<{ services: Array<{ id: string; positionX: number; positionY: number }> }>(
-        `/projects/${projectId}/canvas/auto-layout`,
-        { method: "POST" }
-      );
-      setServices(prev => {
-        const positionMap = new Map(result.services.map(s => [s.id, s]));
-        return prev.map(s => {
-          const newPos = positionMap.get(s.id);
-          return newPos ? { ...s, positionX: newPos.positionX, positionY: newPos.positionY } : s;
-        });
-      });
-    } catch (err) {
-      console.error("Auto-layout failed:", err);
-    }
-  }
 
   if (loading) {
     return (

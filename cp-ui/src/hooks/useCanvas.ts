@@ -62,8 +62,8 @@ export function useCanvas({ projectId }: UseCanvasOptions) {
     try {
       const data = await apiFetch<CanvasState>(`/projects/${projectId}/canvas`);
       setState(data);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }

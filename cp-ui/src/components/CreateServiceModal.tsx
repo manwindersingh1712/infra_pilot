@@ -253,7 +253,13 @@ export function CreateServiceModal({ projectId, isOpen, onClose, onCreated }: Cr
     setError(null);
 
     try {
-      const body: any = {
+      const body: {
+        projectId: string;
+        name: string;
+        serviceType: ServiceType;
+        repoUrl?: string;
+        branch?: string;
+      } = {
         projectId,
         name,
         serviceType
@@ -279,8 +285,8 @@ export function CreateServiceModal({ projectId, isOpen, onClose, onCreated }: Cr
       resetForm();
       onCreated();
       onClose();
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }

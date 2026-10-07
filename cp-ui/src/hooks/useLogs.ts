@@ -57,6 +57,7 @@ export function useLogs({ deploymentId }: UseLogsOptions) {
       setIsConnected(false);
     });
 
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- the socket is created by this effect and owned by it; state is how the subscribe effect below reacts to it
     setSocket(newSocket);
 
     return () => {
@@ -69,6 +70,7 @@ export function useLogs({ deploymentId }: UseLogsOptions) {
     if (!socket || !deploymentId) return;
 
     // Clear old logs immediately when deploymentId changes
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional reset of the previous deployment's logs when deploymentId changes
     setLogs([]);
     setMeta(null);
 

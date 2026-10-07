@@ -1,4 +1,4 @@
-import { useEffect, useState, ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { LogViewer } from "./LogViewer";
 import { DeploymentStageTracker } from "./DeploymentStageTracker";
 
@@ -71,8 +71,8 @@ function EnvVarSection({ serviceId }: { serviceId: string }) {
     try {
       const data = await apiFetch<EnvVar[]>(`/services/${serviceId}/env`);
       setEnvVars(data);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
@@ -89,8 +89,8 @@ function EnvVarSection({ serviceId }: { serviceId: string }) {
       setNewKey("");
       setNewValue("");
       await loadEnvVars();
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -98,8 +98,8 @@ function EnvVarSection({ serviceId }: { serviceId: string }) {
     try {
       await apiFetch(`/services/${serviceId}/env/${key}`, { method: "DELETE" });
       await loadEnvVars();
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -285,7 +285,7 @@ function isManagedDbService(serviceType: string): boolean {
   return serviceType === "redis" || serviceType === "mongodb";
 }
 
-function ConnectionSection({ service, deployment }: { service: Service; deployment: Deployment | null }) {
+function ConnectionSection({ deployment }: { service: Service; deployment: Deployment | null }) {
   const [copiedField, setCopiedField] = useState<string | null>(null);
 
   function copyToClipboard(text: string, field: string) {
@@ -466,8 +466,8 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
     try {
       const data = await apiFetch<Deployment[]>(`/deployments?serviceId=${service.id}`);
       setDeployments(data.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       if (showLoading) setLoading(false);
     }
@@ -482,13 +482,9 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
         body: JSON.stringify({ commitSha: "HEAD" })
       });
       await loadDeployments();
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     }
-  }
-
-  function isDeploymentPending(status: string): boolean {
-    return status === "queued" || status === "building" || status === "deploying";
   }
 
   if (!isOpen || !service) return null;

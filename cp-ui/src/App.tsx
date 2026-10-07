@@ -142,8 +142,9 @@ function LoginPage() {
     try {
       await login(email, password);
       navigate("/projects");
-    } catch (err: any) {
-      setError(err.message.includes("401") ? "Invalid email or password" : err.message);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message.includes("401") ? "Invalid email or password" : message);
     } finally {
       setLoading(false);
     }
@@ -428,8 +429,9 @@ function SignupPage() {
     try {
       await register(email, password, name || undefined);
       navigate("/projects");
-    } catch (err: any) {
-      setError(err.message.includes("409") ? "Email already registered" : err.message);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message.includes("409") ? "Email already registered" : message);
     } finally {
       setLoading(false);
     }

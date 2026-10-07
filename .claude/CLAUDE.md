@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **Go + Temporal migration in progress:** start with `docs/superpowers/START-HERE.md`. It links the design spec, the three plans, the agent role briefs, the review logs and the progress tracker. Never delete code in `control-plane/` (Node is kept as a frozen reference).
+
 ## Project Overview
 
 Infra Pilot is a minimal control-plane + UI for managing projects, services, and deployments. It uses:
@@ -58,6 +60,16 @@ cd control-plane && npm run dev:worker
 # Terminal 3: UI
 cd cp-ui && npm run dev
 ```
+
+### UI Build / Lint / Typecheck
+
+```bash
+cd cp-ui
+npm run lint      # eslint
+npm run build     # tsc -b && vite build (this is also the typecheck)
+```
+
+There is no test suite in either package, and `control-plane` has no lint or typecheck script. To typecheck the backend, run `cd control-plane && npx tsc --noEmit`.
 
 ### Prisma Commands
 
@@ -170,6 +182,10 @@ For `nodejs`, `nextjs`, and `react` service types, if the cloned repo does not c
 - For React apps, detects Vite (looks for `vite.config.js`) vs CRA to determine build output directory (`dist` vs `build`)
 - React apps use a multi-stage build with `nginx:alpine` serving static files
 
+## Other Docs
+
+`docs/` has deeper write-ups (`logging-service.md`, `INFRA-PILOT-NODEJS.md`, diagrams). `IMPLEMENTATION_PLAN.md` and the untracked `SAAS_ROADMAP.md` describe planned work, not current behavior.
+
 ## Environment Variables
 
 Create `.env` files (not committed):
@@ -234,7 +250,8 @@ VITE_API_BASE=http://localhost:8080
 - **React Router v7** for routing
 - **@xyflow/react** (React Flow) for the interactive canvas showing service topology
 - **Socket.io client** for real-time log streaming
-- **Inline styles only** — no Tailwind, no CSS-in-JS library, no CSS files. All styling is done via `style={{...}}` objects.
+- **Inline styles only** — no Tailwind, no CSS-in-JS library. Components are styled via `style={{...}}` objects; `src/index.css` and `src/App.css` exist only for global/base rules.
+- Animations use the `motion` library.
 - Mobile users are shown a "Desktop Required" screen
 
 Routes:

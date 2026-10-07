@@ -70,12 +70,12 @@ Update this section as the work moves. The orchestrating session should tick box
 
 | Plan | Status | Started | Gate passed | Cutover done | Notes |
 |---|---|---|---|---|---|
-| Plan 1 — worker | Not started | | | | Rollback window: 2 weeks after its cutover |
+| Plan 1 — worker | In progress | 2026-10-07 | | | Rollback window: 2 weeks after its cutover |
 | Plan 2 — API + UI | Not started | | | | Point of no return for Node; take a DB backup first |
 | Plan 3 — hardening | Not started | | | | Requires Plan 1's rollback window to be closed |
 
-- **Branch:** `go-migration`, created in Plan 1, Task 1.
-- **Current task:** none yet.
+- **Branch:** `go-migration` (created 2026-10-07 off `go`; first commit holds these docs).
+- **Current task:** Plan 1, Task 1 (Engineer implementing).
 
 ## 6. Prompts to paste into a new Claude session
 

@@ -130,6 +130,7 @@ NGINX_ROUTES_DIR=../control-plane/infra/nginx/conf.d/routes
 TEMPORAL_HOST_PORT=localhost:7233
 ENV_ENCRYPTION_KEY=$(openssl rand -base64 32)
 EOF
+chmod 600 .env
 grep -c ENV_ENCRYPTION_KEY .env
 ```
 Expected: `1`. Back up this key somewhere safe: env vars encrypted with it cannot be read without it.
@@ -217,6 +218,8 @@ jobs:
 ```
 The frozen Node backend (`control-plane/`) is deliberately not built or tested.
 
+> **Amended by the Task 1 fix round** (CTO decisions SEC-1 and lows triage, `review/decisions.md`, 2026-10-07): gosec runs with `-exclude=G204` only, a "Forbid shell invocation" step precedes it, every checkout has `persist-credentials: false`, setup-go uses `go-version: '1.27.x'` + `check-latest: true`, tool versions are pinned, and a root `.gitleaksignore` covers three documented false positives. The committed `ci.yml` is the source of truth.
+
 - [ ] **Step 8: Check the workflow file parses**
 
 Run: `cd .. && ruby -ryaml -e 'YAML.load_file(".github/workflows/ci.yml"); puts "ok"' && cd control-plane-go`
@@ -229,7 +232,27 @@ git add go.mod .gitignore .golangci.yml ../.github/workflows/ci.yml
 git commit -m "chore(go): start control-plane-go module with CI and lint config"
 ```
 
-- [ ] **Step 10: Review gate.** Stop. The orchestrator runs the spec §13 reviews: Security, Staff and Verifier. For this task the Verifier checks that the tools run and the YAML parses. CI itself runs on the first push.
+- [ ] **Step 10: Review gate.** Stop. The orchestrator runs the spec §13 reviews: Security, Staff and Verifier. The Verifier checks that the tools run and the YAML parses. Do not push `go-migration` yet: the go job needs at least one package (Task 2) and the ui job needs Task 1a.
+
+**First-push gate** (CTO, STAFF-3): push only after the Task 1 fix round, Task 1a and Task 2 have all passed review, and a local dry run is green: in `control-plane-go` `go build ./... && go vet ./... && golangci-lint run && go test -race ./... && govulncheck ./... && gosec -quiet -exclude=G204 ./...` plus the shell-guard grep; `cd cp-ui && npm ci && npm run lint && npm run build`; `gitleaks detect --no-banner` over full history. Ask the user before pushing. After the push run `gh run watch` and record the run URL in `review/plan1/task-2.md`.
+
+---
+
+### Task 1a: Green cp-ui lint and build baseline
+
+Added by CTO decision STAFF-1 (`review/decisions.md`, 2026-10-07). The `ui` CI job must pass before the first push, and Plan 2 changes the UI, so it needs a green baseline.
+
+**Files:** only `cp-ui/src/**`. Do not edit `eslint.config.js`, `tsconfig*.json`, `package.json` or the lockfile.
+
+- [ ] **Step 1:** `cd cp-ui && npm ci && npm run lint; npm run build` and record the error list (expect about 20 lint errors, 5 warnings, 14 tsc errors).
+- [ ] **Step 2:** Fix each error with no behaviour or visual change:
+  - replace `any` with real types, or `unknown` plus narrowing;
+  - fix the LandingPage motion `animate` typing (TS2769) with the correct overload, never a cast to `any`;
+  - delete unreferenced locals such as `ProjectCanvasPage.runAutoLayout` (`ServiceCanvas` and `useCanvas` keep their own copy).
+  A per-line `// eslint-disable-next-line <rule> -- <reason>` is allowed only where a real type is impossible; list each in the report.
+- [ ] **Step 3:** `npm run lint && npm run build` exits 0 with 0 errors. Warnings are allowed but listed in the report.
+- [ ] **Step 4: Commit** `chore(ui): fix existing lint and type errors so CI is green`.
+- [ ] **Step 5: Review gate.** Staff, Verifier (lint, build, then `npm run dev` and load `/`, `/login`, `/projects`, `/projects/:id`: animations and canvas still work, no new console errors) and Product.
 
 ---
 
@@ -4817,6 +4840,8 @@ git commit -m "feat(go): host port allocation"
 
 ### Task 18: Nginx routes
 
+> **CTO amendment (SEC-1, `review/decisions.md` 2026-10-07):** add `// #nosec G301 -- <reason>` / `// #nosec G306 -- <reason>` to the `MkdirAll` 0o755 and `WriteFile` 0o644 calls, or tighten them to 0o750/0o640 if the Verifier confirms nginx can still read the files.
+
 **Files:**
 - Create: `control-plane-go/internal/runtime/nginx.go`
 - Test: `control-plane-go/internal/runtime/nginx_test.go`
@@ -5347,6 +5372,8 @@ git commit -m "feat(go): resume log streams for running containers on worker sta
 
 ### Task 21: Dockerfile generation
 
+> **CTO amendment (SEC-1, `review/decisions.md` 2026-10-07):** `ReadPackageJSON` and `ReactOutputDir` open files only through `os.OpenRoot(repo)` and treat any error, including a symlink escape, as "file missing". Add a test: a `package.json` symlink pointing outside the repo yields `PackageJSON{}`.
+
 **Files:**
 - Create: `control-plane-go/internal/worker/build/dockerfile.go`
 - Test: `control-plane-go/internal/worker/build/dockerfile_test.go`
@@ -5705,6 +5732,8 @@ git commit -m "feat(go): Dockerfile generation for node, next and react apps"
 ---
 
 ### Task 22: Build in an isolated BuildKit builder
+
+> **CTO amendment (SEC-1, `review/decisions.md` 2026-10-07):** in `BuildAndPush`, use `root.Lstat("Dockerfile")` on `os.OpenRoot(repo)`. Only on not-found, create it with `root.OpenFile("Dockerfile", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)` and `// #nosec G306 -- BuildKit must read it; generated, not secret`. Any existing entry, including a dangling symlink, means the repo has its own Dockerfile: write nothing. Add a test: a dangling `Dockerfile` symlink pointing into a second temp dir; the target must not exist after the build.
 
 **Files:**
 - Create: `control-plane-go/internal/worker/build/builder.go`

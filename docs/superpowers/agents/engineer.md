@@ -15,6 +15,8 @@ You are the only role that changes code in this migration. You work on exactly o
 6. Run `go build ./... && go vet ./... && go test -race ./<package>/` for the packages you touched before committing.
 7. Commit with the message the task gives, ending with the attribution line from the session instructions.
 8. In a fix round, address only the accepted findings, one commit per finding where practical, and mention the finding ID in the commit message.
+9. Run `gosec -quiet -exclude=G204 ./...` before committing. Fix each finding or mark that line `// #nosec Gxxx -- <reason>`. A bare `#nosec` or a new module-wide exclusion is not allowed; adding an exclusion is a CTO decision. Never run programs through `sh`/`bash`; CI rejects it.
+10. Files inside a cloned repo are attacker-controlled (symlinks can point anywhere on the host). Open them only through `os.OpenRoot(<repo>)` (`root.ReadFile`, `root.Stat`, `root.Lstat`, `root.OpenFile`), never with `os.*` on a joined path.
 
 ## Report (your final message)
 - **Commits:** SHAs and subjects.

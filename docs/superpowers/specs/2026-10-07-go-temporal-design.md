@@ -120,6 +120,7 @@ Keeps the existing claim, backoff and `dead` logic, and calls a `WorkflowStarter
 | CORS reflects any origin | Allow-list from `CORS_ORIGINS` (default `http://localhost:5173`). |
 | Env var values stored and returned in plain text | AES-256-GCM with `ENV_ENCRYPTION_KEY` (32 bytes, base64), stored as `enc:v1:<base64>`. Readers accept both forms during the backfill, and `go run ./cmd/migrate encrypt-env` encrypts existing rows. Lists return masked values; `?reveal=true` returns plain text to the owner. |
 | No ownership checks on most routes | Every route checks that the caller owns the project/service/deployment. Foreign or missing IDs return 404 with today's error strings. |
+| Build reads and writes files inside an untrusted cloned repo (symlinks can point anywhere on the worker host) | All access to the clone goes through `os.OpenRoot`; a generated Dockerfile is created with `O_EXCL` and never written through an existing entry. |
 
 ## 6. Correctness changes
 
@@ -150,7 +151,7 @@ Enum values are not changed, so Prisma could still read every row while rollback
   - API: requests by route pattern, status and duration.
   - Worker: workflow outcomes, build duration, deploy duration, outbox lag and dead count, plus Temporal SDK metrics.
 - **CI (first task of Plan 1):** `.github/workflows/ci.yml` runs:
-  - Go: `go vet`, `golangci-lint`, `go test -race ./...` (testcontainers run on GitHub's Ubuntu runners), `govulncheck ./...`, `gosec ./...`;
+  - Go: `go vet`, `golangci-lint`, `go test -race ./...` (testcontainers run on GitHub's Ubuntu runners), `govulncheck ./...`, `gosec ./...` (only G204 excluded; a CI step forbids `sh`/`bash` invocation in non-test code; any other suppression is a per-line `#nosec` with a reason);
   - secrets: `gitleaks` on every push;
   - `control-plane/` (frozen Node) is excluded;
   - UI: `npm ci`, `npm run lint`, `npm run build`.

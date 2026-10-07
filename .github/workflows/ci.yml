@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [master, go-migration]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: control-plane-go
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: control-plane-go/go.mod
+          cache-dependency-path: control-plane-go/go.sum
+      - run: go build ./...
+      - run: go vet ./...
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          working-directory: control-plane-go
+          version: latest
+      - run: go test -race ./...
+      - run: go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...
+      # G204: the runtime package runs git/docker with argument lists by design (no shell);
+      #       the security reviewer checks every call site.
+      # G304/G306: paths come from our own config and IDs, not from user input.
+      - run: go install github.com/securego/gosec/v2/cmd/gosec@latest && gosec -quiet -exclude=G204,G304,G306 ./...
+
+  ui:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cp-ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: cp-ui/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

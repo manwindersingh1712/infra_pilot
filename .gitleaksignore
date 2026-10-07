@@ -1,0 +1,15 @@
+# Triaged gitleaks false positives (STAFF-2, Plan 1 Task 1). One fingerprint per line.
+# Each entry names the file, the commit and why it is not a secret.
+
+# README.md:167, commit 0cd1c59: truncated example JWT ("eyJhbGciOiJIUzI1NiIs...") in the
+# /dev/login sample response. It is only a header prefix, not a usable token.
+0cd1c59f36fc54721d7cc01496642aee93ca2de2:README.md:generic-api-key:167
+
+# docs/superpowers/plans/2026-10-07-go-plan2-api.md:876, commit 8235ae6: test-fixture JWT
+# `nodeToken` (sub "user_123") signed with the test key "test-secret", used to prove the Go
+# signer verifies Node-issued tokens. No real key or user.
+8235ae653d6c725ccf288e2a89657e2f72db2455:docs/superpowers/plans/2026-10-07-go-plan2-api.md:jwt:876
+
+# docs/superpowers/plans/2026-10-07-go-plan2-api.md:4982, commit 8235ae6: prose describing a
+# manual ownership check ("As user A, `curl` user B's ..."), matched by curl-auth-user. No credential.
+8235ae653d6c725ccf288e2a89657e2f72db2455:docs/superpowers/plans/2026-10-07-go-plan2-api.md:curl-auth-user:4982

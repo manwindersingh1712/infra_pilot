@@ -28,10 +28,16 @@ jobs:
           version: latest
       - run: go test -race ./...
       - run: go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...
-      # G204: the runtime package runs git/docker with argument lists by design (no shell);
-      #       the security reviewer checks every call site.
-      # G304/G306: paths come from our own config and IDs, not from user input.
-      - run: go install github.com/securego/gosec/v2/cmd/gosec@latest && gosec -quiet -exclude=G204,G304,G306 ./...
+      - name: Forbid shell invocation (G204 is excluded)
+        run: |
+          if grep -rnE --include='*.go' --exclude='*_test.go' \
+            '(exec\.Command(Context)?\(([A-Za-z_][A-Za-z0-9_.]*, *)?|\.Run\([^,]+, *[^,]+, *)"(ba)?sh"' .; then
+            echo "::error::Run programs directly with an argument list, never through sh/bash."; exit 1
+          fi
+      # G204 excluded: the runtime runs git/docker with argument lists by design. The step above
+      # forbids shell invocation. Every other finding is fixed or annotated
+      # "// #nosec Gxxx -- <reason>" at the site.
+      - run: go install github.com/securego/gosec/v2/cmd/gosec@latest && gosec -quiet -exclude=G204 ./...
 
   ui:
     runs-on: ubuntu-latest

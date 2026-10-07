@@ -75,7 +75,7 @@ Update this section as the work moves. The orchestrating session should tick box
 | Plan 3 — hardening | Not started | | | | Requires Plan 1's rollback window to be closed |
 
 - **Branch:** `go-migration` (created 2026-10-07 off `go`; first commit holds these docs).
-- **Current task:** Plan 1, Task 1a (cp-ui lint/build baseline). Task 1 passed its gate 2026-10-07.
+- **Current task:** Plan 1, Task 2 (Configuration). Tasks 1 and 1a passed their gates 2026-10-07.
 - **Not pushed yet:** first push waits for the gate in Plan 1 Task 1 Step 10 (Task 1 fixes, Task 1a, Task 2) and needs user approval.
 
 ## 6. Prompts to paste into a new Claude session

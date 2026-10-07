@@ -36,3 +36,7 @@
 
 ## Result
 **Done 2026-10-07.** Verifier PASS, no open critical/high/medium. First-push gate (Task 1 fixes, Task 1a, Task 2) is met; push needs user approval.
+
+## First push (user-approved 2026-10-07)
+- `git push -u origin go-migration` at `77eeb6a` (14 commits ahead of master). Pre-push full-history gitleaks: no leaks.
+- GitHub Actions run: https://github.com/manwindersingh1712/infra_pilot/actions/runs/37620641256 → **success** (go: success, ui: success, secrets: success).

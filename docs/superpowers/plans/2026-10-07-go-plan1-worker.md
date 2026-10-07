@@ -258,6 +258,8 @@ Added by CTO decision STAFF-1 (`review/decisions.md`, 2026-10-07). The `ui` CI j
 
 ### Task 2: Configuration
 
+> **CTO amendment** (three 2026-10-07 "Plan 1 Task 2" entries in `review/decisions.md`): unset `APP_ENV`/`NODE_ENV` means production, values are range-checked, and `Config.LogValue`/`String` redact secrets. The code blocks below are the committed result of the fix round (`e1801fe` + `0ab3bd8`); the committed code wins over any older copy. Step 2's expected failure (`undefined: Load`) still holds for a fresh start.
+
 **Files:**
 - Create: `control-plane-go/internal/config/config.go`
 - Test: `control-plane-go/internal/config/config_test.go`
@@ -269,7 +271,10 @@ Added by CTO decision STAFF-1 (`review/decisions.md`, 2026-10-07). The `ui` CI j
 package config
 
 import (
+	"bytes"
 	"encoding/base64"
+	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -281,16 +286,23 @@ func env(m map[string]string) func(string) string {
 
 var validKey = base64.StdEncoding.EncodeToString(make([]byte, 32))
 
-func TestLoadAppliesDefaults(t *testing.T) {
-	c, err := Load(env(map[string]string{"DATABASE_URL": "postgres://x"}))
+// mustLoad fails the test if Load returns an error.
+func mustLoad(t *testing.T, m map[string]string) Config {
+	t.Helper()
+	c, err := Load(env(m))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("Load: %v", err)
 	}
+	return c
+}
+
+func TestLoadAppliesDefaults(t *testing.T) {
+	c := mustLoad(t, map[string]string{"DATABASE_URL": "postgres://x"})
 	checks := []struct {
 		name      string
 		got, want any
 	}{
-		{"AppEnv", c.AppEnv, "development"},
+		{"AppEnv", c.AppEnv, "production"},
 		{"LogFormat", c.LogFormat, "text"},
 		{"APIPort", c.APIPort, "8080"},
 		{"APIMetricsAddr", c.APIMetricsAddr, "127.0.0.1:9090"},
@@ -309,7 +321,7 @@ func TestLoadAppliesDefaults(t *testing.T) {
 		{"ContainerCPUs", c.ContainerCPUs, "0.5"},
 		{"ContainerPids", c.ContainerPids, 256},
 		{"DefaultContainerPort", c.DefaultContainerPort, 3080},
-		{"ExposeManagedPorts", c.ExposeManagedPorts, true},
+		{"ExposeManagedPorts", c.ExposeManagedPorts, false},
 		{"PortRangeStart", c.PortRangeStart, 20000},
 		{"PortRangeEnd", c.PortRangeEnd, 20100},
 		{"LegacyVolumeRoot", c.LegacyVolumeRoot, "/tmp/cp-volumes"},
@@ -319,70 +331,204 @@ func TestLoadAppliesDefaults(t *testing.T) {
 		{"NginxRoutesDir", c.NginxRoutesDir, "infra/nginx/conf.d/routes"},
 		{"NginxContainer", c.NginxContainer, "cp_nginx"},
 		{"ServiceBaseDomain", c.ServiceBaseDomain, "localhost"},
+		{"CORSOrigins", strings.Join(c.CORSOrigins, ","), "http://localhost:5173"},
+		{"IsDevelopment", c.IsDevelopment(), false},
 	}
 	for _, ck := range checks {
 		if ck.got != ck.want {
 			t.Errorf("%s = %v, want %v", ck.name, ck.got, ck.want)
 		}
 	}
-	if strings.Join(c.CORSOrigins, ",") != "http://localhost:5173" {
-		t.Errorf("CORSOrigins = %v", c.CORSOrigins)
-	}
 }
 
 func TestLoadReadsOverrides(t *testing.T) {
-	c, err := Load(env(map[string]string{
-		"DATABASE_URL": "postgres://x", "NODE_ENV": "production", "LOG_FORMAT": "json",
+	c := mustLoad(t, map[string]string{
+		"DATABASE_URL": " postgres://x ", "NODE_ENV": "production", "LOG_FORMAT": "json",
 		"REGISTRY_HOST": "localhost:5001", "CORS_ORIGINS": "https://a.test, https://b.test",
-		"HEALTH_TIMEOUT_SECONDS": "90", "ENV_ENCRYPTION_KEY": validKey,
-	}))
-	if err != nil {
-		t.Fatal(err)
+		"HEALTH_TIMEOUT_SECONDS": " 90 ", "ENV_ENCRYPTION_KEY": validKey + "\n",
+		"JWT_SECRET": "  s  ", "CLICKHOUSE_PASSWORD": " pw ", "CONTAINER_PIDS": "100",
+	})
+	checks := []struct {
+		name      string
+		got, want any
+	}{
+		{"AppEnv", c.AppEnv, "production"},
+		{"LogFormat", c.LogFormat, "json"},
+		{"RegistryHost", c.RegistryHost, "localhost:5001"},
+		{"ExposeManagedPorts", c.ExposeManagedPorts, false},
+		{"HealthTimeout", c.HealthTimeout, 90 * time.Second},
+		{"EnvEncryptionKey length", len(c.EnvEncryptionKey), 32},
+		{"CORSOrigins", strings.Join(c.CORSOrigins, ","), "https://a.test,https://b.test"},
+		{"DatabaseURL (trimmed)", c.DatabaseURL, "postgres://x"},
+		{"JWTSecret (trimmed)", c.JWTSecret, "s"},
+		{"ClickHousePassword (not trimmed)", c.ClickHousePassword, " pw "},
+		{"ContainerPids", c.ContainerPids, 100},
 	}
-	if c.AppEnv != "production" || c.LogFormat != "json" || c.RegistryHost != "localhost:5001" ||
-		c.ExposeManagedPorts || c.HealthTimeout != 90*time.Second || len(c.EnvEncryptionKey) != 32 ||
-		strings.Join(c.CORSOrigins, ",") != "https://a.test,https://b.test" {
-		t.Fatalf("overrides not applied: %+v", c)
-	}
-}
-
-func TestAppEnvPrefersAppEnvOverNodeEnv(t *testing.T) {
-	c, _ := Load(env(map[string]string{"DATABASE_URL": "x", "APP_ENV": "development", "NODE_ENV": "production"}))
-	if !c.IsDevelopment() {
-		t.Fatal("APP_ENV should win over NODE_ENV")
-	}
-}
-
-func TestLoadErrors(t *testing.T) {
-	cases := map[string]map[string]string{
-		"missing DATABASE_URL":   {},
-		"non-integer port":       {"DATABASE_URL": "x", "DEFAULT_CONTAINER_PORT": "abc"},
-		"non-boolean expose":     {"DATABASE_URL": "x", "EXPOSE_MANAGED_PORTS": "maybe"},
-		"short encryption key":   {"DATABASE_URL": "x", "ENV_ENCRYPTION_KEY": base64.StdEncoding.EncodeToString([]byte("short"))},
-		"non-base64 encryption":  {"DATABASE_URL": "x", "ENV_ENCRYPTION_KEY": "%%%"},
-	}
-	for name, m := range cases {
-		if _, err := Load(env(m)); err == nil {
-			t.Errorf("%s: expected an error", name)
+	for _, ck := range checks {
+		if ck.got != ck.want {
+			t.Errorf("%s = %v, want %v", ck.name, ck.got, ck.want)
 		}
 	}
 }
 
-func TestRequireWorkerAndAPI(t *testing.T) {
-	c, _ := Load(env(map[string]string{"DATABASE_URL": "x"}))
-	if c.RequireWorker() == nil || c.RequireAPI() == nil {
-		t.Fatal("missing ENV_ENCRYPTION_KEY must fail")
+func TestAppEnv(t *testing.T) {
+	cases := []struct {
+		name        string
+		env         map[string]string
+		wantDev     bool
+		wantExposed bool
+	}{
+		{"unset means production", map[string]string{}, false, false},
+		{"APP_ENV=development", map[string]string{"APP_ENV": "development"}, true, true},
+		{"NODE_ENV=development (Node .env)", map[string]string{"NODE_ENV": "development"}, true, true},
+		{"APP_ENV wins over NODE_ENV", map[string]string{"APP_ENV": "development", "NODE_ENV": "production"}, true, true},
+		{"APP_ENV=production wins", map[string]string{"APP_ENV": "production", "NODE_ENV": "development"}, false, false},
+		{"dev can turn exposure off", map[string]string{"APP_ENV": "development", "EXPOSE_MANAGED_PORTS": "false"}, true, false},
 	}
-	c, _ = Load(env(map[string]string{"DATABASE_URL": "x", "ENV_ENCRYPTION_KEY": validKey}))
+	for _, tc := range cases {
+		tc.env["DATABASE_URL"] = "x"
+		c := mustLoad(t, tc.env)
+		if c.IsDevelopment() != tc.wantDev || c.ExposeManagedPorts != tc.wantExposed {
+			t.Errorf("%s: IsDevelopment=%v ExposeManagedPorts=%v, want %v %v",
+				tc.name, c.IsDevelopment(), c.ExposeManagedPorts, tc.wantDev, tc.wantExposed)
+		}
+	}
+}
+
+func TestCORSOriginFallback(t *testing.T) {
+	c := mustLoad(t, map[string]string{"DATABASE_URL": "x", "CORS_ORIGIN": "https://old.test"})
+	if got := strings.Join(c.CORSOrigins, ","); got != "https://old.test" {
+		t.Errorf("CORS_ORIGIN fallback: got %q", got)
+	}
+	c = mustLoad(t, map[string]string{"DATABASE_URL": "x", "CORS_ORIGIN": "https://old.test", "CORS_ORIGINS": "https://new.test"})
+	if got := strings.Join(c.CORSOrigins, ","); got != "https://new.test" {
+		t.Errorf("CORS_ORIGINS must win: got %q", got)
+	}
+}
+
+func TestLoadErrors(t *testing.T) {
+	cases := []struct {
+		name    string
+		env     map[string]string
+		wantMsg string
+	}{
+		{"missing DATABASE_URL", map[string]string{}, "missing required env: DATABASE_URL"},
+		{"whitespace DATABASE_URL", map[string]string{"DATABASE_URL": "  "}, "missing required env: DATABASE_URL"},
+		{"non-integer container port", map[string]string{"DEFAULT_CONTAINER_PORT": "abc"}, "DEFAULT_CONTAINER_PORT must be an integer"},
+		{"container port 0", map[string]string{"DEFAULT_CONTAINER_PORT": "0"}, "DEFAULT_CONTAINER_PORT must be an integer"},
+		{"container port 65536", map[string]string{"DEFAULT_CONTAINER_PORT": "65536"}, "DEFAULT_CONTAINER_PORT must be an integer"},
+		{"range start 0", map[string]string{"DATA_PLANE_PORT_RANGE_START": "0"}, "DATA_PLANE_PORT_RANGE_START must be an integer"},
+		{"range end 70000", map[string]string{"DATA_PLANE_PORT_RANGE_END": "70000"}, "DATA_PLANE_PORT_RANGE_END must be an integer"},
+		{"range start > end", map[string]string{"DATA_PLANE_PORT_RANGE_START": "30000", "DATA_PLANE_PORT_RANGE_END": "20000"}, "must not be greater than DATA_PLANE_PORT_RANGE_END"},
+		{"health timeout 0", map[string]string{"HEALTH_TIMEOUT_SECONDS": "0"}, "HEALTH_TIMEOUT_SECONDS must be an integer from 1 to 3600"},
+		{"health timeout -5", map[string]string{"HEALTH_TIMEOUT_SECONDS": "-5"}, "HEALTH_TIMEOUT_SECONDS must be an integer from 1 to 3600"},
+		{"health timeout too big", map[string]string{"HEALTH_TIMEOUT_SECONDS": "99999999999999"}, "HEALTH_TIMEOUT_SECONDS must be an integer from 1 to 3600"},
+		{"pids 0 (unlimited)", map[string]string{"CONTAINER_PIDS": "0"}, "CONTAINER_PIDS must be an integer"},
+		{"pids -1 (unlimited)", map[string]string{"CONTAINER_PIDS": "-1"}, "CONTAINER_PIDS must be an integer"},
+		{"builder cpus 0", map[string]string{"BUILDER_CPUS": "0"}, "BUILDER_CPUS must be an integer"},
+		{"container cpus 0 (unlimited)", map[string]string{"CONTAINER_CPUS": "0"}, "CONTAINER_CPUS must be a number of CPUs"},
+		{"container cpus over 1024", map[string]string{"CONTAINER_CPUS": "2000"}, "CONTAINER_CPUS must be a number of CPUs greater than 0 and at most 1024"},
+		{"container cpus text", map[string]string{"CONTAINER_CPUS": "half"}, "CONTAINER_CPUS must be a number of CPUs"},
+		{"container memory 0 (unlimited)", map[string]string{"CONTAINER_MEMORY": "0"}, "CONTAINER_MEMORY must be a positive size"},
+		{"container memory unit", map[string]string{"CONTAINER_MEMORY": "512mb"}, "CONTAINER_MEMORY must be a positive size"},
+		{"builder memory", map[string]string{"BUILDER_MEMORY": "-1"}, "BUILDER_MEMORY must be a positive size"},
+		{"api port text", map[string]string{"API_PORT": "http"}, "API_PORT must be a port"},
+		{"nginx port 0", map[string]string{"NGINX_PORT": "0"}, "NGINX_PORT must be a port"},
+		{"non-boolean expose", map[string]string{"EXPOSE_MANAGED_PORTS": "maybe"}, "EXPOSE_MANAGED_PORTS must be true or false"},
+		{"expose in production", map[string]string{"APP_ENV": "production", "EXPOSE_MANAGED_PORTS": "true"}, "EXPOSE_MANAGED_PORTS=true is not allowed when APP_ENV=production"},
+		{"expose with env unset", map[string]string{"EXPOSE_MANAGED_PORTS": "true"}, "EXPOSE_MANAGED_PORTS=true is not allowed when APP_ENV=production"},
+		{"unknown APP_ENV", map[string]string{"APP_ENV": "prod"}, "APP_ENV (or NODE_ENV) must be one of development, production"},
+		{"unknown NODE_ENV", map[string]string{"NODE_ENV": "test"}, "APP_ENV (or NODE_ENV) must be one of development, production"},
+		{"unknown LOG_FORMAT", map[string]string{"LOG_FORMAT": "logfmt"}, "LOG_FORMAT must be one of text, json"},
+		{"wildcard CORS", map[string]string{"CORS_ORIGINS": "https://a.test,*"}, "* is not allowed"},
+		{"short encryption key", map[string]string{"ENV_ENCRYPTION_KEY": base64.StdEncoding.EncodeToString([]byte("short"))}, "ENV_ENCRYPTION_KEY must decode to 32 bytes, got 5"},
+		{"non-base64 encryption", map[string]string{"ENV_ENCRYPTION_KEY": "%%%"}, "ENV_ENCRYPTION_KEY must be base64"},
+	}
+	for _, tc := range cases {
+		if _, ok := tc.env["DATABASE_URL"]; !ok && tc.name != "missing DATABASE_URL" {
+			tc.env["DATABASE_URL"] = "x"
+		}
+		_, err := Load(env(tc.env))
+		if err == nil {
+			t.Errorf("%s: expected an error", tc.name)
+			continue
+		}
+		if !strings.Contains(err.Error(), tc.wantMsg) {
+			t.Errorf("%s: error %q does not contain %q", tc.name, err, tc.wantMsg)
+		}
+	}
+}
+
+func TestRequireWorker(t *testing.T) {
+	c := mustLoad(t, map[string]string{"DATABASE_URL": "x"})
+	if err := c.RequireWorker(); err == nil || !strings.Contains(err.Error(), "ENV_ENCRYPTION_KEY is required") {
+		t.Fatalf("missing key: got %v", err)
+	}
+	c = mustLoad(t, map[string]string{"DATABASE_URL": "x", "ENV_ENCRYPTION_KEY": validKey})
 	if err := c.RequireWorker(); err != nil {
 		t.Fatal(err)
 	}
-	if c.RequireAPI() == nil {
-		t.Fatal("API also needs JWT_SECRET")
+}
+
+func TestRequireAPI(t *testing.T) {
+	strong := strings.Repeat("k", 32)
+	cases := []struct {
+		name    string
+		env     map[string]string
+		wantMsg string // "" means no error
+	}{
+		{"missing key", map[string]string{"JWT_SECRET": strong}, "ENV_ENCRYPTION_KEY is required"},
+		{"missing secret", map[string]string{"ENV_ENCRYPTION_KEY": validKey}, "JWT_SECRET is required"},
+		{"whitespace secret", map[string]string{"ENV_ENCRYPTION_KEY": validKey, "JWT_SECRET": "   "}, "JWT_SECRET is required"},
+		{"production short", map[string]string{"ENV_ENCRYPTION_KEY": validKey, "JWT_SECRET": "s"}, "at least 32 bytes"},
+		{"production dev placeholder", map[string]string{"ENV_ENCRYPTION_KEY": validKey, "JWT_SECRET": "dev-secret-change-me"}, "placeholder"},
+		{"production example placeholder", map[string]string{"ENV_ENCRYPTION_KEY": validKey, "JWT_SECRET": "generate-with-openssl-rand-base64-32"}, "placeholder"},
+		{"production strong", map[string]string{"ENV_ENCRYPTION_KEY": validKey, "JWT_SECRET": strong}, ""},
+		{"development placeholder ok", map[string]string{"APP_ENV": "development", "ENV_ENCRYPTION_KEY": validKey, "JWT_SECRET": "dev-secret-change-me"}, ""},
+		{"development short ok", map[string]string{"APP_ENV": "development", "ENV_ENCRYPTION_KEY": validKey, "JWT_SECRET": "s"}, ""},
 	}
-	c.JWTSecret = "s"
-	if err := c.RequireAPI(); err != nil {
-		t.Fatal(err)
+	for _, tc := range cases {
+		tc.env["DATABASE_URL"] = "x"
+		err := mustLoad(t, tc.env).RequireAPI()
+		switch {
+		case tc.wantMsg == "" && err != nil:
+			t.Errorf("%s: unexpected error %v", tc.name, err)
+		case tc.wantMsg != "" && (err == nil || !strings.Contains(err.Error(), tc.wantMsg)):
+			t.Errorf("%s: error %v does not contain %q", tc.name, err, tc.wantMsg)
+		}
+	}
+}
+
+func TestSecretsNeverPrinted(t *testing.T) {
+	secrets := map[string]string{
+		"jwt":        "jwt-secret-value-0123456789abcdefghij",
+		"key":        validKey,
+		"dbPassword": "dbpass123",
+		"redis":      "redispass456",
+		"clickhouse": "chpass789",
+	}
+	c := mustLoad(t, map[string]string{
+		"DATABASE_URL":        "postgresql://cp:" + secrets["dbPassword"] + "@db:5432/cp",
+		"REDIS_URL":           "redis://:" + secrets["redis"] + "@redis:6379",
+		"JWT_SECRET":          secrets["jwt"],
+		"ENV_ENCRYPTION_KEY":  secrets["key"],
+		"CLICKHOUSE_PASSWORD": secrets["clickhouse"],
+	})
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+	logger.Info("config", "cfg", c)
+	slog.New(slog.NewTextHandler(&buf, nil)).Info("config", "cfg", c)
+	fmt.Fprintf(&buf, "%v %+v %s", c, c, c)
+	out := buf.String()
+	for name, s := range secrets {
+		if strings.Contains(out, s) {
+			t.Errorf("%s secret leaked: %s", name, out)
+		}
+	}
+	for _, want := range []string{"appEnv", "production", "jwtSecretSet", "db:5432"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q: %s", want, out)
+		}
 	}
 }
 ```
@@ -403,13 +549,17 @@ package config
 import (
 	"encoding/base64"
 	"fmt"
+	"log/slog"
+	"net/url"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 )
 
 type Config struct {
-	AppEnv    string // development | production (APP_ENV, falling back to NODE_ENV)
+	AppEnv    string // development | production (APP_ENV, falling back to NODE_ENV; unset means production)
 	LogFormat string // text | json
 
 	APIPort           string
@@ -445,13 +595,24 @@ type Config struct {
 	ProbeImage           string
 	HealthTimeout        time.Duration
 
-	NginxPort         string
+	NginxPort string
+	// NginxRoutesDir is resolved against the process working directory when
+	// relative. The dev .env sets it explicitly; the worker logs the absolute path.
 	NginxRoutesDir    string
 	NginxContainer    string
 	ServiceBaseDomain string
 }
 
+const maxHealthTimeoutSeconds = 3600
+
+// Docker size: a positive integer with an optional b/k/m/g unit, e.g. 512m.
+var dockerSize = regexp.MustCompile(`^[1-9][0-9]*[bkmgBKMG]?$`)
+
+// Placeholders that must never be used as a JWT secret outside development.
+var placeholderSecrets = []string{"dev-secret-change-me", "generate-with-openssl-rand-base64-32"}
+
 // Load reads configuration through getenv (os.Getenv in production).
+// Every value except CLICKHOUSE_PASSWORD is trimmed of surrounding whitespace.
 func Load(getenv func(string) string) (Config, error) {
 	str := func(key, def string) string {
 		if v := strings.TrimSpace(getenv(key)); v != "" {
@@ -460,19 +621,19 @@ func Load(getenv func(string) string) (Config, error) {
 		return def
 	}
 	var invalid []string
-	num := func(key string, def int) int {
-		v := getenv(key)
+	num := func(key string, def, lo, hi int) int {
+		v := strings.TrimSpace(getenv(key))
 		if v == "" {
 			return def
 		}
 		n, err := strconv.Atoi(v)
-		if err != nil {
-			invalid = append(invalid, fmt.Sprintf("%s must be an integer, got %q", key, v))
+		if err != nil || n < lo || n > hi {
+			invalid = append(invalid, fmt.Sprintf("%s must be an integer from %d to %d, got %q", key, lo, hi, v))
 		}
 		return n
 	}
 	flag := func(key string, def bool) bool {
-		v := getenv(key)
+		v := strings.TrimSpace(getenv(key))
 		if v == "" {
 			return def
 		}
@@ -482,16 +643,43 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 		return b
 	}
+	oneOf := func(key, v string, allowed ...string) string {
+		if !slices.Contains(allowed, v) {
+			invalid = append(invalid, fmt.Sprintf("%s must be one of %s, got %q", key, strings.Join(allowed, ", "), v))
+		}
+		return v
+	}
+	port := func(key, def string) string {
+		v := str(key, def)
+		if n, err := strconv.Atoi(v); err != nil || n < 1 || n > 65535 {
+			invalid = append(invalid, fmt.Sprintf("%s must be a port from 1 to 65535, got %q", key, v))
+		}
+		return v
+	}
+	size := func(key, def string) string {
+		v := str(key, def)
+		if !dockerSize.MatchString(v) {
+			invalid = append(invalid, fmt.Sprintf("%s must be a positive size like 512m or 2g, got %q", key, v))
+		}
+		return v
+	}
+	cpus := func(key, def string) string {
+		v := str(key, def)
+		if f, err := strconv.ParseFloat(v, 64); err != nil || !(f > 0) || f > 1024 {
+			invalid = append(invalid, fmt.Sprintf("%s must be a number of CPUs greater than 0 and at most 1024, got %q", key, v))
+		}
+		return v
+	}
 
-	appEnv := str("APP_ENV", str("NODE_ENV", "development"))
+	appEnv := oneOf("APP_ENV (or NODE_ENV)", str("APP_ENV", str("NODE_ENV", "production")), "development", "production")
 	c := Config{
 		AppEnv:    appEnv,
-		LogFormat: str("LOG_FORMAT", "text"),
+		LogFormat: oneOf("LOG_FORMAT", str("LOG_FORMAT", "text"), "text", "json"),
 
-		APIPort:           str("API_PORT", "8080"),
-		DatabaseURL:       getenv("DATABASE_URL"),
-		JWTSecret:         getenv("JWT_SECRET"),
-		CORSOrigins:       splitList(str("CORS_ORIGINS", "http://localhost:5173")),
+		APIPort:           port("API_PORT", "8080"),
+		DatabaseURL:       strings.TrimSpace(getenv("DATABASE_URL")),
+		JWTSecret:         strings.TrimSpace(getenv("JWT_SECRET")),
+		CORSOrigins:       splitList(str("CORS_ORIGINS", str("CORS_ORIGIN", "http://localhost:5173"))),
 		APIMetricsAddr:    str("API_METRICS_ADDR", "127.0.0.1:9090"),
 		WorkerMetricsAddr: str("WORKER_METRICS_ADDR", "127.0.0.1:9091"),
 
@@ -501,32 +689,41 @@ func Load(getenv func(string) string) (Config, error) {
 		RedisURL:           str("REDIS_URL", "redis://localhost:6379"),
 		ClickHouseURL:      str("CLICKHOUSE_URL", "http://localhost:8123"),
 		ClickHouseUser:     str("CLICKHOUSE_USER", "default"),
-		ClickHousePassword: getenv("CLICKHOUSE_PASSWORD"),
+		ClickHousePassword: getenv("CLICKHOUSE_PASSWORD"), // not trimmed: spaces may be part of it
 
 		RegistryHost:  str("REGISTRY_HOST", "localhost:5000"),
 		BuildWorkdir:  str("BUILD_WORKDIR", "/tmp/cp-builds"),
 		BuilderName:   str("BUILDER_NAME", "cp-builder"),
-		BuilderMemory: str("BUILDER_MEMORY", "2g"),
-		BuilderCPUs:   num("BUILDER_CPUS", 2),
+		BuilderMemory: size("BUILDER_MEMORY", "2g"),
+		BuilderCPUs:   num("BUILDER_CPUS", 2, 1, 1024),
 
-		ContainerMemory:      str("CONTAINER_MEMORY", "512m"),
-		ContainerCPUs:        str("CONTAINER_CPUS", "0.5"),
-		ContainerPids:        num("CONTAINER_PIDS", 256),
-		DefaultContainerPort: num("DEFAULT_CONTAINER_PORT", 3080),
+		ContainerMemory:      size("CONTAINER_MEMORY", "512m"),
+		ContainerCPUs:        cpus("CONTAINER_CPUS", "0.5"),
+		ContainerPids:        num("CONTAINER_PIDS", 256, 1, 1<<22),
+		DefaultContainerPort: num("DEFAULT_CONTAINER_PORT", 3080, 1, 65535),
 		ExposeManagedPorts:   flag("EXPOSE_MANAGED_PORTS", appEnv == "development"),
-		PortRangeStart:       num("DATA_PLANE_PORT_RANGE_START", 20000),
-		PortRangeEnd:         num("DATA_PLANE_PORT_RANGE_END", 20100),
+		PortRangeStart:       num("DATA_PLANE_PORT_RANGE_START", 20000, 1, 65535),
+		PortRangeEnd:         num("DATA_PLANE_PORT_RANGE_END", 20100, 1, 65535),
 		LegacyVolumeRoot:     str("LEGACY_VOLUME_ROOT", "/tmp/cp-volumes"),
 		ProbeImage:           str("PROBE_IMAGE", "busybox:1.36"),
-		HealthTimeout:        time.Duration(num("HEALTH_TIMEOUT_SECONDS", 60)) * time.Second,
+		HealthTimeout:        time.Duration(num("HEALTH_TIMEOUT_SECONDS", 60, 1, maxHealthTimeoutSeconds)) * time.Second,
 
-		NginxPort:         str("NGINX_PORT", "80"),
+		NginxPort:         port("NGINX_PORT", "80"),
 		NginxRoutesDir:    str("NGINX_ROUTES_DIR", "infra/nginx/conf.d/routes"),
 		NginxContainer:    str("NGINX_CONTAINER", "cp_nginx"),
 		ServiceBaseDomain: str("SERVICE_BASE_DOMAIN", "localhost"),
 	}
 
-	if raw := getenv("ENV_ENCRYPTION_KEY"); raw != "" {
+	if c.PortRangeStart > c.PortRangeEnd {
+		invalid = append(invalid, fmt.Sprintf("DATA_PLANE_PORT_RANGE_START (%d) must not be greater than DATA_PLANE_PORT_RANGE_END (%d)", c.PortRangeStart, c.PortRangeEnd))
+	}
+	if c.ExposeManagedPorts && appEnv == "production" {
+		invalid = append(invalid, "EXPOSE_MANAGED_PORTS=true is not allowed when APP_ENV=production")
+	}
+	if slices.Contains(c.CORSOrigins, "*") {
+		invalid = append(invalid, "CORS_ORIGINS must list exact origins; * is not allowed")
+	}
+	if raw := strings.TrimSpace(getenv("ENV_ENCRYPTION_KEY")); raw != "" {
 		key, err := base64.StdEncoding.DecodeString(raw)
 		switch {
 		case err != nil:
@@ -564,7 +761,53 @@ func (c Config) RequireAPI() error {
 	if c.JWTSecret == "" {
 		return fmt.Errorf("config: JWT_SECRET is required")
 	}
+	if !c.IsDevelopment() {
+		if slices.Contains(placeholderSecrets, c.JWTSecret) {
+			return fmt.Errorf("config: JWT_SECRET is a placeholder; generate one with: openssl rand -base64 32")
+		}
+		if len(c.JWTSecret) < 32 {
+			return fmt.Errorf("config: JWT_SECRET must be at least 32 bytes outside development, got %d", len(c.JWTSecret))
+		}
+	}
 	return nil
+}
+
+// LogValue keeps secrets out of logs: it reports whether each secret is set,
+// and URLs with any password replaced.
+func (c Config) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("appEnv", c.AppEnv),
+		slog.String("logFormat", c.LogFormat),
+		slog.String("apiPort", c.APIPort),
+		slog.String("databaseURL", redactURL(c.DatabaseURL)),
+		slog.Bool("jwtSecretSet", c.JWTSecret != ""),
+		slog.Bool("envEncryptionKeySet", len(c.EnvEncryptionKey) > 0),
+		slog.Any("corsOrigins", c.CORSOrigins),
+		slog.String("temporalHostPort", c.TemporalHostPort),
+		slog.String("temporalNamespace", c.TemporalNamespace),
+		slog.String("redisURL", redactURL(c.RedisURL)),
+		slog.String("clickHouseURL", redactURL(c.ClickHouseURL)),
+		slog.String("clickHouseUser", c.ClickHouseUser),
+		slog.Bool("clickHousePasswordSet", c.ClickHousePassword != ""),
+		slog.String("registryHost", c.RegistryHost),
+		slog.Bool("exposeManagedPorts", c.ExposeManagedPorts),
+		slog.String("nginxRoutesDir", c.NginxRoutesDir),
+		slog.String("serviceBaseDomain", c.ServiceBaseDomain),
+	)
+}
+
+// String makes fmt print the same redacted view as LogValue.
+func (c Config) String() string { return c.LogValue().String() }
+
+func redactURL(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "[unparseable]"
+	}
+	return u.Redacted()
 }
 
 func splitList(s string) []string {
@@ -3913,6 +4156,8 @@ git commit -m "feat(go): tiered log queries and duplicate-free flush"
 ---
 
 ### Task 15: Logging, worker metrics and outbox counts
+
+> **CTO amendment (Task 2 redaction note, `review/decisions.md` 2026-10-07):** Config is logged only as `"config", cfg` (`Config.LogValue` redacts); never log secret fields individually.
 
 **Files:**
 - Create: `control-plane-go/internal/logging/logging.go`, `control-plane-go/internal/metrics/metrics.go`
@@ -7647,6 +7892,8 @@ git commit -m "feat(go): outbox starts Temporal workflows idempotently"
 
 ### Task 26: Temporal in docker-compose and the worker binary
 
+> **CTO amendment (STAFF-5 of Task 2, `review/decisions.md` 2026-10-07):** the startup log line includes the absolute nginx routes dir and the redacted config, see the `worker up` line below.
+
 **Files:**
 - Modify: `control-plane/docker-compose.yml` (adds the `temporal` service; this is infrastructure, not Node code)
 - Create: `control-plane-go/cmd/worker/main.go`
@@ -7709,6 +7956,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -7864,7 +8112,11 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	})
 	start("metrics server", func() error { return metrics.Serve(ctx, cfg.WorkerMetricsAddr, m.Handler(), logger) })
 
-	logger.Info("worker up", "taskQueue", workflows.TaskQueue, "temporal", cfg.TemporalHostPort)
+	routesAbs, err := filepath.Abs(cfg.NginxRoutesDir)
+	if err != nil { // only fails if the working directory is unreadable
+		routesAbs = cfg.NginxRoutesDir
+	}
+	logger.Info("worker up", "taskQueue", workflows.TaskQueue, "temporal", cfg.TemporalHostPort, "routesDir", routesAbs, "config", cfg)
 	<-ctx.Done()
 	logger.Info("worker shutting down")
 	wg.Wait()
@@ -7900,7 +8152,7 @@ Expected: no build, vet or lint output, and every package `ok`.
 
 With compose up (including `temporal`) and the Node **worker stopped**, run:
 `go run ./cmd/worker`
-Expected log lines: `resumed log streams count=…`, `outbox starter running`, `metrics listening addr=127.0.0.1:9091`, `worker up taskQueue=deployments`. In the Temporal UI, under Workers, the `deployments` task queue shows one poller. Then:
+Expected log lines: `resumed log streams count=…`, `outbox starter running`, `metrics listening addr=127.0.0.1:9091`, `worker up taskQueue=deployments routesDir=<absolute path> config.appEnv=… config.jwtSecretSet=true config.envEncryptionKeySet=true config.databaseURL=postgresql://cp:xxxxx@…` (never secret values). In the Temporal UI, under Workers, the `deployments` task queue shows one poller. Then:
 ```bash
 curl -s 127.0.0.1:9091/metrics | grep -E '^cp_outbox_events'
 ```

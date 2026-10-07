@@ -82,7 +82,7 @@ Every activity has its own timeout and a retry policy: 10 s initial interval, ×
    - resource limits;
    - named volume `cp-vol-<serviceId>` mounted at `/data` for managed DBs;
    - Redis runs with `--requirepass`;
-   - no published ports, except managed DB ports bound to `127.0.0.1` when `EXPOSE_MANAGED_PORTS=true` (default on in dev only).
+   - no published ports, except managed DB ports bound to `127.0.0.1` when `EXPOSE_MANAGED_PORTS=true` (default on in dev only; refused when `APP_ENV=production`).
 7. **WaitHealthy:** a TCP probe of `svc-<serviceId>:<port>` from a throwaway `busybox` container on the project network, polled every 2 s for up to 60 s.
 8. **SwitchRoute:** write the nginx server block and reload nginx (app services only).
 9. **MarkDeployed.**
@@ -115,7 +115,7 @@ Keeps the existing claim, backoff and `dead` logic, and calls a `WorkflowStarter
 | Builds run on the host Docker daemon | `docker buildx build --builder cp-builder --push`. `cp-builder` is a `docker-container` BuildKit builder with CPU and memory limits, so Dockerfile steps run inside BuildKit, not on the host daemon. Rootless BuildKit or a separate build VM is the next step (Phase 6). |
 | JWTs never expire | 15-minute access tokens with an `exp` claim, plus 30-day opaque refresh tokens stored as SHA-256 hashes in a new `RefreshToken` table. Refresh tokens rotate on every use and are revoked on logout. Endpoints: `POST /auth/refresh`, `POST /auth/logout`. Tokens without `exp` (issued by Node) are rejected after the Plan 2 cutover, so users log in again once. |
 | The JWT would sit in the SSE URL | `POST /logs/deployments/:id/stream-ticket` returns a single-use ticket: Redis key with a 60 s TTL, consumed with `GETDEL`. The stream URL is `?ticket=`. |
-| `POST /dev/login` is open | Registered only when `APP_ENV=development` (falls back to `NODE_ENV`). |
+| `POST /dev/login` is open | Registered only when `APP_ENV=development` (falls back to `NODE_ENV`; unset means production, any other value is a startup error). |
 | No brute-force protection | Per-IP token bucket on `/auth/*`: 10 requests/min, burst 5 (in memory; fine for a single API instance). |
 | CORS reflects any origin | Allow-list from `CORS_ORIGINS` (default `http://localhost:5173`). |
 | Env var values stored and returned in plain text | AES-256-GCM with `ENV_ENCRYPTION_KEY` (32 bytes, base64), stored as `enc:v1:<base64>`. Readers accept both forms during the backfill, and `go run ./cmd/migrate encrypt-env` encrypts existing rows. Lists return masked values; `?reveal=true` returns plain text to the owner. |

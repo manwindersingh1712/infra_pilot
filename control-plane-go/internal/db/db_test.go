@@ -3,6 +3,8 @@ package db
 import (
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestNormalizeURLStripsPrismaSchemaParam(t *testing.T) {
@@ -51,6 +53,40 @@ func TestNormalizeURLParseErrorsDoNotLeakPassword(t *testing.T) {
 		}
 		if strings.Contains(err.Error(), tc.pw) {
 			t.Errorf("normalizeURL(%q) error leaks %q: %v", tc.raw, tc.pw, err)
+		}
+	}
+}
+
+func TestNormalizeURLPassesKeywordValueDSNUnchanged(t *testing.T) {
+	const dsn = "host=localhost port=5432 user=cp password=S3CRETPW dbname=x sslmode=disable"
+	got, schema, err := normalizeURL(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != dsn || schema != "" {
+		t.Fatalf("got %q, schema %q; want input unchanged", got, schema)
+	}
+	cfg, err := pgxpool.ParseConfig(got)
+	if err != nil {
+		t.Fatalf("pgxpool.ParseConfig: %v", err)
+	}
+	cc := cfg.ConnConfig
+	if cc.Host != "localhost" || cc.Port != 5432 || cc.User != "cp" || cc.Database != "x" || cc.Password != "S3CRETPW" {
+		t.Fatalf("parsed host=%q port=%d user=%q db=%q", cc.Host, cc.Port, cc.User, cc.Database)
+	}
+}
+
+func TestNormalizeURLOnlyRewritesPostgresSchemes(t *testing.T) {
+	for _, raw := range []string{
+		"POSTGRES://h/db?schema=app&sslmode=disable",
+		"PostgreSQL://h/db?schema=app",
+	} {
+		got, schema, err := normalizeURL(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if schema != "app" || strings.Contains(got, "schema=") {
+			t.Errorf("normalizeURL(%q) = %q, schema %q", raw, got, schema)
 		}
 	}
 }

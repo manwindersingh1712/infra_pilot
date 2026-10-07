@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -39,8 +40,14 @@ func Connect(ctx context.Context, rawURL string) (*pgxpool.Pool, error) {
 }
 
 // normalizeURL removes Prisma's ?schema= parameter, which Postgres rejects as
-// an unknown runtime parameter, and returns it separately.
+// an unknown runtime parameter, and returns it separately. Only postgres:// and
+// postgresql:// URLs are rewritten; anything else (such as a keyword/value DSN)
+// is returned unchanged for pgx to parse, because round-tripping it through
+// url.Parse mangles it and pgx redacts passwords in its own errors.
 func normalizeURL(raw string) (string, string, error) {
+	if !isPostgresURL(raw) {
+		return raw, "", nil
+	}
 	u, err := url.Parse(raw)
 	if err != nil {
 		// url.Error embeds the raw URL (and EscapeError part of it), which
@@ -52,4 +59,9 @@ func normalizeURL(raw string) (string, string, error) {
 	q.Del("schema")
 	u.RawQuery = q.Encode()
 	return u.String(), schema, nil
+}
+
+func isPostgresURL(raw string) bool {
+	scheme, _, ok := strings.Cut(raw, "://")
+	return ok && (strings.EqualFold(scheme, "postgres") || strings.EqualFold(scheme, "postgresql"))
 }

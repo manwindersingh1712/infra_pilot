@@ -79,6 +79,8 @@ npm run prisma:migrate    # Run migrations in dev mode
 npm run prisma:studio     # Open Prisma Studio GUI
 ```
 
+> **Migration in progress:** goose (`control-plane-go/migrations`, `go run ./cmd/migrate`) now owns the schema. Do not run `npm run prisma:migrate`, `prisma migrate dev`, `prisma db push` or `prisma db pull` against the dev DB: Prisma's drift detection sees `goose_db_version` and `migrate dev` offers to reset (wipe) the database.
+
 ## TypeScript Configuration
 
 The control-plane uses `NodeNext` module resolution with `@/*` path aliases mapped to the repo root:

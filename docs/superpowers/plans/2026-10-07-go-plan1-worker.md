@@ -1229,6 +1229,8 @@ diff <(dump control_plane) <(dump control_plane_go_check) && echo SCHEMAS_MATCH
 ```
 Expected: `SCHEMAS_MATCH`. If the diff shows a column order or type difference, fix `00001_baseline.sql` to match the Prisma side, then run `docker exec cp_postgres dropdb -U cp control_plane_go_check` and repeat Steps 9–10.
 
+> **Review note (STAFF-3, 2026-10-07):** a dev DB whose `public` schema was recreated by a Prisma reset also shows `COMMENT ON SCHEMA public IS '';` and `REVOKE USAGE ON SCHEMA public FROM PUBLIC;`. Those two lines are not from any migration and may be ignored. The stronger gate, used in review, is to build a fresh DB by applying `control-plane/prisma/migrations/*/migration.sql` in order (`psql -v ON_ERROR_STOP=1`) and diff it against `control_plane_go_check`: that must be identical.
+
 - [ ] **Step 11: Baseline the existing dev database and clean up**
 
 ```bash
@@ -1236,7 +1238,9 @@ go run ./cmd/migrate baseline
 go run ./cmd/migrate status
 docker exec cp_postgres dropdb -U cp control_plane_go_check
 ```
-Expected: `status` lists `00001_baseline.sql` as applied. The existing data is untouched; the command only inserts one row into `goose_db_version`.
+Expected: `status` lists `00001_baseline.sql` as applied. The existing data is untouched; the command only creates `goose_db_version` (goose's version-0 row plus a row for version 1). `baseline` refuses unless all 10 Prisma migrations are recorded as finished in `_prisma_migrations` (fix round STAFF-1).
+
+**From here on, never run `npm run prisma:migrate` (or `prisma migrate dev` / `prisma db push` / `prisma db pull`).** goose owns the schema. Prisma's drift detection now sees `goose_db_version` and `migrate dev` would offer to reset the database. `prisma migrate status`/`deploy` and Prisma Client at runtime are unaffected (STAFF-2).
 
 - [ ] **Step 12: Commit**
 

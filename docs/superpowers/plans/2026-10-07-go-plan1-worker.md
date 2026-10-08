@@ -1968,6 +1968,8 @@ git commit -m "feat(go): store core, JSON models and user queries"
 
 ### Task 7: Projects, services, env vars and the `Seed` fixture
 
+> **Note from Task 6 review (2026-10-08):** Task 6 added `//nolint:unused` on `store.collect` because its first caller is here. Remove that directive in this task's commit (nolintlint is not enabled, so nothing else will flag it). Backlog STAFF-1 (T6) suggests adding timestamp-UTC and no-password-in-JSON assertions alongside this task's scan tests (optional, low).
+
 **Files:**
 - Create: `control-plane-go/internal/store/projects.go`, `control-plane-go/internal/store/services.go`, `control-plane-go/internal/store/envvars.go`, `control-plane-go/internal/testutil/fixtures.go`, `control-plane-go/internal/store/deployments.go` (a one-function stub that Task 8 replaces)
 - Test: `control-plane-go/internal/store/projects_test.go`

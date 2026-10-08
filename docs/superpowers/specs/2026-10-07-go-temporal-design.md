@@ -67,8 +67,8 @@ Package layout (Go module `infrapilot`):
 
 Every activity has its own timeout and a retry policy: 10 s initial interval, ×2 backoff, 6 attempts unless noted. A failure that cannot succeed on retry (missing repo, unknown service type) is a non-retryable `ApplicationError`.
 
-1. **LoadJob.** Return early if the status is not `queued`.
-2. **Built services only:**
+1. **LoadJob.** Return early if the status is not `queued`. The result never carries the repo URL (it may embed a token); `BuildImage` reads it from the store.
+2. **Built services only, when the deployment has no image yet** (a Node-built row skips straight to step 3):
    1. `SetStatus(building)`.
    2. `BuildImage`: buildx, StartToClose 30 min, heartbeat 1 min.
    3. `MarkBuilt(image)`.
@@ -88,7 +88,7 @@ Every activity has its own timeout and a retry policy: 10 s initial interval, ×
 9. **MarkDeployed.**
 10. **RetirePrevious** (app services only): stop and remove containers of this service's older deployments, and set their `stoppedAt`.
 11. **StartLogStream.**
-12. **On final failure:** `MarkFailed` in a disconnected context, then remove the new container if it exists. The previous deployment keeps serving traffic. Failed runs are visible in the Temporal UI, which replaces the DLQ.
+12. **On final failure:** `MarkFailed` in a disconnected context; it never overwrites `deployed`. The new container is removed only if traffic was not yet switched to it. After `SwitchRoute`, the container is kept, because it is serving. After `MarkDeployed`, the deployment stays `deployed`: a `RetirePrevious` or `StartLogStream` failure fails the workflow run (visible in the Temporal UI) but runs no cleanup. Failed runs are visible in the Temporal UI, which replaces the DLQ.
 
 ### TeardownWorkflow(serviceID, purgeData)
 
@@ -121,12 +121,13 @@ Keeps the existing claim, backoff and `dead` logic, and calls a `WorkflowStarter
 | Env var values stored and returned in plain text | AES-256-GCM with `ENV_ENCRYPTION_KEY` (32 bytes, base64), stored as `enc:v1:<base64>`. Readers accept both forms during the backfill, and `go run ./cmd/migrate encrypt-env` encrypts existing rows. Lists return masked values; `?reveal=true` returns plain text to the owner. |
 | No ownership checks on most routes | Every route checks that the caller owns the project/service/deployment. Foreign or missing IDs return 404 with today's error strings. |
 | Build reads and writes files inside an untrusted cloned repo (symlinks can point anywhere on the worker host) | All access to the clone goes through `os.OpenRoot`; a generated Dockerfile is created with `O_EXCL` and never written through an existing entry. |
+| Build runs `git` with a user-supplied repo URL, branch and commit (option injection such as `--upload-pack`; `file://`, `ext::` and ssh reach the worker's own files, keys and credential helpers); repo URLs may embed access tokens | The API and the worker both validate with `internal/gitsrc`: the repo URL is `https://` with a host, no whitespace and no leading `-`; the branch and commit are ref-safe names with no leading `-` and no `..`. git runs with `-c protocol.allow=never -c protocol.https.allow=always -c credential.helper=`, and `--` / `--end-of-options` comes before positionals. Repo URL userinfo never appears in logs, Temporal inputs or results, or error text; API responses mask it. Proper private-repo credentials come with GitHub integration (roadmap Phase 3). |
 
 ## 6. Correctness changes
 
 1. **Redeploys no longer leak containers:** `RetirePrevious` and `stoppedAt`.
 2. **Managed DB redeploys no longer corrupt data:** `StopPrevious` before start.
-3. **Managed data survives reboots:** named volumes instead of `/tmp/cp-volumes`. A one-time move copies existing `/tmp/cp-volumes/<serviceId>` data into `cp-vol-<serviceId>` on first deploy, if the directory exists.
+3. **Managed data survives reboots:** named volumes instead of `/tmp/cp-volumes`. A one-time move copies existing Node-era data into `cp-vol-<serviceId>` on first deploy: from the deployment's `volumePath` if it lies inside `LEGACY_VOLUME_ROOT`, otherwise from `LEGACY_VOLUME_ROOT/<serviceId>`, if the directory exists.
 4. **Traffic switches only after the app is up:** `WaitHealthy` before `SwitchRoute`.
 5. **Services can be deleted:** `DELETE /services/:id?purgeData=true|false` plus `TeardownWorkflow`.
 6. **Log streams survive worker restarts:** on startup, re-attach to every running deployment that has a `containerId` and no `stoppedAt`.

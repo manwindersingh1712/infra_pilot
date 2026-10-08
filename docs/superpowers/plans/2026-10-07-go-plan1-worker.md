@@ -6012,6 +6012,13 @@ git commit -m "feat(go): Dockerfile generation for node, next and react apps"
 
 > **CTO amendment (SEC-1, `review/decisions.md` 2026-10-07):** in `BuildAndPush`, use `root.Lstat("Dockerfile")` on `os.OpenRoot(repo)`. Only on not-found, create it with `root.OpenFile("Dockerfile", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)` and `// #nosec G306 -- BuildKit must read it; generated, not secret`. Any existing entry, including a dangling symlink, means the repo has its own Dockerfile: write nothing. Add a test: a dangling `Dockerfile` symlink pointing into a second temp dir; the target must not exist after the build.
 
+> **CTO amendment (FWD-A1, FWD-A2, `review/decisions.md` 2026-10-08):**
+> Files: also create `control-plane-go/internal/gitsrc/gitsrc.go` and `gitsrc_test.go` (the API reuses them in Plan 2 Task 8).
+> `package gitsrc`: `var ErrInvalid = errors.New("invalid build source")`. `ValidRepoURL(s) error`: `len(s) <= 2048`, no ASCII control chars or whitespace, `url.Parse` succeeds, `Scheme == "https"`, `Host != ""`, `Opaque == ""`, and `Hostname()` does not start with `-`. `ValidBranch(s) error`: matches `^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$`, has no `..`, `//` or `@{`, and does not end in `/`, `.` or `.lock`. `ValidRef(s) error` (commitSha, also used as the image tag): matches `^[A-Za-z0-9][A-Za-z0-9._-]{3,99}$` and has no `..`. `Validate(repoURL, branch, ref) error` runs all three. Every error wraps `ErrInvalid` and names the field, never the value. `RedactURL(s) string`: on a parse error return `[unparseable]`; if `u.User != nil`, set `u.User = url.User("****")`; return `u.String()` (this covers a token-as-username, which `url.Redacted` misses). `Scrub(msg, rawURL) string`: if `rawURL` has userinfo, replace in `msg`, in this order, `u.User.String()`, the unescaped password (if set) and the unescaped username with `****`.
+> `gitsrc_test.go`, table tests. Accepted: `https://github.com/x/y.git`, `https://tok@github.com/x/y`, branch `main`, `feature/a-b`, ref `HEAD`, `main`, `abcd`, 40-hex. Rejected: `file:///etc`, `ext::sh -c id`, `ssh://git@h/x`, `git@github.com:x/y.git`, `http://h/x`, `https://-oProxyCommand=x/y`, `https://h/x y`, branch `--upload-pack=x`, `-b`, `a..b`, `a/`, `x.lock`, ref `--upload-pack=touch /tmp/pwn`, `-x12`, `ab`, `a..bc`, `feature/x`. Each rejection satisfies `errors.Is(err, ErrInvalid)`, and its message does not contain the input. `RedactURL("https://user:pw1@h/x")` and `RedactURL("https://ghp_T0K@h/x")` both contain neither secret. A `Scrub` test where git-style text echoes the URL (`fatal: unable to access 'https://user:pw%21@h/x/'`, with both escaped and unescaped forms) removes the secret.
+> `builder.go`: first line of `BuildAndPush`: `if err := gitsrc.Validate(s.RepoURL, s.Branch, s.CommitSha); err != nil { return err }`, before any filesystem or runner call. `var gitSafe = []string{"-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", "credential.helper="}` and `func gitArgs(a ...string) []string { return append(slices.Clone(gitSafe), a...) }`. The commands become `git <gitSafe> clone --depth 1 --branch <branch> -- <repoURL> <repo>`, `git <gitSafe> fetch --depth 50 --end-of-options origin <sha>` and `git checkout --end-of-options <sha>` (both still best effort). Log `"repo", gitsrc.RedactURL(s.RepoURL)`. A clone error returns `fmt.Errorf("git clone: %s", gitsrc.Scrub(err.Error(), s.RepoURL))` (no `%w`), and if `ctx.Err() != nil` it returns `ctx.Err()` first. Requires git >= 2.24 for `--end-of-options`: Step 5 also runs `git --version` and `git -C <tmp repo> checkout --end-of-options main`, and records both.
+> Tests: update `fakeDocker` to find the git subcommand after the `-c k=v` pairs (helper `gitSub(args)`). Update the `want` list to the exact new argv. Valid values replace `RepoURL: "u"`, `CommitSha: "c"` and `Branch: "b"` in the other tests. New `TestBuildAndPushRejectsUnsafeSource`: the same reject rows through `BuildAndPush` → `errors.Is(err, gitsrc.ErrInvalid)`, and `r.Commands()` is empty. New `TestBuildAndPushHidesRepoCredentials`: `RepoURL` is `https://user:ghp_SECRET1@example.com/r.git` (and a second case `https://ghp_TOKEN2@example.com/r.git`). The fake clone returns `fatal: unable to access '<that URL>/': 403`. The builder logs to a JSON slog handler on a buffer. Neither the returned error nor the buffer contains `ghp_`. In a success run the buffer contains `****@example.com`.
+
 **Files:**
 - Create: `control-plane-go/internal/worker/build/builder.go`
 - Test: `control-plane-go/internal/worker/build/builder_test.go`
@@ -6260,6 +6267,12 @@ git commit -m "feat(go): build images in a resource-limited buildx builder"
 ---
 
 ### Task 23: Deploy activities
+
+> **CTO amendment (FWD-A1, FWD-A2, FWD-A3, `review/decisions.md` 2026-10-08):**
+> `LoadJob` sets `job.RepoURL = nil` before returning, with the comment "may embed a token; must never enter workflow history. BuildImage reads it from the store." `BuildImage(ctx, in BuildInput) (string, error)` with `type BuildInput struct{ DeploymentID string }`: it calls `a.Store.GetJob`, maps `ErrNotFound` to non-retryable `NotFound`, keeps the nil/empty `RepoURL` → `MissingRepo` check, then builds as now. If the error satisfies `errors.Is(err, gitsrc.ErrInvalid)`, it returns `temporal.NewNonRetryableApplicationError("invalid_build_source", "InvalidSource", nil)` (no cause). Other builder errors pass through, since they are already scrubbed. `legacyDir`: use `*job.VolumePath` only if it is absolute and `rel, err := filepath.Rel(filepath.Clean(a.Cfg.LegacyVolumeRoot), filepath.Clean(p))` gives `err == nil`, `rel != "."`, `rel` not `..` and not prefixed by `../`. Otherwise use `filepath.Join(LegacyVolumeRoot, job.ServiceID)` and log a warning with the deployment ID only.
+> Tests: `TestLoadJobOmitsRepoURL`: seed a service with `https://ghp_SECRET9@example.com/x.git`. `LoadJob`'s result has `RepoURL == nil`, and `converter.GetDefaultDataConverter().ToPayload(result)` data does not contain `ghp_`. `TestBuildImage` uses `BuildInput{DeploymentID}`, the fake builder receives the stored URL, and a nil URL still gives `MissingRepo`. New case: a fake builder returning `fmt.Errorf("x: %w", gitsrc.ErrInvalid)` → non-retryable `InvalidSource`. `TestLegacyDir`: `VolumePath` `/etc` → default dir; `<root>/../x` → default; `<root>/s1` → used; `<root>` itself → default; `cp-vol-x` (non-absolute) → default.
+>
+> **CTO amendment (STAFF-4 T8, `review/decisions.md` 2026-10-08):** add `func (s *Store) MarkFailed(ctx, id string) error` running `UPDATE "Deployment" SET "status" = 'failed', "updatedAt" = now() WHERE "id" = $1 AND "status" <> 'deployed'` (0 rows → nil). The `MarkFailed` activity uses it. Store test: a deployed row stays deployed and a deploying row becomes failed. Activity test: `MarkFailed` on a deployed row leaves it deployed. Add the Task 8 STAFF-1 assertions while editing `deployments_test.go`.
 
 **Files:**
 - Create: `control-plane-go/internal/workflows/names.go`, `control-plane-go/internal/workflows/activities.go`
@@ -7165,6 +7178,12 @@ git commit -m "feat(go): deploy activities with isolation, credentials, health c
 
 ### Task 24: `DeployWorkflow`
 
+> **CTO amendment (STAFF-4 T8, `review/decisions.md` 2026-10-08):** `deploy` returns `(stage, error)`, where `type stage struct{ routeSwitched, deployed bool }`. It sets `routeSwitched` after `SwitchRoute` succeeds (managed services never switch a route, so it stays false for them) and `deployed` after `MarkDeployed` succeeds. Post-deploy errors are wrapped as `fmt.Errorf("post-deploy %s: %w", step, err)`. `DeployWorkflow` on error: if `st.deployed`, log a warning (`workflow.GetLogger`) and return the error with no cleanup activities. Otherwise run `MarkFailed`, and run `RemoveContainer` only if `!st.routeSwitched`. Build gate: `if !managed && job.Image == nil { claim building, BuildImage, MarkBuilt }`; with an image already set, go straight to `claim(queued, deploying)` and run with `*job.Image`.
+> Tests (trace-based, like the existing ones): `TestRetireFailureAfterDeployKeepsDeployment` (non-retryable `RetirePrevious` error → trace has `deployed`, has no `failed` and no `remove:cp-d1`, workflow error non-nil); `TestLogStreamFailureKeepsDeployment` (same for `StartLogStream`); `TestMarkDeployedFailureAfterSwitchKeepsContainer` (→ `failed` and no `remove:`); `TestHealthFailureRemovesContainer` (existing or kept: `failed` and `remove:cp-d1`, no `route`); `TestPrebuiltImageSkipsBuild` (nodejs job with `Image` set → no `BuildImage`, no building claim, `RunContainer` gets that image); managed DB failure after `RunContainer` and before `MarkDeployed` → `failed` and `remove:`.
+> Review: the CTO checks these four paths in the Task 24 review (spec §13 already lists the CTO for this task).
+>
+> **CTO amendment (FWD-A2):** `BuildImage` is called with `BuildInput{DeploymentID: job.DeploymentID}`. Mocks change to `func(context.Context, BuildInput) (string, error)`, and the test `newJob` keeps `RepoURL` nil (as `LoadJob` now returns it). The other Task 24 changes are in the next entry.
+
 **Files:**
 - Create: `control-plane-go/internal/workflows/deploy.go`
 - Test: `control-plane-go/internal/workflows/deploy_test.go`
@@ -7926,6 +7945,8 @@ git commit -m "feat(go): outbox starts Temporal workflows idempotently"
 
 > **CTO amendment (STAFF-5 of Task 2, `review/decisions.md` 2026-10-07):** the startup log line includes the absolute nginx routes dir and the redacted config, see the `worker up` line below.
 
+> **CTO amendment (FWD-A2, `review/decisions.md` 2026-10-08):** before the worker starts, `os.Setenv("GIT_TERMINAL_PROMPT", "0")`, so a private repo without credentials fails fast instead of hanging until the 30-minute build timeout. One line plus a startup-test assertion.
+
 **Files:**
 - Modify: `control-plane/docker-compose.yml` (adds the `temporal` service; this is infrastructure, not Node code)
 - Create: `control-plane-go/cmd/worker/main.go`
@@ -8202,6 +8223,8 @@ git commit -m "feat(go): worker binary and Temporal dev server in compose"
 ---
 
 ### Task 27: Plan 1 gate and worker cutover
+
+> **CTO amendment, Step 1 (FWD-A1, `review/decisions.md` 2026-10-08)** (Product and Security inputs; read-only): `SELECT "id", "serviceType", split_part("repoUrl", ':', 1) AS scheme FROM "Service" WHERE "repoUrl" IS NOT NULL AND "repoUrl" !~ '^https://';` and `SELECT count(*) FROM "Deployment" WHERE "commitSha" !~ '^[A-Za-z0-9][A-Za-z0-9._-]{3,99}$' AND "status" = 'queued';`. Never print full URLs. Builds for those services will fail with `invalid_build_source` after cutover, and Product names this in the release note.
 
 **Files:**
 - Modify: `docs/superpowers/review/decisions.md` (the CTO's go/no-go)

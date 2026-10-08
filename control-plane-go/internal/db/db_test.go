@@ -3,6 +3,7 @@ package db
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -88,5 +89,57 @@ func TestNormalizeURLOnlyRewritesPostgresSchemes(t *testing.T) {
 		if schema != "app" || strings.Contains(got, "schema=") {
 			t.Errorf("normalizeURL(%q) = %q, schema %q", raw, got, schema)
 		}
+	}
+}
+
+func TestPoolConfigParseErrorsDoNotLeakPassword(t *testing.T) {
+	// pgx 5.11 accepts `password = X`, `password=X\ Y` and `Password=X` as
+	// written (libpq syntax, and an unknown runtime parameter), so those
+	// inputs carry `sslmode=bogus` to force a ParseConfig error; pgx's own
+	// error then echoes them because only a well-formed `password=` token is
+	// redacted.
+	cases := []struct{ dsn, secret string }{
+		{`host=h password = PW1X sslmode=bogus`, "PW1X"},
+		{`host=h password=PW2\ SECRET2X sslmode=bogus`, "SECRET2X"},
+		{`host=h password='PW3X`, "PW3X"},
+		{`host=h connect_timeout='2 password=PW4X`, "PW4X"},
+		{`host=h Password=PW5X sslmode=bogus`, "PW5X"},
+	}
+	for _, tc := range cases {
+		_, err := poolConfig(tc.dsn)
+		if err == nil {
+			t.Errorf("poolConfig(%q): expected error", tc.dsn)
+			continue
+		}
+		msg := err.Error()
+		if strings.Contains(msg, tc.secret) || strings.Contains(strings.ToLower(msg), "password") {
+			t.Errorf("poolConfig(%q) error leaks: %v", tc.dsn, err)
+		}
+		if msg != "parse DATABASE_URL: invalid connection string" {
+			t.Errorf("poolConfig(%q) error = %q, want the fixed message", tc.dsn, msg)
+		}
+	}
+}
+
+func TestPoolConfigDefaultsConnectTimeout(t *testing.T) {
+	cfg, err := poolConfig("postgres://h/db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.ConnConfig.ConnectTimeout; got != 10*time.Second {
+		t.Fatalf("ConnectTimeout = %v, want 10s", got)
+	}
+	if got := cfg.ConnConfig.RuntimeParams["timezone"]; got != "UTC" {
+		t.Fatalf("timezone = %q, want UTC", got)
+	}
+}
+
+func TestPoolConfigKeepsExplicitConnectTimeout(t *testing.T) {
+	cfg, err := poolConfig("postgres://h/db?connect_timeout=3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.ConnConfig.ConnectTimeout; got != 3*time.Second {
+		t.Fatalf("ConnectTimeout = %v, want 3s", got)
 	}
 }

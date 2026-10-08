@@ -24,6 +24,11 @@ jobs:
           check-latest: true
           cache-dependency-path: control-plane-go/go.sum
       - run: go build ./...
+      - name: Forbid test helpers in production binaries
+        run: |
+          if go list -deps ./cmd/... | grep -E 'testcontainers|github.com/moby/|infrapilot/internal/testutil'; then
+            echo "::error::production binaries must not import test helpers"; exit 1
+          fi
       - run: go vet ./...
       - uses: golangci/golangci-lint-action@v8
         with:

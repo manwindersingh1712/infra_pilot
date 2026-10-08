@@ -81,6 +81,17 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	})
 }
 
+// migrateTo applies pending migrations up to and including version. Only the
+// schema drift test uses it, to compare migration 1 with the Prisma schema.
+func migrateTo(ctx context.Context, pool *pgxpool.Pool, version int64) error {
+	return withProvider(pool, func(p *goose.Provider) error {
+		if _, err := p.UpTo(ctx, version); err != nil {
+			return fmt.Errorf("apply migrations to %d: %w", version, err)
+		}
+		return nil
+	})
+}
+
 // Status returns every migration with its state, in version order.
 func Status(ctx context.Context, pool *pgxpool.Pool) ([]*goose.MigrationStatus, error) {
 	var statuses []*goose.MigrationStatus

@@ -75,7 +75,8 @@ Update this section as the work moves. The orchestrating session should tick box
 | Plan 3 — hardening | Not started | | | | Requires Plan 1's rollback window to be closed |
 
 - **Branch:** `go-migration` (created 2026-10-07 off `go`; first commit holds these docs).
-- **Current task:** Plan 1, Task 9 (Outbox queries). Tasks 1, 1a, 2, 3 (2026-10-07), 4, 5, 5a, 6, 7 and 8 (2026-10-08) passed their gates.
+- **Current task:** Plan 1, Task 10 (Encrypted secrets). Tasks 1, 1a, 2, 3 (2026-10-07), 4, 5, 5a, 6, 7, 8 (2026-10-08) and 9 (2026-10-09) passed their gates.
+- **Environment note:** subagents on this machine are often killed by the 10-minute stream watchdog during long commands. If a reviewer stalls twice, the orchestrator may run that reviewer's mechanical checks itself (background commands, throwaway files outside the repo) and record it in the task file.
 - **Inserted tasks:** 1a (cp-ui lint/build baseline), 5a (db and test-helper hardening). See `review/decisions.md`.
 - **Dev DB:** baselined by goose on 2026-10-07 (pre-baseline backup in that session's scratchpad). Never run `npm run prisma:migrate` again.
 - **Pushed:** `go-migration` first pushed 2026-10-07 (CI green). Every later push needs user approval.

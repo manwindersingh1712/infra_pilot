@@ -5,9 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"path"
+	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/pressly/goose/v3"
 
 	"infrapilot/internal/db"
 )
@@ -39,10 +43,30 @@ func run() error {
 	case "up":
 		return db.Migrate(ctx, pool)
 	case "status":
-		return db.Status(ctx, pool)
+		statuses, err := db.Status(ctx, pool)
+		if err != nil {
+			return err
+		}
+		return printStatus(os.Stdout, statuses)
 	case "baseline":
 		return db.MarkBaseline(ctx, pool)
 	default:
 		return fmt.Errorf("unknown command %q (want up|status|baseline)", os.Args[1])
 	}
+}
+
+// printStatus writes one line per migration: "<version> <file> applied <time>"
+// or "<version> <file> pending".
+func printStatus(w io.Writer, statuses []*goose.MigrationStatus) error {
+	for _, s := range statuses {
+		line := fmt.Sprintf("%05d %s pending", s.Source.Version, path.Base(s.Source.Path))
+		if s.State == goose.StateApplied {
+			line = fmt.Sprintf("%05d %s applied %s", s.Source.Version, path.Base(s.Source.Path),
+				s.AppliedAt.UTC().Format(time.RFC3339))
+		}
+		if _, err := fmt.Fprintln(w, line); err != nil {
+			return err
+		}
+	}
+	return nil
 }

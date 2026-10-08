@@ -8,10 +8,11 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
+	"github.com/pressly/goose/v3/database"
+	"github.com/pressly/goose/v3/lock"
 
 	"infrapilot/migrations"
 )
@@ -32,86 +33,108 @@ var prismaMigrations = []string{
 	"20260410091445_add_canvas_positioning",
 }
 
-// baselineLockID is the pg_advisory_xact_lock key that serialises concurrent
-// `migrate baseline` runs against the same database.
-const baselineLockID int64 = 0x1F2A_B0A5_E11E
+// migrationLockID is the Postgres session advisory lock key shared by
+// `migrate up` and `migrate baseline`, so concurrent runs of either against
+// the same database are serialised.
+const migrationLockID int64 = 0x1F2A_B0A5_E11E
 
-// querier is the read API shared by *pgxpool.Pool and pgx.Tx.
-type querier interface {
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+// versionTable is goose's version table (its default name).
+const versionTable = "goose_db_version"
+
+// newMigrationLocker returns the session locker on migrationLockID. A new one
+// is built per operation because its retry budget is stateful and is never
+// reset between calls.
+func newMigrationLocker() (lock.SessionLocker, error) {
+	l, err := lock.NewPostgresSessionLocker(lock.WithLockID(migrationLockID))
+	if err != nil {
+		return nil, fmt.Errorf("migration lock: %w", err)
+	}
+	return l, nil
 }
 
-func gooseDB(pool *pgxpool.Pool) (*sql.DB, error) {
-	goose.SetBaseFS(migrations.FS)
-	if err := goose.SetDialect("postgres"); err != nil {
-		return nil, fmt.Errorf("goose dialect: %w", err)
+// withProvider runs fn with a goose Provider over pool's connections. The
+// Provider holds the migration lock while it applies migrations.
+func withProvider(pool *pgxpool.Pool, fn func(p *goose.Provider) error) error {
+	locker, err := newMigrationLocker()
+	if err != nil {
+		return err
 	}
-	return stdlib.OpenDBFromPool(pool), nil
+	sqlDB := stdlib.OpenDBFromPool(pool)
+	p, err := goose.NewProvider(goose.DialectPostgres, sqlDB, migrations.FS,
+		goose.WithSessionLocker(locker),
+		goose.WithDisableGlobalRegistry(true))
+	if err != nil {
+		_ = sqlDB.Close()
+		return fmt.Errorf("goose provider: %w", err)
+	}
+	defer func() { _ = p.Close() }()
+	return fn(p)
 }
 
 // Migrate applies all pending migrations.
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
-	sqlDB, err := gooseDB(pool)
-	if err != nil {
-		return err
-	}
-	defer sqlDB.Close()
-	if err := goose.UpContext(ctx, sqlDB, "."); err != nil {
-		return fmt.Errorf("apply migrations: %w", err)
-	}
-	return nil
+	return withProvider(pool, func(p *goose.Provider) error {
+		if _, err := p.Up(ctx); err != nil {
+			return fmt.Errorf("apply migrations: %w", err)
+		}
+		return nil
+	})
 }
 
-// Status prints applied and pending migrations.
-func Status(ctx context.Context, pool *pgxpool.Pool) error {
-	sqlDB, err := gooseDB(pool)
-	if err != nil {
-		return err
-	}
-	defer sqlDB.Close()
-	if err := goose.StatusContext(ctx, sqlDB, "."); err != nil {
-		return fmt.Errorf("migration status: %w", err)
-	}
-	return nil
+// Status returns every migration with its state, in version order.
+func Status(ctx context.Context, pool *pgxpool.Pool) ([]*goose.MigrationStatus, error) {
+	var statuses []*goose.MigrationStatus
+	err := withProvider(pool, func(p *goose.Provider) error {
+		var err error
+		statuses, err = p.Status(ctx)
+		if err != nil {
+			return fmt.Errorf("migration status: %w", err)
+		}
+		return nil
+	})
+	return statuses, err
 }
 
 // MarkBaseline records migration 1 as applied on a database whose schema was
 // already created by Prisma, so `migrate up` does not try to create it again.
-// It refuses unless every Prisma migration finished, so a partially migrated
-// database is never marked as matching the baseline.
-func MarkBaseline(ctx context.Context, pool *pgxpool.Pool) error {
-	// Read-only pre-check, so a refused baseline does not leave a goose
-	// version table behind. The checks are repeated under the lock below.
-	done, err := baselineApplied(ctx, pool)
+// It refuses unless the Prisma migration history is exactly the frozen one and
+// fully finished, so a partially migrated or diverged database is never
+// marked as matching the baseline. It holds the same lock as Migrate and does
+// all its checks and writes in one transaction, so a refusal leaves no goose
+// version table behind.
+func MarkBaseline(ctx context.Context, pool *pgxpool.Pool) (retErr error) {
+	locker, err := newMigrationLocker()
 	if err != nil {
 		return err
 	}
-	if done {
-		return nil
-	}
-	if err := checkPrismaSchema(ctx, pool); err != nil {
-		return err
-	}
-
-	sqlDB, err := gooseDB(pool)
+	store, err := database.NewStore(database.DialectPostgres, versionTable)
 	if err != nil {
-		return err
+		return fmt.Errorf("goose store: %w", err)
 	}
-	defer sqlDB.Close()
-	if _, err := goose.EnsureDBVersionContext(ctx, sqlDB); err != nil {
-		return fmt.Errorf("goose version table: %w", err)
+	sqlDB := stdlib.OpenDBFromPool(pool)
+	defer func() { _ = sqlDB.Close() }()
+	conn, err := sqlDB.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("baseline connection: %w", err)
 	}
+	defer func() { _ = conn.Close() }()
 
-	tx, err := pool.Begin(ctx)
+	if err := locker.SessionLock(ctx, conn); err != nil {
+		return fmt.Errorf("migration lock: %w", err)
+	}
+	defer func() {
+		if err := locker.SessionUnlock(context.WithoutCancel(ctx), conn); err != nil && retErr == nil {
+			retErr = fmt.Errorf("migration unlock: %w", err)
+		}
+	}()
+
+	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin baseline transaction: %w", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, baselineLockID); err != nil {
-		return fmt.Errorf("baseline lock: %w", err)
-	}
-	done, err = baselineApplied(ctx, tx)
+	defer func() { _ = tx.Rollback() }()
+
+	done, err := baselineApplied(ctx, tx)
 	if err != nil {
 		return err
 	}
@@ -121,26 +144,50 @@ func MarkBaseline(ctx context.Context, pool *pgxpool.Pool) error {
 	if err := checkPrismaSchema(ctx, tx); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO goose_db_version (version_id, is_applied) VALUES (1, true)`); err != nil {
+	exists, err := tableExists(ctx, tx, versionTable)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		if err := store.CreateVersionTable(ctx, tx); err != nil {
+			return fmt.Errorf("create goose version table: %w", err)
+		}
+		if err := store.Insert(ctx, tx, database.InsertRequest{Version: 0}); err != nil {
+			return fmt.Errorf("record goose version 0: %w", err)
+		}
+	}
+	if err := store.Insert(ctx, tx, database.InsertRequest{Version: 1}); err != nil {
 		return fmt.Errorf("record baseline: %w", err)
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit baseline: %w", err)
 	}
 	return nil
 }
 
+// querier is the read API of *sql.Tx used by the baseline checks.
+type querier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+// tableExists reports whether name resolves to a table on the search_path.
+func tableExists(ctx context.Context, q querier, name string) (bool, error) {
+	var exists bool
+	if err := q.QueryRowContext(ctx, `SELECT to_regclass($1) IS NOT NULL`, name).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check table %s: %w", name, err)
+	}
+	return exists, nil
+}
+
 // baselineApplied reports whether goose already records version 1 or later.
 func baselineApplied(ctx context.Context, q querier) (bool, error) {
+	exists, err := tableExists(ctx, q, versionTable)
+	if err != nil || !exists {
+		return false, err
+	}
 	var applied bool
-	err := q.QueryRow(ctx, `SELECT to_regclass('goose_db_version') IS NOT NULL`).Scan(&applied)
-	if err != nil {
-		return false, fmt.Errorf("goose version table: %w", err)
-	}
-	if !applied {
-		return false, nil
-	}
-	err = q.QueryRow(ctx,
+	err = q.QueryRowContext(ctx,
 		`SELECT EXISTS (SELECT 1 FROM goose_db_version WHERE version_id >= 1 AND is_applied)`).Scan(&applied)
 	if err != nil {
 		return false, fmt.Errorf("goose version: %w", err)
@@ -149,17 +196,19 @@ func baselineApplied(ctx context.Context, q querier) (bool, error) {
 }
 
 // checkPrismaSchema verifies that the Prisma schema exists and that its
-// migration history is complete, with nothing failed or still in progress.
+// migration history is exactly the frozen one, with nothing failed or still
+// in progress.
 func checkPrismaSchema(ctx context.Context, q querier) error {
-	var exists bool
-	if err := q.QueryRow(ctx, `SELECT to_regclass('"Deployment"') IS NOT NULL`).Scan(&exists); err != nil {
-		return fmt.Errorf("check existing schema: %w", err)
+	exists, err := tableExists(ctx, q, `"Deployment"`)
+	if err != nil {
+		return err
 	}
 	if !exists {
 		return errors.New("no existing schema found: run `migrate up` instead of `baseline`")
 	}
-	if err := q.QueryRow(ctx, `SELECT to_regclass('"_prisma_migrations"') IS NOT NULL`).Scan(&exists); err != nil {
-		return fmt.Errorf("check prisma migrations table: %w", err)
+	exists, err = tableExists(ctx, q, `"_prisma_migrations"`)
+	if err != nil {
+		return err
 	}
 	if !exists {
 		return incompleteErr("missing", prismaMigrations)
@@ -173,6 +222,9 @@ func checkPrismaSchema(ctx context.Context, q querier) error {
 	if missing := missingPrismaMigrations(finished); len(missing) > 0 {
 		return incompleteErr("missing", missing)
 	}
+	if unknown := unknownPrismaMigrations(finished); len(unknown) > 0 {
+		return incompleteErr("unknown", unknown)
+	}
 	// A failed or in-progress migration has no finished_at. One that was
 	// resolved with `prisma migrate resolve --rolled-back` is not pending.
 	unfinished, err := migrationNames(ctx, q,
@@ -181,30 +233,54 @@ func checkPrismaSchema(ctx context.Context, q querier) error {
 		return err
 	}
 	if len(unfinished) > 0 {
-		names := make([]string, 0, len(unfinished))
-		for n := range unfinished {
-			names = append(names, n)
-		}
-		slices.Sort(names)
-		return incompleteErr("unfinished", names)
+		return incompleteErr("unfinished", sortedKeys(unfinished))
 	}
 	return nil
 }
 
-func migrationNames(ctx context.Context, q querier, query string) (map[string]bool, error) {
-	rows, err := q.Query(ctx, query)
+func migrationNames(ctx context.Context, q querier, query string) (_ map[string]bool, retErr error) {
+	rows, err := q.QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("read prisma migrations: %w", err)
 	}
-	names, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, fmt.Errorf("read prisma migrations: %w", err)
-	}
-	set := make(map[string]bool, len(names))
-	for _, n := range names {
+	defer func() {
+		if err := rows.Close(); err != nil && retErr == nil {
+			retErr = fmt.Errorf("read prisma migrations: %w", err)
+		}
+	}()
+	set := map[string]bool{}
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, fmt.Errorf("read prisma migrations: %w", err)
+		}
 		set[n] = true
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read prisma migrations: %w", err)
+	}
 	return set, nil
+}
+
+func sortedKeys(set map[string]bool) []string {
+	keys := make([]string, 0, len(set))
+	for k := range set {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	return keys
+}
+
+// unknownPrismaMigrations returns the finished migrations that are not in
+// prismaMigrations, sorted.
+func unknownPrismaMigrations(finished map[string]bool) []string {
+	var unknown []string
+	for _, n := range sortedKeys(finished) {
+		if !slices.Contains(prismaMigrations, n) {
+			unknown = append(unknown, n)
+		}
+	}
+	return unknown
 }
 
 // missingPrismaMigrations returns the entries of prismaMigrations not in
@@ -220,6 +296,11 @@ func missingPrismaMigrations(applied map[string]bool) []string {
 }
 
 func incompleteErr(kind string, names []string) error {
+	if kind == "unknown" {
+		return fmt.Errorf("prisma migrations diverged from the frozen Node schema (%s: %s): "+
+			"this database has migrations the goose baseline does not match; refusing to baseline",
+			kind, strings.Join(names, ", "))
+	}
 	return fmt.Errorf("prisma migrations incomplete (%s: %s): run prisma migrate deploy with the Node backend first",
 		kind, strings.Join(names, ", "))
 }

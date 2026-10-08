@@ -42,3 +42,5 @@ Low-severity and deferred findings. Each line: date, task, finding ID, severity,
 - 2026-10-08, P1 T5, STAFF-1 (T5), low, `TestDeploymentHasStoppedAtColumn` filters information_schema by table_name only; add `AND table_schema = current_schema()`, next task touching postgres_test.go
 - 2026-10-08, P1 T5, STAFF-2 (T5), low, migration tests live in internal/testutil; move them to `migrations/migrations_test.go` (package migrations_test) if migration tests grow (e.g. baseline-vs-Prisma check from STAFF-6), db hardening round
 - 2026-10-08, P1 T5, STAFF-3 (T5), low, spec §7 named `00002_additive.sql`; **fixed 2026-10-08** (spec now says `00002_deployment_stopped_at.sql`)
+
+- 2026-10-08, P1 T5a, STAFF-5 (T5a), low, plain `Password=X` keyword DSN is accepted by pgx as a runtime parameter and sent in the startup packet; server rejects it by name only (Security: value appears in neither client error nor server log); optionally refuse password/user/host-like runtime params in `poolConfig`, Plan 3 (hardening)

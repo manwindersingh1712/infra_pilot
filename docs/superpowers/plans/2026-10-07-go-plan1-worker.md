@@ -1559,7 +1559,9 @@ Test first; one commit per numbered group; run the full CI command set plus `gos
 6. **CI guard (SEC-2 T4)** — in the go job after `go build`: `if go list -deps ./cmd/... | grep -E 'testcontainers|github.com/moby/|infrapilot/internal/testutil'; then echo "::error::production binaries must not import test helpers"; exit 1; fi`.
 Done when: CI command set green locally with and without `-short`; `go run ./cmd/migrate status` against the dev DB lists 00001 and 00002 applied and `migrate up` is a no-op; dev DB row counts unchanged.
 
-**Review gate:** Security, Staff, Verifier (no Product: nothing user-visible). Verifier for 5a, beyond the full suite: against a scratch DB restored from a Prisma-only schema (apply the 10 migration.sql files), run two `migrate baseline` and two `migrate up` processes at the same time and show no error and goose rows (0, 1, 2); `migrate status` against the dev DB; a malformed keyword DSN in `DATABASE_URL` makes `migrate status` fail without printing the password; `DATABASE_URL` pointing at an unroutable host fails within ~10 s; Node API `POST /dev/login` still works.
+**Fix round 1:** CTO decision 2026-10-08 (one lock held by us, `up` refuses un-baselined Prisma); see `review/decisions.md`.
+
+**Review gate:** Security, Staff, Verifier (no Product: nothing user-visible). Verifier for 5a, beyond the full suite: Verifier check (replaces the 5a concurrent check). On a scratch DB restored from the Prisma-only schema: (i) start two `migrate baseline` and two `migrate up` at the same time, 5 runs on fresh scratch DBs. Both baselines exit 0. Each `up` exits 0 or exits 1 with exactly the "run `migrate baseline` first" message, never a Postgres error (23505/42P07/42710). One further `migrate up` then exits 0 and the rows are (0, 1, 2). (ii) Staged order (two baselines together, then two ups together): all exit 0, rows (0, 1, 2). (iii) Hold `pg_advisory_lock(0x1F2AB0A5E11E)` in psql and start `migrate up` on an empty DB: `goose_db_version` does not appear while the lock is held, and `up` finishes after unlock. (iv) `migrate up` on an un-baselined Prisma DB → the refusal, and no `goose_db_version`. (v) `migrate status` on an empty DB creates nothing. The other 5a checks are unchanged and only need rerunning if `db.go` changes (it should not). Also: `migrate status` against the dev DB; a malformed keyword DSN in `DATABASE_URL` makes `migrate status` fail without printing the password; `DATABASE_URL` pointing at an unroutable host fails within ~10 s; Node API `POST /dev/login` still works.
 
 Record: `docs/superpowers/review/plan1/task-5a.md`.
 
@@ -8225,6 +8227,7 @@ cd /Users/manwindersingh/Desktop/infra-pilot/control-plane && docker compose up 
 # CTO 2026-10-08: if this database was not created by goose and was not baselined in Task 3
 # (any Node-era DB other than the dev DB), first take `pg_dump -Fc` and run
 # `go run ./cmd/migrate baseline`; `migrate status` must list 00001 as applied before `up`.
+# `migrate up` refuses an un-baselined Node-era schema with 'run `migrate baseline` first'.
 go run ./cmd/migrate up
 # 1. Drain RabbitMQ: both queues must show 0 messages
 curl -s -u cp:cp http://localhost:15672/api/queues | jq -r '.[] | "\(.name) \(.messages)"'

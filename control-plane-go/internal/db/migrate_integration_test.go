@@ -307,8 +307,11 @@ func TestConcurrentMigrates(t *testing.T) {
 // schemaQueries describe a schema as sorted text rows, excluding the two
 // migration bookkeeping tables.
 var schemaQueries = map[string]string{
-	"columns": `SELECT format('%s.%s %s %s nullable=%s default=%s', table_name, column_name,
-			data_type, udt_name, is_nullable, coalesce(column_default, '<none>'))
+	"columns": `SELECT format('%s.%s %s %s datetime_precision=%s char_max=%s numeric=%s,%s nullable=%s default=%s',
+			table_name, column_name, data_type, udt_name,
+			coalesce(datetime_precision::text, '-'), coalesce(character_maximum_length::text, '-'),
+			coalesce(numeric_precision::text, '-'), coalesce(numeric_scale::text, '-'),
+			is_nullable, coalesce(column_default, '<none>'))
 		FROM information_schema.columns
 		WHERE table_schema = current_schema()
 		  AND table_name NOT IN ('_prisma_migrations', 'goose_db_version')`,
@@ -340,15 +343,11 @@ func describeSchema(t *testing.T, pool *pgxpool.Pool, query string) []string {
 	return got
 }
 
-// TestBaselineMatchesPrismaSchema is the drift guard: goose migration 1 must
-// create exactly the schema the frozen Prisma migrations create.
-func TestBaselineMatchesPrismaSchema(t *testing.T) {
-	_, prisma := testutil.FreshDB(t, adminURL)
-	applyPrisma(t, prisma)
-	_, gooseDB := testutil.FreshDB(t, adminURL)
-	if err := db.MigrateTo(t.Context(), gooseDB, 1); err != nil {
-		t.Fatal(err)
-	}
+// schemaDiff compares the schemas of the Prisma and goose databases and
+// returns, per kind, the rows only one side has.
+func schemaDiff(t *testing.T, prisma, gooseDB *pgxpool.Pool) map[string][]string {
+	t.Helper()
+	diffs := map[string][]string{}
 	for _, kind := range []string{"columns", "indexes", "constraints", "enums"} {
 		p := describeSchema(t, prisma, schemaQueries[kind])
 		g := describeSchema(t, gooseDB, schemaQueries[kind])
@@ -367,8 +366,45 @@ func TestBaselineMatchesPrismaSchema(t *testing.T) {
 			}
 		}
 		if len(diff) > 0 {
-			t.Errorf("%s differ between Prisma and goose 00001:\n%s", kind, strings.Join(diff, "\n"))
+			diffs[kind] = diff
 		}
+	}
+	return diffs
+}
+
+// prismaAndGooseDBs returns a Prisma-only database and one migrated by goose
+// to version 1 only.
+func prismaAndGooseDBs(t *testing.T) (prisma, gooseDB *pgxpool.Pool) {
+	t.Helper()
+	_, prisma = testutil.FreshDB(t, adminURL)
+	applyPrisma(t, prisma)
+	_, gooseDB = testutil.FreshDB(t, adminURL)
+	if err := db.MigrateTo(t.Context(), gooseDB, 1); err != nil {
+		t.Fatal(err)
+	}
+	return prisma, gooseDB
+}
+
+// TestBaselineMatchesPrismaSchema is the drift guard: goose migration 1 must
+// create exactly the schema the frozen Prisma migrations create.
+func TestBaselineMatchesPrismaSchema(t *testing.T) {
+	prisma, gooseDB := prismaAndGooseDBs(t)
+	for kind, diff := range schemaDiff(t, prisma, gooseDB) {
+		t.Errorf("%s differ between Prisma and goose 00001:\n%s", kind, strings.Join(diff, "\n"))
+	}
+}
+
+// TestSchemaDiffCatchesTypeModifier proves the drift guard sees a type
+// modifier change (TIMESTAMP(3) vs TIMESTAMP(0)), not only the type name.
+func TestSchemaDiffCatchesTypeModifier(t *testing.T) {
+	prisma, gooseDB := prismaAndGooseDBs(t)
+	if _, err := gooseDB.Exec(t.Context(),
+		`ALTER TABLE "Deployment" ALTER COLUMN "createdAt" TYPE timestamp(0)`); err != nil {
+		t.Fatal(err)
+	}
+	diff := schemaDiff(t, prisma, gooseDB)["columns"]
+	if !slices.ContainsFunc(diff, func(r string) bool { return strings.Contains(r, "Deployment.createdAt") }) {
+		t.Fatalf("drift guard missed TIMESTAMP(3) -> TIMESTAMP(0) on Deployment.createdAt; column diff = %v", diff)
 	}
 }
 

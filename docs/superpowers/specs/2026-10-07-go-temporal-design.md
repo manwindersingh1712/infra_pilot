@@ -136,7 +136,7 @@ Keeps the existing claim, backoff and `dead` logic, and calls a `WorkflowStarter
 ## 7. Data model (goose)
 
 - `00001_baseline.sql`: today's schema, checked against Prisma with `pg_dump` (unchanged from the old plan).
-- `00002_additive.sql` (Plan 1): `Deployment.stoppedAt TIMESTAMP(3) NULL`. Additive only, so the Node API, still running in Plan 1, ignores it.
+- `00002_deployment_stopped_at.sql` (Plan 1): `Deployment.stoppedAt TIMESTAMP(3) NULL`. Additive only, so the Node API, still running in Plan 1, ignores it.
 - `00003_api.sql` (Plan 2, after Node is retired from the API):
   - `Service.deletedAt TIMESTAMP(3) NULL`;
   - table `RefreshToken` (`id`, `userId` FK, `tokenHash` unique, `expiresAt`, `revokedAt`, `createdAt`, index on `userId`);

@@ -80,18 +80,19 @@ type EnvVar struct {
 }
 
 type Deployment struct {
-	ID            string    `json:"id"`
-	ServiceID     string    `json:"serviceId"`
-	CommitSha     string    `json:"commitSha"`
-	Image         *string   `json:"image"`
-	Status        string    `json:"status"`
-	ContainerID   *string   `json:"containerId"`
-	HostPort      *int      `json:"hostPort"`
-	ContainerPort *int      `json:"containerPort"`
-	RuntimeURL    *string   `json:"runtimeUrl"`
-	VolumePath    *string   `json:"volumePath"`
-	CreatedAt     Timestamp `json:"createdAt"`
-	UpdatedAt     Timestamp `json:"updatedAt"`
+	ID            string     `json:"id"`
+	ServiceID     string     `json:"serviceId"`
+	CommitSha     string     `json:"commitSha"`
+	Image         *string    `json:"image"`
+	Status        string     `json:"status"`
+	ContainerID   *string    `json:"containerId"`
+	HostPort      *int       `json:"hostPort"`
+	ContainerPort *int       `json:"containerPort"`
+	RuntimeURL    *string    `json:"runtimeUrl"`
+	VolumePath    *string    `json:"volumePath"`
+	CreatedAt     Timestamp  `json:"createdAt"`
+	UpdatedAt     Timestamp  `json:"updatedAt"`
+	StoppedAt     *Timestamp `json:"stoppedAt"`
 }
 
 type ServiceConnection struct {

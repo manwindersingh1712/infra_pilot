@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -122,7 +124,7 @@ func assertNoGooseTable(t *testing.T, pool *pgxpool.Pool) {
 		t.Fatal(err)
 	}
 	if exists {
-		t.Fatal("a refused baseline left goose_db_version behind")
+		t.Fatal("goose_db_version exists, want none")
 	}
 }
 
@@ -367,5 +369,140 @@ func TestBaselineMatchesPrismaSchema(t *testing.T) {
 		if len(diff) > 0 {
 			t.Errorf("%s differ between Prisma and goose 00001:\n%s", kind, strings.Join(diff, "\n"))
 		}
+	}
+}
+
+// TestMigrateWaitsForLockBeforeTouchingDB: while another session holds the
+// migration lock, Migrate must not create goose_db_version (or anything else).
+func TestMigrateWaitsForLockBeforeTouchingDB(t *testing.T) {
+	_, pool := testutil.FreshDB(t, adminURL)
+	ctx := t.Context()
+	holder, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Release()
+	if _, err := holder.Exec(ctx, `SELECT pg_advisory_lock($1)`, db.MigrationLockID); err != nil {
+		t.Fatal(err)
+	}
+	locked := true
+	defer func() {
+		if locked {
+			_, _ = holder.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock($1)`, db.MigrationLockID)
+		}
+	}()
+
+	done := make(chan error, 1)
+	go func() { done <- db.Migrate(ctx, pool) }()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-done:
+			t.Fatalf("Migrate returned while the lock was held: %v", err)
+		default:
+		}
+		var exists bool
+		if err := holder.QueryRow(ctx, `SELECT to_regclass('goose_db_version') IS NOT NULL`).Scan(&exists); err != nil {
+			t.Fatal(err)
+		}
+		if exists {
+			t.Fatal("goose_db_version was created while another session held the migration lock")
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	if _, err := holder.Exec(ctx, `SELECT pg_advisory_unlock($1)`, db.MigrationLockID); err != nil {
+		t.Fatal(err)
+	}
+	locked = false
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Migrate after unlock: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Migrate did not finish within 10s of the unlock")
+	}
+	if got, want := maxVersion(t, pool), latestVersion(t); got != want {
+		t.Fatalf("version = %d, want %d", got, want)
+	}
+}
+
+func TestMigrateRefusesUnbaselinedPrisma(t *testing.T) {
+	_, pool := testutil.FreshDB(t, adminURL)
+	applyPrisma(t, pool)
+	ctx := t.Context()
+	if err := db.Migrate(ctx, pool); !errors.Is(err, db.ErrNotBaselined) {
+		t.Fatalf("Migrate on un-baselined Prisma DB: err = %v, want ErrNotBaselined", err)
+	}
+	assertNoGooseTable(t, pool)
+
+	// The state a failed `up` used to leave: a version table with only v0.
+	if _, err := pool.Exec(ctx, `CREATE TABLE goose_db_version (
+		id serial PRIMARY KEY, version_id bigint NOT NULL,
+		is_applied boolean NOT NULL, tstamp timestamp NOT NULL DEFAULT now())`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO goose_db_version (version_id, is_applied) VALUES (0, true)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Migrate(ctx, pool); !errors.Is(err, db.ErrNotBaselined) {
+		t.Fatalf("Migrate with a v0-only version table: err = %v, want ErrNotBaselined", err)
+	}
+
+	if err := db.MarkBaseline(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	if got := gooseVersions(t, pool); !slices.Equal(got, []int64{0, 1, 2}) {
+		t.Fatalf("goose rows = %v, want [0 1 2]", got)
+	}
+}
+
+func TestConcurrentBaselineAndMigrate(t *testing.T) {
+	for run := range 5 {
+		t.Run(strconv.Itoa(run+1), func(t *testing.T) {
+			_, pool := testutil.FreshDB(t, adminURL)
+			applyPrisma(t, pool)
+			ctx := t.Context()
+			if _, err := pool.Exec(ctx,
+				`INSERT INTO "User" (id, email, password) VALUES ('u1', 'a@example.com', 'x')`); err != nil {
+				t.Fatal(err)
+			}
+
+			start := make(chan struct{})
+			var baseErrs, upErrs [2]error
+			var wg sync.WaitGroup
+			for i := range 2 {
+				wg.Go(func() { <-start; baseErrs[i] = db.MarkBaseline(ctx, pool) })
+				wg.Go(func() { <-start; upErrs[i] = db.Migrate(ctx, pool) })
+			}
+			close(start)
+			wg.Wait()
+			for i, err := range baseErrs {
+				if err != nil {
+					t.Errorf("MarkBaseline %d: %v", i, err)
+				}
+			}
+			for i, err := range upErrs {
+				if err != nil && !errors.Is(err, db.ErrNotBaselined) {
+					t.Errorf("Migrate %d: %v (want nil or ErrNotBaselined)", i, err)
+				}
+			}
+			if err := db.Migrate(ctx, pool); err != nil {
+				t.Fatalf("final Migrate: %v", err)
+			}
+			if got := gooseVersions(t, pool); !slices.Equal(got, []int64{0, 1, 2}) {
+				t.Fatalf("goose rows = %v, want [0 1 2]", got)
+			}
+			var email string
+			if err := pool.QueryRow(ctx, `SELECT email FROM "User" WHERE id = 'u1'`).Scan(&email); err != nil {
+				t.Fatalf("User row lost: %v", err)
+			}
+		})
 	}
 }

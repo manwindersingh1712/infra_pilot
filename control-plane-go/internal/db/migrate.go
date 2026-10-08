@@ -41,92 +41,37 @@ const migrationLockID int64 = 0x1F2A_B0A5_E11E
 // versionTable is goose's version table (its default name).
 const versionTable = "goose_db_version"
 
-// newMigrationLocker returns the session locker on migrationLockID. A new one
-// is built per operation because its retry budget is stateful and is never
-// reset between calls.
+// ErrNotBaselined is returned by Migrate on a database that already has the
+// Prisma schema but no goose baseline: running migration 1 there would fail
+// halfway, so the operator must run `migrate baseline` first.
+var ErrNotBaselined = errors.New("existing Prisma schema is not baselined: run `migrate baseline` first")
+
+// newMigrationLocker returns the session locker on migrationLockID. It polls
+// every second for up to 5 minutes. A new one is built per operation because
+// its retry budget is stateful and is never reset between calls.
 func newMigrationLocker() (lock.SessionLocker, error) {
-	l, err := lock.NewPostgresSessionLocker(lock.WithLockID(migrationLockID))
+	l, err := lock.NewPostgresSessionLocker(lock.WithLockID(migrationLockID), lock.WithLockTimeout(1, 300))
 	if err != nil {
 		return nil, fmt.Errorf("migration lock: %w", err)
 	}
 	return l, nil
 }
 
-// withProvider runs fn with a goose Provider over pool's connections. The
-// Provider holds the migration lock while it applies migrations.
-func withProvider(pool *pgxpool.Pool, fn func(p *goose.Provider) error) error {
+// withMigrationLock takes the migration session lock on a dedicated
+// connection from pool, runs fn with that connection, and releases the lock.
+// Every operation that writes migration state (Migrate, migrateTo,
+// MarkBaseline) runs inside it, so they are serialised across processes.
+func withMigrationLock(ctx context.Context, pool *pgxpool.Pool,
+	fn func(ctx context.Context, conn *sql.Conn) error) (retErr error) {
 	locker, err := newMigrationLocker()
 	if err != nil {
 		return err
-	}
-	sqlDB := stdlib.OpenDBFromPool(pool)
-	p, err := goose.NewProvider(goose.DialectPostgres, sqlDB, migrations.FS,
-		goose.WithSessionLocker(locker),
-		goose.WithDisableGlobalRegistry(true))
-	if err != nil {
-		_ = sqlDB.Close()
-		return fmt.Errorf("goose provider: %w", err)
-	}
-	defer func() { _ = p.Close() }()
-	return fn(p)
-}
-
-// Migrate applies all pending migrations.
-func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
-	return withProvider(pool, func(p *goose.Provider) error {
-		if _, err := p.Up(ctx); err != nil {
-			return fmt.Errorf("apply migrations: %w", err)
-		}
-		return nil
-	})
-}
-
-// migrateTo applies pending migrations up to and including version. Only the
-// schema drift test uses it, to compare migration 1 with the Prisma schema.
-func migrateTo(ctx context.Context, pool *pgxpool.Pool, version int64) error {
-	return withProvider(pool, func(p *goose.Provider) error {
-		if _, err := p.UpTo(ctx, version); err != nil {
-			return fmt.Errorf("apply migrations to %d: %w", version, err)
-		}
-		return nil
-	})
-}
-
-// Status returns every migration with its state, in version order.
-func Status(ctx context.Context, pool *pgxpool.Pool) ([]*goose.MigrationStatus, error) {
-	var statuses []*goose.MigrationStatus
-	err := withProvider(pool, func(p *goose.Provider) error {
-		var err error
-		statuses, err = p.Status(ctx)
-		if err != nil {
-			return fmt.Errorf("migration status: %w", err)
-		}
-		return nil
-	})
-	return statuses, err
-}
-
-// MarkBaseline records migration 1 as applied on a database whose schema was
-// already created by Prisma, so `migrate up` does not try to create it again.
-// It refuses unless the Prisma migration history is exactly the frozen one and
-// fully finished, so a partially migrated or diverged database is never
-// marked as matching the baseline. It holds the same lock as Migrate and does
-// all its checks and writes in one transaction, so a refusal leaves no goose
-// version table behind.
-func MarkBaseline(ctx context.Context, pool *pgxpool.Pool) (retErr error) {
-	locker, err := newMigrationLocker()
-	if err != nil {
-		return err
-	}
-	store, err := database.NewStore(database.DialectPostgres, versionTable)
-	if err != nil {
-		return fmt.Errorf("goose store: %w", err)
 	}
 	sqlDB := stdlib.OpenDBFromPool(pool)
 	defer func() { _ = sqlDB.Close() }()
 	conn, err := sqlDB.Conn(ctx)
 	if err != nil {
-		return fmt.Errorf("baseline connection: %w", err)
+		return fmt.Errorf("migration lock connection: %w", err)
 	}
 	defer func() { _ = conn.Close() }()
 
@@ -138,45 +83,146 @@ func MarkBaseline(ctx context.Context, pool *pgxpool.Pool) (retErr error) {
 			retErr = fmt.Errorf("migration unlock: %w", err)
 		}
 	}()
-
-	tx, err := conn.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin baseline transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	done, err := baselineApplied(ctx, tx)
-	if err != nil {
-		return err
-	}
-	if done {
-		return nil
-	}
-	if err := checkPrismaSchema(ctx, tx); err != nil {
-		return err
-	}
-	exists, err := tableExists(ctx, tx, versionTable)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		if err := store.CreateVersionTable(ctx, tx); err != nil {
-			return fmt.Errorf("create goose version table: %w", err)
-		}
-		if err := store.Insert(ctx, tx, database.InsertRequest{Version: 0}); err != nil {
-			return fmt.Errorf("record goose version 0: %w", err)
-		}
-	}
-	if err := store.Insert(ctx, tx, database.InsertRequest{Version: 1}); err != nil {
-		return fmt.Errorf("record baseline: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit baseline: %w", err)
-	}
-	return nil
+	return fn(ctx, conn)
 }
 
-// querier is the read API of *sql.Tx used by the baseline checks.
+// withProvider runs fn with a goose Provider over pool's connections.
+//
+// The Provider has no session locker on purpose. goose does not take its
+// locker for every operation (Up and UpTo first call HasPending, which creates
+// goose_db_version without the lock), so callers that write must hold
+// withMigrationLock instead. A Provider locker on the same key would also
+// deadlock against the lock our own connection already holds.
+func withProvider(pool *pgxpool.Pool, fn func(p *goose.Provider) error) error {
+	sqlDB := stdlib.OpenDBFromPool(pool)
+	p, err := goose.NewProvider(goose.DialectPostgres, sqlDB, migrations.FS,
+		goose.WithDisableGlobalRegistry(true))
+	if err != nil {
+		_ = sqlDB.Close()
+		return fmt.Errorf("goose provider: %w", err)
+	}
+	defer func() { _ = p.Close() }()
+	return fn(p)
+}
+
+// migrateLocked holds the migration lock, refuses an un-baselined Prisma
+// schema, and then runs fn with a Provider. The Provider works on other pool
+// connections while the lock connection stays held, so the pool needs at
+// least two.
+func migrateLocked(ctx context.Context, pool *pgxpool.Pool, fn func(p *goose.Provider) error) error {
+	if pool.Config().MaxConns < 2 {
+		return errors.New("migrations need a pool with at least 2 connections")
+	}
+	return withMigrationLock(ctx, pool, func(ctx context.Context, conn *sql.Conn) error {
+		prisma, err := tableExists(ctx, conn, `"Deployment"`)
+		if err != nil {
+			return err
+		}
+		if prisma {
+			done, err := baselineApplied(ctx, conn)
+			if err != nil {
+				return err
+			}
+			if !done {
+				return ErrNotBaselined
+			}
+		}
+		return withProvider(pool, fn)
+	})
+}
+
+// Migrate applies all pending migrations. It returns ErrNotBaselined on a
+// Prisma-created database that `migrate baseline` has not marked yet.
+func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
+	return migrateLocked(ctx, pool, func(p *goose.Provider) error {
+		if _, err := p.Up(ctx); err != nil {
+			return fmt.Errorf("apply migrations: %w", err)
+		}
+		return nil
+	})
+}
+
+// migrateTo applies pending migrations up to and including version. Only the
+// schema drift test uses it, to compare migration 1 with the Prisma schema.
+func migrateTo(ctx context.Context, pool *pgxpool.Pool, version int64) error {
+	return migrateLocked(ctx, pool, func(p *goose.Provider) error {
+		if _, err := p.UpTo(ctx, version); err != nil {
+			return fmt.Errorf("apply migrations to %d: %w", version, err)
+		}
+		return nil
+	})
+}
+
+// Status returns every migration with its state, in version order. It holds
+// the migration lock because goose may create goose_db_version.
+func Status(ctx context.Context, pool *pgxpool.Pool) ([]*goose.MigrationStatus, error) {
+	var statuses []*goose.MigrationStatus
+	err := withMigrationLock(ctx, pool, func(ctx context.Context, _ *sql.Conn) error {
+		return withProvider(pool, func(p *goose.Provider) error {
+			var err error
+			statuses, err = p.Status(ctx)
+			if err != nil {
+				return fmt.Errorf("migration status: %w", err)
+			}
+			return nil
+		})
+	})
+	return statuses, err
+}
+
+// MarkBaseline records migration 1 as applied on a database whose schema was
+// already created by Prisma, so `migrate up` does not try to create it again.
+// It refuses unless the Prisma migration history is exactly the frozen one and
+// fully finished, so a partially migrated or diverged database is never
+// marked as matching the baseline. It holds the same lock as Migrate and does
+// all its checks and writes in one transaction, so a refusal leaves no goose
+// version table behind.
+func MarkBaseline(ctx context.Context, pool *pgxpool.Pool) error {
+	store, err := database.NewStore(database.DialectPostgres, versionTable)
+	if err != nil {
+		return fmt.Errorf("goose store: %w", err)
+	}
+	return withMigrationLock(ctx, pool, func(ctx context.Context, conn *sql.Conn) error {
+		tx, err := conn.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin baseline transaction: %w", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+
+		done, err := baselineApplied(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if done {
+			return nil
+		}
+		if err := checkPrismaSchema(ctx, tx); err != nil {
+			return err
+		}
+		exists, err := tableExists(ctx, tx, versionTable)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			if err := store.CreateVersionTable(ctx, tx); err != nil {
+				return fmt.Errorf("create goose version table: %w", err)
+			}
+			if err := store.Insert(ctx, tx, database.InsertRequest{Version: 0}); err != nil {
+				return fmt.Errorf("record goose version 0: %w", err)
+			}
+		}
+		if err := store.Insert(ctx, tx, database.InsertRequest{Version: 1}); err != nil {
+			return fmt.Errorf("record baseline: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit baseline: %w", err)
+		}
+		return nil
+	})
+}
+
+// querier is the read API shared by *sql.Tx, *sql.Conn and *sql.DB, used by
+// the baseline checks.
 type querier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)

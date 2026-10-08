@@ -19,12 +19,14 @@ func (c Call) String() string { return strings.TrimSpace(c.Name + " " + strings.
 type FakeRunner struct {
 	mu    sync.Mutex
 	calls []Call
-	// Handle, if set, decides each call's stdout and error.
+	// Handle, if set, decides each call's stdout and error. Run may be called
+	// from several goroutines, so Handle may be called concurrently and must
+	// be safe for that.
 	Handle func(c Call) (string, error)
 }
 
 func (f *FakeRunner) Run(_ context.Context, dir, name string, args ...string) (string, error) {
-	c := Call{Dir: dir, Name: name, Args: args}
+	c := Call{Dir: dir, Name: name, Args: append([]string(nil), args...)}
 	f.mu.Lock()
 	f.calls = append(f.calls, c)
 	f.mu.Unlock()

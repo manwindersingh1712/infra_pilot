@@ -49,3 +49,40 @@ func TestDeploymentHasStoppedAtColumn(t *testing.T) {
 		t.Fatal(`"Deployment"."stoppedAt" is missing`)
 	}
 }
+
+func TestFakeRunnerCopiesArgs(t *testing.T) {
+	r := &testutil.FakeRunner{}
+	args := []string{"run", "app"}
+	_, _ = r.Run(context.Background(), "/tmp", "docker", args...)
+	args[1] = "MUTATED"
+	if got := r.Commands(); len(got) != 1 || got[0] != "docker run app" {
+		t.Fatalf("Commands() = %v, want [docker run app]", got)
+	}
+}
+
+func TestNeedDBTruncatesEveryTable(t *testing.T) {
+	p := testutil.NeedDB(t, pool)
+	ctx := context.Background()
+	if _, err := p.Exec(ctx, `CREATE TABLE "NeedDBScratch" (id int)`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = p.Exec(context.Background(), `DROP TABLE IF EXISTS "NeedDBScratch"`) })
+	if _, err := p.Exec(ctx, `INSERT INTO "NeedDBScratch" VALUES (1)`); err != nil {
+		t.Fatal(err)
+	}
+	testutil.NeedDB(t, pool)
+	var n int
+	if err := p.QueryRow(ctx, `SELECT count(*) FROM "NeedDBScratch"`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("NeedDBScratch has %d rows after NeedDB, want 0", n)
+	}
+	var versions int
+	if err := p.QueryRow(ctx, `SELECT count(*) FROM goose_db_version`).Scan(&versions); err != nil {
+		t.Fatal(err)
+	}
+	if versions == 0 {
+		t.Fatal("NeedDB truncated goose_db_version")
+	}
+}

@@ -506,3 +506,39 @@ func TestConcurrentBaselineAndMigrate(t *testing.T) {
 		})
 	}
 }
+
+func TestStatusOnEmptyDBDoesNotWrite(t *testing.T) {
+	_, pool := testutil.FreshDB(t, adminURL)
+	ctx := t.Context()
+	statuses, err := db.Status(ctx, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if int64(len(statuses)) != latestVersion(t) {
+		t.Fatalf("got %d statuses, want %d", len(statuses), latestVersion(t))
+	}
+	for _, s := range statuses {
+		if s.State != goose.StatePending {
+			t.Errorf("%s: state %s, want pending", s.Source.Path, s.State)
+		}
+	}
+	assertNoGooseTable(t, pool)
+
+	holder, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Release()
+	if _, err := holder.Exec(ctx, `SELECT pg_advisory_lock($1)`, db.MigrationLockID); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = holder.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock($1)`, db.MigrationLockID)
+	}()
+	sctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if _, err := db.Status(sctx, pool); err != nil {
+		t.Fatalf("Status with the migration lock held elsewhere: %v", err)
+	}
+	assertNoGooseTable(t, pool)
+}

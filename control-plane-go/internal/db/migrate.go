@@ -153,19 +153,29 @@ func migrateTo(ctx context.Context, pool *pgxpool.Pool, version int64) error {
 	})
 }
 
-// Status returns every migration with its state, in version order. It holds
-// the migration lock because goose may create goose_db_version.
+// Status returns every migration with its state, in version order. It takes
+// no lock and writes nothing: without goose_db_version every migration is
+// pending, and goose only reads when the table exists.
 func Status(ctx context.Context, pool *pgxpool.Pool) ([]*goose.MigrationStatus, error) {
 	var statuses []*goose.MigrationStatus
-	err := withMigrationLock(ctx, pool, func(ctx context.Context, _ *sql.Conn) error {
-		return withProvider(pool, func(p *goose.Provider) error {
-			var err error
-			statuses, err = p.Status(ctx)
-			if err != nil {
-				return fmt.Errorf("migration status: %w", err)
+	err := withProvider(pool, func(p *goose.Provider) error {
+		sqlDB := stdlib.OpenDBFromPool(pool)
+		defer func() { _ = sqlDB.Close() }()
+		exists, err := tableExists(ctx, sqlDB, versionTable)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			for _, s := range p.ListSources() {
+				statuses = append(statuses, &goose.MigrationStatus{Source: s, State: goose.StatePending})
 			}
 			return nil
-		})
+		}
+		statuses, err = p.Status(ctx)
+		if err != nil {
+			return fmt.Errorf("migration status: %w", err)
+		}
+		return nil
 	})
 	return statuses, err
 }

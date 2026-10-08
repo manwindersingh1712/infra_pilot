@@ -54,8 +54,6 @@ func noRows(err error) error {
 
 // collect scans every row with scan. It never returns a nil slice, so an
 // empty result encodes as [] in JSON.
-//
-//nolint:unused // first callers (list queries) arrive in Plan 1 Task 7; drop this directive then.
 func collect[T any](rows pgx.Rows, err error, scan func(pgx.Row) (T, error)) ([]T, error) {
 	if err != nil {
 		return nil, err

@@ -75,7 +75,7 @@ Update this section as the work moves. The orchestrating session should tick box
 | Plan 3 — hardening | Not started | | | | Requires Plan 1's rollback window to be closed |
 
 - **Branch:** `go-migration` (created 2026-10-07 off `go`; first commit holds these docs).
-- **Current task:** Plan 1, Task 5a (db and test-helper hardening, inserted by the CTO 2026-10-08). Tasks 1, 1a, 2, 3 (2026-10-07), 4 and 5 (2026-10-08) passed their gates.
+- **Current task:** Plan 1, Task 6 (Store core, models and users). Tasks 1, 1a, 2, 3 (2026-10-07), 4, 5 and 5a (2026-10-08) passed their gates.
 - **Inserted tasks:** 1a (cp-ui lint/build baseline), 5a (db and test-helper hardening). See `review/decisions.md`.
 - **Dev DB:** baselined by goose on 2026-10-07 (pre-baseline backup in that session's scratchpad). Never run `npm run prisma:migrate` again.
 - **Pushed:** `go-migration` first pushed 2026-10-07 (CI green). Every later push needs user approval.

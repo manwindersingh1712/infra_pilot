@@ -20,5 +20,17 @@
 - CTO ruling (`../decisions.md`, "Task 5a fix round 1"): we hold the lock ourselves around every Provider op (Provider without `WithSessionLocker`, `WithLockTimeout(1, 300)`); `up` refuses an un-baselined Prisma schema (`ErrNotBaselined`); `status` read-only and lock-free when no version table; drift guard compares type modifiers; CI guard fails if `go list` fails. MarkBaseline retry rejected. Verifier check changed accordingly. STAFF-5 → backlog.
 - Orchestrator: plan Task 5a Verifier text replaced and fix-round note added; Task 27 Step 3 comment extended; backlog updated.
 
-## Fix round 1
-- Engineer dispatched.
+## Fix round 1 (717b106..f3471ef)
+- `3b1e7e0` fix(go): take the migration lock ourselves and refuse an un-baselined Prisma schema (VER-1, STAFF-1)
+- `15f8916` fix(go): migrate status takes no lock and writes nothing (STAFF-3)
+- `dfae298` test(go): drift guard compares column type modifiers (STAFF-2)
+- `f3471ef` ci(go): test-helper guard fails when go list fails (STAFF-4)
+- New tests failed on c6c8945 (lock-hold test: "goose_db_version was created while another session held the migration lock"), then passed.
+
+## Fix round 1 re-checks
+- **Security (quick look): CLEAN.** CI guard fails closed; no new error path echoes the URL; SQL static/bound.
+- **Staff: APPROVE.** Verified against goose v3.28.0 / pgx v5.11.0 source: NewProvider/Close never touch the DB; lock held on a dedicated conn for the whole op and released on every path; ErrNotBaselined checked inside the lock before any goose call; Status read-only both ways. `-count=3` concurrency runs: no flakiness. Lows STAFF-6 (T5ar1) (2-conn floor assumes SQL-only migrations), STAFF-7 (T5ar1) (failed unlock returns a locked conn to the pool) → backlog.
+- **Verifier: PASS.** (i) all four at once ×5: baselines always 0; ups 0 or the exact "run `migrate baseline` first" refusal (runs 2-4), never a Postgres error; further up 0; rows (0,1,2); seeded User kept. (ii) staged all 0. (iii) lock held in psql: no goose_db_version for 10 s; up finished after unlock. (iv) un-baselined up refused, no table. (v) status on empty DB writes nothing. Dev DB unchanged; malformed DSN no secret; unroutable host 10 s; Node `/dev/login` OK; regression green.
+
+## Result
+**Done 2026-10-08** after fix round 1. Verifier PASS, no open critical/high/medium. Next: Task 6.

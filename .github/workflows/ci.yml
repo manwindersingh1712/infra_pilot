@@ -26,7 +26,8 @@ jobs:
       - run: go build ./...
       - name: Forbid test helpers in production binaries
         run: |
-          if go list -deps ./cmd/... | grep -E 'testcontainers|github.com/moby/|infrapilot/internal/testutil'; then
+          deps=$(go list -deps ./cmd/...) || exit 1
+          if printf '%s\n' "$deps" | grep -E 'testcontainers|github.com/moby/|infrapilot/internal/testutil'; then
             echo "::error::production binaries must not import test helpers"; exit 1
           fi
       - run: go vet ./...

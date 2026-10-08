@@ -13,7 +13,7 @@ func TestNormalizeURLStripsPrismaSchemaParam(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "postgresql://cp:cp@localhost:5432/control_plane" || schema != "public" {
+	if got != "postgresql://cp:cp@localhost:5432/control_plane" || schema != `"public"` {
 		t.Fatalf("got %q, schema %q", got, schema)
 	}
 }
@@ -23,7 +23,7 @@ func TestNormalizeURLKeepsOtherParams(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "postgres://h/db?sslmode=disable" || schema != "app" {
+	if got != "postgres://h/db?sslmode=disable" || schema != `"app"` {
 		t.Fatalf("got %q, schema %q", got, schema)
 	}
 }
@@ -86,7 +86,7 @@ func TestNormalizeURLOnlyRewritesPostgresSchemes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if schema != "app" || strings.Contains(got, "schema=") {
+		if schema != `"app"` || strings.Contains(got, "schema=") {
 			t.Errorf("normalizeURL(%q) = %q, schema %q", raw, got, schema)
 		}
 	}
@@ -141,5 +141,54 @@ func TestPoolConfigKeepsExplicitConnectTimeout(t *testing.T) {
 	}
 	if got := cfg.ConnConfig.ConnectTimeout; got != 3*time.Second {
 		t.Fatalf("ConnectTimeout = %v, want 3s", got)
+	}
+}
+
+func TestNormalizeURL(t *testing.T) {
+	cases := []struct {
+		name, raw, want, schema, err string
+	}{
+		{name: "mixed-case schema is quoted", raw: "postgres://h/db?schema=MySchema",
+			want: "postgres://h/db", schema: `"MySchema"`},
+		{name: "quote in schema is escaped", raw: `postgres://h/db?schema=a"b`,
+			want: "postgres://h/db", schema: `"a""b"`},
+		{name: "two schema params", raw: "postgres://h/db?schema=a&schema=b",
+			err: "DATABASE_URL has more than one schema parameter"},
+		{name: "prisma-only params removed",
+			raw:  "postgres://h/db?connection_limit=5&pool_timeout=10&socket_timeout=3&pgbouncer=true&sslmode=disable",
+			want: "postgres://h/db?sslmode=disable"},
+		{name: "prisma-only params removed with schema",
+			raw:  "postgresql://u:p@h:5432/db?schema=public&connection_limit=1",
+			want: "postgresql://u:p@h:5432/db", schema: `"public"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, schema, err := normalizeURL(tc.raw)
+			if tc.err != "" {
+				if err == nil || err.Error() != tc.err {
+					t.Fatalf("err = %v, want %q", err, tc.err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want || schema != tc.schema {
+				t.Fatalf("got %q, schema %q; want %q, schema %q", got, schema, tc.want, tc.schema)
+			}
+		})
+	}
+}
+
+func TestPoolConfigSetsQuotedSearchPath(t *testing.T) {
+	cfg, err := poolConfig("postgres://h/db?schema=MySchema&connection_limit=3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.ConnConfig.RuntimeParams["search_path"]; got != `"MySchema"` {
+		t.Fatalf("search_path = %q", got)
+	}
+	if _, ok := cfg.ConnConfig.RuntimeParams["connection_limit"]; ok {
+		t.Fatal("connection_limit reached pgx as a runtime param")
 	}
 }

@@ -9,11 +9,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 var (
-	errInvalidURL = errors.New("parse DATABASE_URL: invalid URL")
+	errInvalidURL      = errors.New("parse DATABASE_URL: invalid URL")
+	errDuplicateSchema = errors.New("DATABASE_URL has more than one schema parameter")
 	// errInvalidConnString replaces every pgxpool.ParseConfig error, whose
 	// text can echo a malformed DSN including its password.
 	errInvalidConnString = errors.New("parse DATABASE_URL: invalid connection string")
@@ -65,8 +67,9 @@ func poolConfig(rawURL string) (*pgxpool.Config, error) {
 	return cfg, nil
 }
 
-// normalizeURL removes Prisma's ?schema= parameter, which Postgres rejects as
-// an unknown runtime parameter, and returns it separately. Only postgres:// and
+// normalizeURL removes Prisma's ?schema= parameter and the other Prisma-only
+// parameters, which Postgres rejects as unknown runtime parameters, and
+// returns the schema separately, quoted for use as search_path. Only postgres:// and
 // postgresql:// URLs are rewritten; anything else (such as a keyword/value DSN)
 // is returned unchanged for pgx to parse, because round-tripping it through
 // url.Parse mangles it. pgx only redacts a well-formed `password=` token in its
@@ -83,11 +86,25 @@ func normalizeURL(raw string) (string, string, error) {
 		return "", "", errInvalidURL
 	}
 	q := u.Query()
+	if len(q["schema"]) > 1 {
+		return "", "", errDuplicateSchema
+	}
 	schema := q.Get("schema")
 	q.Del("schema")
+	for _, p := range prismaOnlyParams {
+		q.Del(p)
+	}
 	u.RawQuery = q.Encode()
+	if schema != "" {
+		// Prisma treats schema= as a case-sensitive identifier.
+		schema = pgx.Identifier{schema}.Sanitize()
+	}
 	return u.String(), schema, nil
 }
+
+// prismaOnlyParams are Prisma connection-string options that Postgres would
+// reject as unknown runtime parameters.
+var prismaOnlyParams = []string{"connection_limit", "pool_timeout", "socket_timeout", "pgbouncer"}
 
 func isPostgresURL(raw string) bool {
 	scheme, _, ok := strings.Cut(raw, "://")

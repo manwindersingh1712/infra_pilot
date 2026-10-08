@@ -35,3 +35,17 @@ func TestFakeRunnerRecordsCalls(t *testing.T) {
 		t.Fatalf("Commands() = %v", got)
 	}
 }
+
+func TestDeploymentHasStoppedAtColumn(t *testing.T) {
+	p := testutil.NeedDB(t, pool)
+	var n int
+	err := p.QueryRow(context.Background(), `
+		SELECT count(*) FROM information_schema.columns
+		WHERE table_name = 'Deployment' AND column_name = 'stoppedAt' AND is_nullable = 'YES'`).Scan(&n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatal(`"Deployment"."stoppedAt" is missing`)
+	}
+}

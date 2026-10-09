@@ -8,7 +8,12 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
+
+// waitDelay bounds how long Run waits for stdout/stderr to close after the
+// process exits or is killed (a grandchild can keep the pipes open).
+const waitDelay = 5 * time.Second
 
 // Runner executes a command and returns its stdout. Tests use testutil.FakeRunner.
 type Runner interface {
@@ -21,10 +26,15 @@ type ExecRunner struct{}
 func (ExecRunner) Run(ctx context.Context, dir, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
+	cmd.WaitDelay = waitDelay
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			// Callers (Temporal activities) need errors.Is(err, context.Canceled).
+			err = fmt.Errorf("%w (%w)", ctxErr, err)
+		}
 		return stdout.String(), fmt.Errorf("%s %s: %w: %s",
 			name, firstArg(args), err, tail(strings.TrimSpace(stderr.String()), 2000))
 	}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -47,12 +48,18 @@ type RunSpec struct {
 }
 
 func (d Docker) Pull(ctx context.Context, image string) error {
+	if err := checkImage(image); err != nil {
+		return err
+	}
 	_, err := d.R.Run(ctx, "", "docker", "pull", image)
 	return err
 }
 
 // DetectContainerPort returns the lowest port the image EXPOSEs.
 func (d Docker) DetectContainerPort(ctx context.Context, image string) (int, error) {
+	if err := checkImage(image); err != nil {
+		return 0, err
+	}
 	out, err := d.R.Run(ctx, "", "docker", "image", "inspect", image, "--format", "{{json .Config.ExposedPorts}}")
 	if err != nil {
 		return 0, err
@@ -109,6 +116,20 @@ func (d Docker) limitArgs() []string {
 
 // validate rejects a spec before any docker call is made.
 func (s RunSpec) validate() error {
+	if err := checkImage(s.Image); err != nil {
+		return err
+	}
+	if err := checkName("container", s.Name); err != nil {
+		return err
+	}
+	if err := checkName("network", s.Network); err != nil {
+		return err
+	}
+	for _, a := range s.Aliases {
+		if err := checkName("alias", a); err != nil {
+			return err
+		}
+	}
 	if s.PublishPort > 0 && s.ContainerPort <= 0 {
 		return errors.New("PublishPort needs a ContainerPort")
 	}
@@ -116,6 +137,9 @@ func (s RunSpec) validate() error {
 		return err
 	}
 	if s.Volume != "" {
+		if err := checkName("volume", s.Volume); err != nil {
+			return err
+		}
 		if err := checkContainerPath("volume target", s.VolumeTarget); err != nil {
 			return err
 		}
@@ -141,6 +165,32 @@ func validateEnv(env map[string]string) error {
 		if strings.ContainsAny(v, "\n\r") || !utf8.ValidString(v) {
 			return fmt.Errorf("env var %q: value must be valid UTF-8 without line breaks", k)
 		}
+	}
+	return nil
+}
+
+var nameRE = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
+
+// checkName guards container, network, volume and alias names (SEC-5):
+// a name docker could read as a flag or a host path is rejected.
+func checkName(what, n string) error {
+	if !nameRE.MatchString(n) {
+		return fmt.Errorf("invalid %s name %q", what, n)
+	}
+	return nil
+}
+
+func checkImage(img string) error {
+	if img == "" || strings.HasPrefix(img, "-") {
+		return fmt.Errorf("invalid image %q", img)
+	}
+	return nil
+}
+
+// checkHostDir requires an absolute host path without ':' (a mount separator).
+func checkHostDir(dir string) error {
+	if !filepath.IsAbs(dir) || strings.Contains(dir, ":") {
+		return fmt.Errorf("host dir %q must be an absolute path without ':'", dir)
 	}
 	return nil
 }
@@ -208,6 +258,9 @@ func writeEnvFile(env map[string]string) (string, error) {
 
 // Remove force-removes a container; a missing container is not an error.
 func (d Docker) Remove(ctx context.Context, name string) error {
+	if err := checkName("container", name); err != nil {
+		return err
+	}
 	_, err := d.R.Run(ctx, "", "docker", "rm", "-f", name)
 	if err != nil && !errContains(err, "no such container") {
 		return err
@@ -217,6 +270,9 @@ func (d Docker) Remove(ctx context.Context, name string) error {
 
 // EnsureNetwork creates the network if needed and attaches nginx to it.
 func (d Docker) EnsureNetwork(ctx context.Context, name string) error {
+	if err := checkName("network", name); err != nil {
+		return err
+	}
 	if _, err := d.R.Run(ctx, "", "docker", "network", "inspect", name); err != nil {
 		_, err := d.R.Run(ctx, "", "docker", "network", "create", "--driver", "bridge", "--label", "cp.managed=true", name)
 		if err != nil && !strings.Contains(err.Error(), "already exists") {
@@ -234,11 +290,17 @@ func (d Docker) EnsureNetwork(ctx context.Context, name string) error {
 }
 
 func (d Docker) VolumeExists(ctx context.Context, name string) bool {
+	if checkName("volume", name) != nil {
+		return false
+	}
 	_, err := d.R.Run(ctx, "", "docker", "volume", "inspect", name)
 	return err == nil
 }
 
 func (d Docker) CreateVolume(ctx context.Context, name string) error {
+	if err := checkName("volume", name); err != nil {
+		return err
+	}
 	_, err := d.R.Run(ctx, "", "docker", "volume", "create", "--label", "cp.managed=true", name)
 	return err
 }
@@ -246,6 +308,12 @@ func (d Docker) CreateVolume(ctx context.Context, name string) error {
 // CopyIntoVolume copies hostDir into the volume once. A marker file makes
 // repeated calls (activity retries, later deploys) no-ops.
 func (d Docker) CopyIntoVolume(ctx context.Context, hostDir, volume string) error {
+	if err := checkHostDir(hostDir); err != nil {
+		return err
+	}
+	if err := checkName("volume", volume); err != nil {
+		return err
+	}
 	args := append([]string{"run", "--rm", "--network", "none"}, d.limitArgs()...)
 	args = append(args, "-v", hostDir+":/from:ro", "-v", volume+":/to", d.ProbeImage,
 		"sh", "-c", "[ -f /to/.cp-migrated ] || (cp -a /from/. /to/ && touch /to/.cp-migrated)")
@@ -255,6 +323,12 @@ func (d Docker) CopyIntoVolume(ctx context.Context, hostDir, volume string) erro
 
 // Probe checks that host:port accepts TCP connections from inside network.
 func (d Docker) Probe(ctx context.Context, network, host string, port int) error {
+	if err := checkName("network", network); err != nil {
+		return err
+	}
+	if err := checkName("host", host); err != nil {
+		return err
+	}
 	args := append([]string{"run", "--rm", "--network", network}, d.limitArgs()...)
 	args = append(args, d.ProbeImage, "nc", "-z", "-w", "2", host, strconv.Itoa(port))
 	_, err := d.R.Run(ctx, "", "docker", args...)
@@ -263,6 +337,9 @@ func (d Docker) Probe(ctx context.Context, network, host string, port int) error
 
 // IsRunning reports whether the container exists and is running.
 func (d Docker) IsRunning(ctx context.Context, id string) (bool, error) {
+	if err := checkName("container", id); err != nil {
+		return false, err
+	}
 	out, err := d.R.Run(ctx, "", "docker", "inspect", "-f", "{{.State.Running}}", id)
 	if err != nil {
 		if errContains(err, "no such object") {

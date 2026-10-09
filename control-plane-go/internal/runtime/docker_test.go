@@ -252,3 +252,64 @@ func TestRunValidatesEnv(t *testing.T) {
 		t.Fatalf("valid env rejected: %v", err)
 	}
 }
+
+// SEC-5 (T16): names, images and host paths that docker could read as flags
+// or mount options are rejected before any docker call.
+func TestRejectsUnsafeArgumentsBeforeDocker(t *testing.T) {
+	ctx := context.Background()
+	ok := RunSpec{Image: "img", Name: "cp-d1", Network: "cp-proj-p1", ContainerPort: 3000}
+	spec := func(f func(*RunSpec)) RunSpec { s := ok; f(&s); return s }
+	cases := map[string]func(Docker) error{
+		"run name": func(d Docker) error {
+			_, err := d.Run(ctx, spec(func(s *RunSpec) { s.Name = "--privileged" }))
+			return err
+		},
+		"run empty name": func(d Docker) error { _, err := d.Run(ctx, spec(func(s *RunSpec) { s.Name = "" })); return err },
+		"run network": func(d Docker) error {
+			_, err := d.Run(ctx, spec(func(s *RunSpec) { s.Network = "host x" }))
+			return err
+		},
+		"run alias": func(d Docker) error {
+			_, err := d.Run(ctx, spec(func(s *RunSpec) { s.Aliases = []string{"-a"} }))
+			return err
+		},
+		"run volume": func(d Docker) error {
+			_, err := d.Run(ctx, spec(func(s *RunSpec) { s.Volume, s.VolumeTarget = "/etc", "/data" }))
+			return err
+		},
+		"run volume tgt": func(d Docker) error {
+			_, err := d.Run(ctx, spec(func(s *RunSpec) { s.Volume, s.VolumeTarget = "v1", "data" }))
+			return err
+		},
+		"run tmpfs": func(d Docker) error {
+			_, err := d.Run(ctx, spec(func(s *RunSpec) { s.Tmpfs = []string{"/x:exec"} }))
+			return err
+		},
+		"run image":       func(d Docker) error { _, err := d.Run(ctx, spec(func(s *RunSpec) { s.Image = "-v" })); return err },
+		"run empty image": func(d Docker) error { _, err := d.Run(ctx, spec(func(s *RunSpec) { s.Image = "" })); return err },
+		"pull":            func(d Docker) error { return d.Pull(ctx, "--all-tags") },
+		"detect port":     func(d Docker) error { _, err := d.DetectContainerPort(ctx, "-f"); return err },
+		"remove":          func(d Docker) error { return d.Remove(ctx, "-v") },
+		"network":         func(d Docker) error { return d.EnsureNetwork(ctx, "--internal") },
+		"create volume":   func(d Docker) error { return d.CreateVolume(ctx, "a/b") },
+		"copy volume":     func(d Docker) error { return d.CopyIntoVolume(ctx, "/tmp/x", "-v") },
+		"copy relative":   func(d Docker) error { return d.CopyIntoVolume(ctx, "tmp/x", "cp-vol-s1") },
+		"copy colon":      func(d Docker) error { return d.CopyIntoVolume(ctx, "/tmp/x:/etc", "cp-vol-s1") },
+		"probe network":   func(d Docker) error { return d.Probe(ctx, "-n", "cp-d1", 3000) },
+		"probe host":      func(d Docker) error { return d.Probe(ctx, "cp-proj-p1", "--x", 3000) },
+		"is running":      func(d Docker) error { _, err := d.IsRunning(ctx, "-f"); return err },
+	}
+	for name, call := range cases {
+		r := &testutil.FakeRunner{}
+		if err := call(newDocker(r)); err == nil {
+			t.Errorf("%s: want an error", name)
+		}
+		if len(r.Commands()) != 0 {
+			t.Errorf("%s: no docker call expected, got %v", name, r.Commands())
+		}
+	}
+	r := &testutil.FakeRunner{}
+	if newDocker(r).VolumeExists(ctx, "-v") || len(r.Commands()) != 0 {
+		t.Errorf("VolumeExists with an invalid name must be false without a docker call")
+	}
+}

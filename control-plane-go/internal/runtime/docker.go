@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"slices"
 	"strconv"
 	"strings"
@@ -37,8 +38,10 @@ type RunSpec struct {
 	Env           map[string]string
 	Cmd           []string // appended after the image
 	ContainerPort int
-	PublishPort   int    // 0: not published; otherwise bound to 127.0.0.1 only
-	Volume        string // named volume mounted at /data
+	PublishPort   int      // 0: not published; otherwise bound to 127.0.0.1 only
+	Volume        string   // named volume, mounted at VolumeTarget
+	VolumeTarget  string   // absolute mount path inside the container (e.g. /data/db for mongo); required with Volume
+	Tmpfs         []string // absolute paths mounted as tmpfs (e.g. mongo's /data/configdb, so no anonymous volume is created)
 }
 
 func (d Docker) Pull(ctx context.Context, image string) error {
@@ -79,6 +82,9 @@ func parseExposedPorts(raw string) (int, error) {
 // Run replaces any container with the same name and starts a new one
 // detached. It returns the container ID.
 func (d Docker) Run(ctx context.Context, s RunSpec) (string, error) {
+	if err := s.validate(); err != nil {
+		return "", err
+	}
 	envFile, err := writeEnvFile(s.Env)
 	if err != nil {
 		return "", err
@@ -91,6 +97,30 @@ func (d Docker) Run(ctx context.Context, s RunSpec) (string, error) {
 	}
 	out, err := d.R.Run(ctx, "", "docker", d.runArgs(s, envFile)...)
 	return strings.TrimSpace(out), err
+}
+
+// validate rejects a spec before any docker call is made.
+func (s RunSpec) validate() error {
+	if s.Volume != "" {
+		if err := checkContainerPath("volume target", s.VolumeTarget); err != nil {
+			return err
+		}
+	}
+	for _, p := range s.Tmpfs {
+		if err := checkContainerPath("tmpfs path", p); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkContainerPath requires an absolute path without ':' (which docker
+// would read as a mount-option separator).
+func checkContainerPath(what, p string) error {
+	if !path.IsAbs(p) || strings.Contains(p, ":") {
+		return fmt.Errorf("%s %q must be an absolute path without ':'", what, p)
+	}
+	return nil
 }
 
 func (d Docker) runArgs(s RunSpec, envFile string) []string {
@@ -108,7 +138,10 @@ func (d Docker) runArgs(s RunSpec, envFile string) []string {
 		args = append(args, "-p", fmt.Sprintf("127.0.0.1:%d:%d", s.PublishPort, s.ContainerPort))
 	}
 	if s.Volume != "" {
-		args = append(args, "-v", s.Volume+":/data")
+		args = append(args, "-v", s.Volume+":"+s.VolumeTarget)
+	}
+	for _, p := range s.Tmpfs {
+		args = append(args, "--tmpfs", p)
 	}
 	if envFile != "" {
 		args = append(args, "--env-file", envFile)

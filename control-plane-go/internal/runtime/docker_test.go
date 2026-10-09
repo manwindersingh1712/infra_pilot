@@ -50,7 +50,7 @@ func TestRunBuildsIsolatedLimitedContainer(t *testing.T) {
 		Labels:        map[string]string{"cp.serviceId": "s1", "cp.deploymentId": "d1"},
 		Env:           map[string]string{"B": "2", "A": "1"},
 		Cmd:           []string{"sh", "-c", "exec redis-server"},
-		ContainerPort: 6379, PublishPort: 20000, Volume: "cp-vol-s1",
+		ContainerPort: 6379, PublishPort: 20000, Volume: "cp-vol-s1", VolumeTarget: "/data",
 	})
 	if err != nil || id != "abc123" {
 		t.Fatalf("id=%q err=%v", id, err)
@@ -185,5 +185,33 @@ func TestIsRunningTreatsMissingContainerAsNotRunning(t *testing.T) {
 	failing := &testutil.FakeRunner{Handle: func(testutil.Call) (string, error) { return "", errors.New("daemon down") }}
 	if _, err := newDocker(failing).IsRunning(context.Background(), "abc"); err == nil {
 		t.Fatal("other errors must be returned")
+	}
+}
+
+// STAFF-1 (T16): the volume mounts at the image's data dir (mongo: /data/db),
+// and extra paths (mongo: /data/configdb) get tmpfs so no anonymous volume is made.
+func TestRunMountsVolumeAtTargetAndTmpfs(t *testing.T) {
+	r := &testutil.FakeRunner{}
+	_, err := newDocker(r).Run(context.Background(), RunSpec{
+		Image: "mongo:7", Name: "cp-d3", Network: "n", ContainerPort: 27017,
+		Volume: "cp-vol-s3", VolumeTarget: "/data/db", Tmpfs: []string{"/data/configdb"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := r.Commands()[1]
+	if !strings.Contains(got, " -v cp-vol-s3:/data/db --tmpfs /data/configdb mongo:7") {
+		t.Fatalf("got: %s", got)
+	}
+}
+
+func TestRunRejectsVolumeWithoutTarget(t *testing.T) {
+	r := &testutil.FakeRunner{}
+	_, err := newDocker(r).Run(context.Background(), RunSpec{Image: "img", Name: "cp-d4", Network: "n", Volume: "cp-vol-s4"})
+	if err == nil {
+		t.Fatal("a volume without VolumeTarget must be rejected")
+	}
+	if len(r.Commands()) != 0 {
+		t.Fatalf("no docker call expected, got %v", r.Commands())
 	}
 }

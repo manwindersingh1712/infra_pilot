@@ -146,3 +146,20 @@ func TestStreamerPumpCutsOnRuneBoundary(t *testing.T) {
 		t.Fatalf("got %q, %q", got[1].Message, got[2].Message)
 	}
 }
+
+// SEC-3 T19: a container ID docker could read as a flag, or an empty
+// deployment ID, starts nothing.
+func TestStreamerRejectsBadIDs(t *testing.T) {
+	var started atomic.Int32
+	s := NewStreamer(context.Background(), &memorySink{}, slog.New(slog.DiscardHandler))
+	s.newCmd = func(ctx context.Context, _ string) *exec.Cmd {
+		started.Add(1)
+		return exec.CommandContext(ctx, "sleep", "30")
+	}
+
+	s.Start("dep1", "-x")
+	s.Start("", "ctr1")
+	if started.Load() != 0 || s.IsStreaming("dep1") || s.IsStreaming("") {
+		t.Fatalf("started=%d", started.Load())
+	}
+}

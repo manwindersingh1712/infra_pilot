@@ -73,10 +73,11 @@ func TestStreamerForwardsStdoutStderrAndExit(t *testing.T) {
 
 func TestStreamerStartsOncePerDeploymentAndStops(t *testing.T) {
 	var started atomic.Int32
-	s := NewStreamer(context.Background(), &memorySink{}, slog.New(slog.DiscardHandler))
+	sink := &memorySink{}
+	s := NewStreamer(context.Background(), sink, slog.New(slog.DiscardHandler))
 	s.newCmd = func(ctx context.Context, _ string) *exec.Cmd {
 		started.Add(1)
-		return exec.CommandContext(ctx, "sleep", "30")
+		return exec.CommandContext(ctx, "sh", "-c", "echo ready; exec sleep 30")
 	}
 
 	s.Start("dep1", "ctr1")
@@ -84,8 +85,15 @@ func TestStreamerStartsOncePerDeploymentAndStops(t *testing.T) {
 	if started.Load() != 1 || !s.IsStreaming("dep1") {
 		t.Fatalf("started=%d streaming=%v", started.Load(), s.IsStreaming("dep1"))
 	}
+	waitFor(t, func() bool { return len(sink.all()) > 0 }) // the process is running
 	s.Stop("dep1")
 	waitFor(t, func() bool { return !s.IsStreaming("dep1") })
+	// STAFF-5 T19: the process was killed and the goroutine wrote its last entry.
+	waitFor(t, func() bool {
+		got := sink.all()
+		last := got[len(got)-1]
+		return last.Source == "system" && strings.HasPrefix(last.Message, "Log stream ended (exit code: ")
+	})
 }
 
 // SEC-1 / SEC-2 T19: an over-long line is cut to maxLogLine with a marker and

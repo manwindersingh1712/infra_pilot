@@ -67,7 +67,7 @@ The checks below were last done on 2026-10-07 (spec §14 has the full table).
 
 ## 5. Progress tracker
 
-> **Last session (2026-10-07 to 2026-10-09):** see `review/session-log-2026-10-07-to-09.md`, which covers what was built, the CTO decisions, operational changes, process problems and how to resume. Plan 1 resumed 2026-10-09 at Task 10.
+> **Last session (2026-10-07 to 2026-10-09):** see `review/session-log-2026-10-07-to-09.md` (now also covers the 2026-10-09/10 session at the bottom), which covers what was built, the CTO decisions, operational changes, process problems and how to resume. Plan 1 resumed 2026-10-09 at Task 10.
 
 Update this section as the work moves. The orchestrating session should tick boxes and fill in dates at each plan gate.
 
@@ -78,7 +78,7 @@ Update this section as the work moves. The orchestrating session should tick box
 | Plan 3 — hardening | Not started | | | | Requires Plan 1's rollback window to be closed |
 
 - **Branch:** `go-migration` (created 2026-10-07 off `go`; first commit holds these docs).
-- **Current task:** Plan 1, Task 17 (Host port allocation). Tasks 1, 1a, 2, 3 (2026-10-07), 4, 5, 5a, 6, 7, 8 (2026-10-08), 9-15 (2026-10-09) and 16 (2026-10-10, one fix round) passed their gates. Go toolchain is go1.27.2.
+- **Current task:** Plan 1, Task 17 (Host port allocation), **fix round 1 in progress** (STAFF-1 T17: published port ranges ignored). Working-tree changes to `control-plane-go/internal/runtime/ports.go` and `ports_test.go` may be uncommitted; see `review/plan1/task-17.md` for the exact next steps. Tasks 1, 1a, 2-16 passed their gates (16 on 2026-10-10 after one fix round). Remaining after 17: Plan 1 Tasks 18-27, Plan 2 (18 tasks), Plan 3 (5 tasks). Go toolchain go1.27.2.
 - **govulncheck can hang** on its network fetch (one run hung for an hour; the retry took 3 s). Always run it with a hard limit, e.g. `perl -e 'alarm 180; exec @ARGV or exit 127' "$(go env GOPATH)/bin/govulncheck" ./...`, and retry once. **Use the full path and `or exit 127`:** govulncheck is not on the agent shell PATH, and the old wrapper turned "command not found" into exit 0, so the "govulncheck exit 0" results recorded for Tasks 9 and 10 before 2026-10-09 are not trustworthy (see `review/plan1/task-10.md`).
 - **Agent stalls:** if Engineers stall on plan-verbatim code, the orchestrator may commit it after running the CI checks (user ruling, `decisions.md` 2026-10-09). Keep the Mac awake during sessions (`caffeinate -i`); macOS sleep pauses long runs.
 - **Environment note:** subagents on this machine are often killed by the 10-minute stream watchdog during long commands. If a reviewer stalls twice, the orchestrator may run that reviewer's mechanical checks itself (background commands, throwaway files outside the repo) and record it in the task file.

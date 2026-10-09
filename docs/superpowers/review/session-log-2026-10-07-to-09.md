@@ -107,3 +107,15 @@ Parity checks against the running Node API, done read-only on the dev DB:
    - Security, Staff and Verifier review it, and the result goes in `review/plan1/task-10.md`.
 3. Then continue with Task 11 (Redis hot tier) onward.
 4. **Before any push:** ask the user, run full-history gitleaks, and run the local CI dry run.
+
+---
+
+# Session 2026-10-09 to 2026-10-10 (Tasks 10-17)
+
+- **Another session** (after the pause) completed Tasks 10-15 and committed Task 16. Records: `review/plan1/task-10.md` … `task-15.md`. Go toolchain moved to go1.27.2. The old govulncheck wrapper hid a missing binary, so earlier "exit 0" results for Tasks 9-10 were not trustworthy; the corrected command is in START-HERE §5.
+- **Task 16 (Docker runtime): done after one fix round.** Big finding: managed Mongo data never persisted (mongo:7 writes to `/data/db`, the volume was at `/data`; Node had the same bug). CTO ruling: `RunSpec.VolumeTarget`/`Tmpfs`, Mongo at `/data/db` with `/data/configdb` on tmpfs, no `admin123` (always generated passwords), Redis-only legacy copy, Node-era Mongo moved by `mongodump`/`mongorestore` in Task 27 step 6. Spec + Task 23/27 amended. Also: capped runner output (1 MiB stdout / 64 KiB stderr), WaitDelay, env/name/image validation, limits on helper containers, real-Docker Mongo test.
+- **Task 17 (ports): fix round 1 in progress** (see `task-17.md`).
+- **Open tooling issue (medium):** gosec v2.29.0 can't read go1.27 export data, so its type-aware rules are blind locally and probably in CI. Needs a newer gosec (backlog). Use `$(go env GOPATH)/bin/gosec`, not Homebrew's.
+- **New rule (user):** at ~90% context, save state into START-HERE + this log and commit (START-HERE §7 rule 0).
+- **User questions answered:** 34 tasks left (Plan 1: 11 incl. 17; Plan 2: 18; Plan 3: 5). Kubernetes is roadmap Phase 6, not in the migration plans; the `Runtime`/`Router` interfaces (spec D7) keep it possible.
+- **Next step:** check whether the Task 17 fix commit landed (`git log`); if `ports.go`/`ports_test.go` are still uncommitted, run the CI dry run and have an Engineer commit (or the orchestrator, per the 2026-10-09 user ruling), then Staff + Verifier re-check, close `task-17.md`, update the tracker, start Task 18 (nginx routes).

@@ -24,7 +24,10 @@ func TestExecRunnerErrorIncludesStderr(t *testing.T) {
 }
 
 func TestExecRunnerUsesDir(t *testing.T) {
-	dir, _ := filepath.EvalSymlinks(t.TempDir())
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	out, err := ExecRunner{}.Run(context.Background(), dir, "pwd")
 	if err != nil || strings.TrimSpace(out) != dir {
 		t.Fatalf("out=%q err=%v want %s", out, err, dir)
@@ -91,5 +94,14 @@ func TestCappedWriters(t *testing.T) {
 	}
 	if tb.String() != "hijkl" {
 		t.Fatalf("tail = %q", tb.String())
+	}
+}
+
+func TestFirstArgAndTail(t *testing.T) {
+	if firstArg(nil) != "" || firstArg([]string{"build", "-t"}) != "build" {
+		t.Fatal("firstArg")
+	}
+	if tail("abcdef", 3) != "def" || tail("ab", 3) != "ab" {
+		t.Fatal("tail")
 	}
 }

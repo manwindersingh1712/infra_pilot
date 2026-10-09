@@ -37,9 +37,15 @@ func TestRunBuildsIsolatedLimitedContainer(t *testing.T) {
 		for i, a := range c.Args {
 			if a == "--env-file" {
 				envFile = c.Args[i+1]
-				b, _ := os.ReadFile(envFile)
+				b, err := os.ReadFile(envFile)
+				if err != nil {
+					return "", err
+				}
 				envContent = string(b)
-				info, _ := os.Stat(envFile)
+				info, err := os.Stat(envFile)
+				if err != nil {
+					return "", err
+				}
 				envMode = info.Mode().Perm()
 			}
 		}
@@ -74,7 +80,9 @@ func TestRunBuildsIsolatedLimitedContainer(t *testing.T) {
 
 func TestRunWithoutPortOrVolumeOrEnv(t *testing.T) {
 	r := &testutil.FakeRunner{}
-	_, _ = newDocker(r).Run(context.Background(), RunSpec{Image: "img", Name: "cp-d2", Network: "n", ContainerPort: 3000})
+	if _, err := newDocker(r).Run(context.Background(), RunSpec{Image: "img", Name: "cp-d2", Network: "n", ContainerPort: 3000}); err != nil {
+		t.Fatal(err)
+	}
 	got := r.Commands()[1]
 	if strings.Contains(got, " -p ") || strings.Contains(got, " -v ") || strings.Contains(got, "--env-file") {
 		t.Fatalf("unexpected flags: %s", got)
@@ -141,9 +149,15 @@ func TestVolumesProbeAndInspect(t *testing.T) {
 	if d.VolumeExists(ctx, "cp-vol-s1") {
 		t.Fatal("volume should not exist")
 	}
-	_ = d.CreateVolume(ctx, "cp-vol-s1")
-	_ = d.CopyIntoVolume(ctx, "/tmp/cp-volumes/s1", "cp-vol-s1")
-	_ = d.Probe(ctx, "cp-proj-p1", "cp-d1", 3000)
+	for _, err := range []error{
+		d.CreateVolume(ctx, "cp-vol-s1"),
+		d.CopyIntoVolume(ctx, "/tmp/cp-volumes/s1", "cp-vol-s1"),
+		d.Probe(ctx, "cp-proj-p1", "cp-d1", 3000),
+	} {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 	running, err := d.IsRunning(ctx, "abc")
 	if err != nil || !running {
 		t.Fatalf("running=%v err=%v", running, err)
@@ -166,7 +180,9 @@ func TestDetectContainerPortAndPull(t *testing.T) {
 	if p, err := d.DetectContainerPort(context.Background(), "img"); err != nil || p != 8080 {
 		t.Fatalf("p=%d err=%v", p, err)
 	}
-	_ = d.Pull(context.Background(), "img")
+	if err := d.Pull(context.Background(), "img"); err != nil {
+		t.Fatal(err)
+	}
 	cmds := r.Commands()
 	if cmds[0] != "docker image inspect img --format {{json .Config.ExposedPorts}}" || cmds[1] != "docker pull img" {
 		t.Fatalf("cmds = %v", cmds)
@@ -311,5 +327,115 @@ func TestRejectsUnsafeArgumentsBeforeDocker(t *testing.T) {
 	r := &testutil.FakeRunner{}
 	if newDocker(r).VolumeExists(ctx, "-v") || len(r.Commands()) != 0 {
 		t.Errorf("VolumeExists with an invalid name must be false without a docker call")
+	}
+}
+
+// STAFF-3 (T16): branches the first tests missed.
+func TestEnsureNetworkBranches(t *testing.T) {
+	ctx := context.Background()
+	// Network exists and nginx is unset: only the inspect runs.
+	r := &testutil.FakeRunner{}
+	d := newDocker(r)
+	d.Nginx = ""
+	if err := d.EnsureNetwork(ctx, "cp-proj-p1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.Commands(); len(got) != 1 || got[0] != "docker network inspect cp-proj-p1" {
+		t.Fatalf("got %v", got)
+	}
+	// A concurrent create ("already exists") is fine.
+	race := &testutil.FakeRunner{Handle: func(c testutil.Call) (string, error) {
+		switch c.Args[1] {
+		case "inspect":
+			return "", errors.New("no such network")
+		case "create":
+			return "", errors.New("network with name cp-proj-p1 already exists")
+		}
+		return "", nil
+	}}
+	if err := newDocker(race).EnsureNetwork(ctx, "cp-proj-p1"); err != nil {
+		t.Fatal(err)
+	}
+	// Other create and connect errors are returned.
+	for _, failOn := range []string{"create", "connect"} {
+		r := &testutil.FakeRunner{Handle: func(c testutil.Call) (string, error) {
+			switch c.Args[1] {
+			case "inspect":
+				return "", errors.New("no such network")
+			case failOn:
+				return "", errors.New("daemon down")
+			}
+			return "", nil
+		}}
+		if err := newDocker(r).EnsureNetwork(ctx, "cp-proj-p1"); err == nil {
+			t.Errorf("%s failure must be returned", failOn)
+		}
+	}
+}
+
+func TestRunReturnsRemoveAndRunErrors(t *testing.T) {
+	spec := RunSpec{Image: "img", Name: "cp-d7", Network: "n", ContainerPort: 3000, Env: map[string]string{"A": "1"}}
+	for _, failOn := range []string{"rm", "run"} {
+		var envFile string
+		r := &testutil.FakeRunner{Handle: func(c testutil.Call) (string, error) {
+			for i, a := range c.Args {
+				if a == "--env-file" {
+					envFile = c.Args[i+1]
+				}
+			}
+			if c.Args[0] == failOn {
+				return "", errors.New("daemon down")
+			}
+			return "id\n", nil
+		}}
+		if _, err := newDocker(r).Run(context.Background(), spec); err == nil {
+			t.Errorf("%s failure must be returned", failOn)
+		}
+		if failOn == "rm" && len(r.Commands()) != 1 {
+			t.Errorf("docker run must not follow a failed rm: %v", r.Commands())
+		}
+		if envFile != "" {
+			if _, err := os.Stat(envFile); !os.IsNotExist(err) {
+				t.Errorf("env file left behind after %s failure", failOn)
+			}
+		}
+	}
+}
+
+func TestDetectContainerPortErrors(t *testing.T) {
+	ctx := context.Background()
+	failing := &testutil.FakeRunner{Handle: func(testutil.Call) (string, error) { return "", errors.New("no such image") }}
+	if _, err := newDocker(failing).DetectContainerPort(ctx, "img"); err == nil {
+		t.Fatal("inspect failure must be returned")
+	}
+	for _, raw := range []string{"not json", `{"http/tcp":{}}`} {
+		r := &testutil.FakeRunner{Handle: func(testutil.Call) (string, error) { return raw, nil }}
+		if _, err := newDocker(r).DetectContainerPort(ctx, "img"); err == nil {
+			t.Errorf("%q must fail", raw)
+		}
+	}
+}
+
+func TestVolumeExistsAndCopyErrors(t *testing.T) {
+	ctx := context.Background()
+	r := &testutil.FakeRunner{}
+	if !newDocker(r).VolumeExists(ctx, "cp-vol-s1") {
+		t.Fatal("inspect success means the volume exists")
+	}
+	failing := &testutil.FakeRunner{Handle: func(testutil.Call) (string, error) { return "", errors.New("daemon down") }}
+	d := newDocker(failing)
+	for name, err := range map[string]error{
+		"create": d.CreateVolume(ctx, "cp-vol-s1"),
+		"copy":   d.CopyIntoVolume(ctx, "/tmp/cp-volumes/s1", "cp-vol-s1"),
+		"probe":  d.Probe(ctx, "cp-proj-p1", "cp-d1", 3000),
+		"pull":   d.Pull(ctx, "img"),
+	} {
+		if err == nil {
+			t.Errorf("%s failure must be returned", name)
+		}
+	}
+	notRunning := &testutil.FakeRunner{Handle: func(testutil.Call) (string, error) { return "false\n", nil }}
+	if running, err := newDocker(notRunning).IsRunning(ctx, "abc"); err != nil || running {
+		t.Fatalf("running=%v err=%v", running, err)
 	}
 }

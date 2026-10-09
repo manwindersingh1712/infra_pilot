@@ -78,7 +78,7 @@ Update this section as the work moves. The orchestrating session should tick box
 | Plan 3 — hardening | Not started | | | | Requires Plan 1's rollback window to be closed |
 
 - **Branch:** `go-migration` (created 2026-10-07 off `go`; first commit holds these docs).
-- **Current task:** Plan 1, Task 16 (command runner and Docker runtime). Tasks 1, 1a, 2, 3 (2026-10-07), 4, 5, 5a, 6, 7, 8 (2026-10-08), 9, 10, 11, 12, 13, 14 and 15 (2026-10-09) passed their gates. Go toolchain is now go1.27.2 (`go.mod`, Task 10 SEC-1).
+- **Current task:** Plan 1, Task 17 (Host port allocation). Tasks 1, 1a, 2, 3 (2026-10-07), 4, 5, 5a, 6, 7, 8 (2026-10-08), 9-15 (2026-10-09) and 16 (2026-10-10, one fix round) passed their gates. Go toolchain is go1.27.2.
 - **govulncheck can hang** on its network fetch (one run hung for an hour; the retry took 3 s). Always run it with a hard limit, e.g. `perl -e 'alarm 180; exec @ARGV or exit 127' "$(go env GOPATH)/bin/govulncheck" ./...`, and retry once. **Use the full path and `or exit 127`:** govulncheck is not on the agent shell PATH, and the old wrapper turned "command not found" into exit 0, so the "govulncheck exit 0" results recorded for Tasks 9 and 10 before 2026-10-09 are not trustworthy (see `review/plan1/task-10.md`).
 - **Agent stalls:** if Engineers stall on plan-verbatim code, the orchestrator may commit it after running the CI checks (user ruling, `decisions.md` 2026-10-09). Keep the Mac awake during sessions (`caffeinate -i`); macOS sleep pauses long runs.
 - **Environment note:** subagents on this machine are often killed by the 10-minute stream watchdog during long commands. If a reviewer stalls twice, the orchestrator may run that reviewer's mechanical checks itself (background commands, throwaway files outside the repo) and record it in the task file.
@@ -121,6 +121,8 @@ orchestration (spec §13) and role briefs for any implementation.
 ```
 
 ## 7. Rules every session must follow
+
+0. **Save context before it runs out.** When the session's context usage gets near 90%, stop starting new work and update this file first: the progress tracker (§5: current task, its exact state, uncommitted files, agents still running), any new rules or environment facts, and a short entry in the latest session log (`review/session-log-*.md`) with what was done, decisions made, open findings and the exact next step. Include everything a new session needs to continue without this conversation. Commit these docs. The user then starts a new session with the "Resume after an interruption" prompt.
 
 1. **Never delete Node code** in `control-plane/`. It becomes a frozen reference (spec D4).
 2. **Ask the user before:**

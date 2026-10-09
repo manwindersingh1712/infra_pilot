@@ -20,6 +20,7 @@ type Worker struct {
 	build       prometheus.Histogram
 	deploy      prometheus.Histogram
 	outbox      *prometheus.GaugeVec
+	outboxLag   prometheus.Gauge
 }
 
 func NewWorker() *Worker {
@@ -40,8 +41,11 @@ func NewWorker() *Worker {
 		outbox: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "cp_outbox_events", Help: "Outbox rows by status.",
 		}, []string{"status"}),
+		outboxLag: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "cp_outbox_oldest_pending_age_seconds", Help: "Age of the oldest pending or publishing outbox row; 0 when none.",
+		}),
 	}
-	reg.MustRegister(m.deployments, m.build, m.deploy, m.outbox,
+	reg.MustRegister(m.deployments, m.build, m.deploy, m.outbox, m.outboxLag,
 		collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	return m
 }
@@ -70,6 +74,13 @@ func (m *Worker) SetOutbox(counts map[string]int) {
 	}
 	for _, status := range []string{"pending", "publishing", "published", "dead"} {
 		m.outbox.WithLabelValues(status).Set(float64(counts[status]))
+	}
+}
+
+// SetOutboxLag records the age of the oldest unpublished outbox row.
+func (m *Worker) SetOutboxLag(d time.Duration) {
+	if m != nil {
+		m.outboxLag.Set(d.Seconds())
 	}
 }
 

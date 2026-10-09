@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"infrapilot/internal/store"
 )
@@ -103,5 +104,53 @@ func TestCountOutboxByStatus(t *testing.T) {
 	}
 	if counts["pending"] != 1 || counts["dead"] != 1 || counts["published"] != 0 {
 		t.Fatalf("counts = %v", counts)
+	}
+}
+
+func TestOldestUnpublishedOutboxAge(t *testing.T) {
+	st, ctx := newStore(t), context.Background()
+	age, err := st.OldestUnpublishedOutboxAge(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if age != 0 {
+		t.Fatalf("empty outbox age = %v, want 0", age)
+	}
+
+	pending, err := st.CreateOutboxEvent(ctx, "x", map[string]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	published, err := st.CreateOutboxEvent(ctx, "x", map[string]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dead, err := st.CreateOutboxEvent(ctx, "x", map[string]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MarkOutboxPublished(ctx, published); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MarkOutboxDead(ctx, dead, 10, "gone"); err != nil {
+		t.Fatal(err)
+	}
+	set := func(id, ago string) {
+		t.Helper()
+		if _, err := pool.Exec(ctx,
+			`UPDATE "OutboxEvent" SET "createdAt" = (now() AT TIME ZONE 'UTC') - $2::interval WHERE "id" = $1`, id, ago); err != nil {
+			t.Fatal(err)
+		}
+	}
+	set(pending, "90 seconds")
+	set(published, "1 hour")
+	set(dead, "2 hours")
+
+	age, err = st.OldestUnpublishedOutboxAge(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if age < 89*time.Second || age > 120*time.Second {
+		t.Fatalf("age = %v, want 89s..120s (published and dead rows must be ignored)", age)
 	}
 }

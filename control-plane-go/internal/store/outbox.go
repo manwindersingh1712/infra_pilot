@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/lucsky/cuid"
@@ -89,4 +90,13 @@ func (s *Store) CountOutboxByStatus(ctx context.Context) (map[string]int, error)
 		counts[status] = n
 	}
 	return counts, rows.Err()
+}
+
+// OldestUnpublishedOutboxAge returns the age of the oldest pending or
+// publishing outbox row, or 0 when there is none. createdAt is UTC (Prisma convention).
+func (s *Store) OldestUnpublishedOutboxAge(ctx context.Context) (time.Duration, error) {
+	var secs float64
+	err := s.db.QueryRow(ctx, `SELECT COALESCE(EXTRACT(EPOCH FROM (now() AT TIME ZONE 'UTC') - min("createdAt")), 0)::float8
+		FROM "OutboxEvent" WHERE "status" IN ('pending', 'publishing')`).Scan(&secs)
+	return time.Duration(secs * float64(time.Second)), err
 }

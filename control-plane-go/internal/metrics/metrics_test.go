@@ -36,3 +36,17 @@ func TestNilWorkerIsSafe(t *testing.T) {
 	m.DeploymentFinished("failed", time.Second)
 	m.SetOutbox(nil)
 }
+
+func TestOutboxLagIsExposed(t *testing.T) {
+	m := NewWorker()
+	m.SetOutboxLag(42 * time.Second)
+
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+	if want := "cp_outbox_oldest_pending_age_seconds 42"; !strings.Contains(rec.Body.String(), want) {
+		t.Errorf("missing %q", want)
+	}
+
+	var nilWorker *Worker
+	nilWorker.SetOutboxLag(time.Second)
+}

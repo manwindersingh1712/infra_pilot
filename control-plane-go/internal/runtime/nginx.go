@@ -2,7 +2,9 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -68,19 +70,46 @@ func RenderRoute(serviceID, baseDomain, containerName string, containerPort int)
 	}, "\n")
 }
 
+// UpsertRoute writes the service's route and reloads nginx. If the reload
+// fails, the previous route (or none) is put back so one bad file does not
+// break every later reload (STAFF-1 T18).
 func (n Nginx) UpsertRoute(ctx context.Context, serviceID, containerName string, containerPort int) error {
+	if err := n.upsertRoute(ctx, serviceID, containerName, containerPort); err != nil {
+		return fmt.Errorf("nginx route %s: %w", serviceID, err)
+	}
+	return nil
+}
+
+func (n Nginx) upsertRoute(ctx context.Context, serviceID, containerName string, containerPort int) error {
 	if err := checkRoute(serviceID, n.BaseDomain, containerName); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(n.RoutesDir, 0o755); err != nil { // #nosec G301 -- nginx (separate container, bind mount) must read route files; contents are generated from our IDs
 		return err
 	}
-	conf := RenderRoute(serviceID, n.BaseDomain, containerName, containerPort)
-	if err := writeFileAtomic(filepath.Join(n.RoutesDir, "svc-"+serviceID+".conf"), []byte(conf)); err != nil {
+	path := filepath.Join(n.RoutesDir, "svc-"+serviceID+".conf")
+	prev, err := os.ReadFile(path) // #nosec G304 -- RoutesDir is operator config; serviceID is checked above
+	hadPrev := err == nil
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	_, err := n.R.Run(ctx, "", "docker", "exec", n.Container, "nginx", "-s", "reload")
-	return err
+	conf := RenderRoute(serviceID, n.BaseDomain, containerName, containerPort)
+	if err := writeFileAtomic(path, []byte(conf)); err != nil {
+		return err
+	}
+	if _, err := n.R.Run(ctx, "", "docker", "exec", n.Container, "nginx", "-s", "reload"); err != nil {
+		var rbErr error
+		if hadPrev {
+			rbErr = writeFileAtomic(path, prev)
+		} else {
+			rbErr = os.Remove(path)
+		}
+		if rbErr != nil {
+			return errors.Join(fmt.Errorf("reload: %w", err), fmt.Errorf("roll back route file: %w", rbErr))
+		}
+		return fmt.Errorf("reload (route file rolled back): %w", err)
+	}
+	return nil
 }
 
 // writeFileAtomic writes data to a temp file in the same directory and renames

@@ -2,8 +2,10 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"infrapilot/internal/testutil"
@@ -139,5 +141,50 @@ func TestUpsertRouteReplacesFileAtomically(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(old); string(b) != wantRoute {
 		t.Fatalf("old file rewritten in place: %q", b)
+	}
+}
+
+var errReload = errors.New("nginx: [emerg] unexpected end of file")
+
+func failingReload() *testutil.FakeRunner {
+	return &testutil.FakeRunner{Handle: func(testutil.Call) (string, error) { return "", errReload }}
+}
+
+func checkReloadErr(t *testing.T, err error) {
+	t.Helper()
+	if !errors.Is(err, errReload) || !strings.Contains(err.Error(), "svc-1") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestUpsertRouteReloadFailureRemovesNewFile(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "routes")
+	r := failingReload()
+	n := Nginx{R: r, RoutesDir: dir, Container: "cp_nginx", BaseDomain: "localhost", Port: "80"}
+
+	checkReloadErr(t, n.UpsertRoute(context.Background(), "svc-1", "cp-dep1", 3000))
+	if got := routeFiles(t, dir); len(got) != 0 {
+		t.Fatalf("files = %v", got)
+	}
+	if cmds := r.Commands(); len(cmds) != 1 {
+		t.Fatalf("cmds = %v", cmds)
+	}
+}
+
+func TestUpsertRouteReloadFailureRestoresOldFile(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "routes")
+	n := Nginx{R: &testutil.FakeRunner{}, RoutesDir: dir, Container: "cp_nginx", BaseDomain: "localhost", Port: "80"}
+	if err := n.UpsertRoute(context.Background(), "svc-1", "cp-dep1", 3000); err != nil {
+		t.Fatal(err)
+	}
+
+	n.R = failingReload()
+	checkReloadErr(t, n.UpsertRoute(context.Background(), "svc-1", "cp-dep2", 4000))
+	b, err := os.ReadFile(filepath.Join(dir, "svc-svc-1.conf"))
+	if err != nil || string(b) != wantRoute {
+		t.Fatalf("file = %q err=%v", b, err)
+	}
+	if got := routeFiles(t, dir); len(got) != 1 {
+		t.Fatalf("files = %v", got)
 	}
 }

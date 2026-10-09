@@ -223,3 +223,43 @@ Follow-ups:
   - Spec §8 Worker bullet replaced.
   - Amendments pasted under Task 15 (fix round: `OldestUnpublishedOutboxAge` plus `SetOutboxLag` and tests), Task 23 (`MarkFailed` returns `(bool, error)`; count only when changed) and Task 26 (metrics loop logs errors and sets the lag gauge).
   - Backlog line added. STAFF-1/4/5 (T15) close once the Task 15 fix round passes review.
+
+## 2026-10-09: Managed volume mount path and the Node-era Mongo migration (CTO)
+- **Context:** Task 16 (`67aba8e`) mounts every managed volume at `/data`. Staff review STAFF-1 (T16, high) found the problem. `mongo:7` declares `VOLUME ["/data/db","/data/configdb"]`, which the CTO confirmed with `docker image inspect`. Docker therefore puts anonymous volumes on top of the `/data` mount, and Mongo writes into those. The result: each Go redeploy starts with an empty database, and each `docker rm -f` leaves an anonymous volume behind. Node had the same bug (`docker-runner.ts:104` mounts `${volumePath}:/data`), so:
+  - Node-era Mongo data has only ever lived in the anonymous volume of the Mongo container currently running. It never survived a Node redeploy.
+  - `/tmp/cp-volumes/<id>` holds only the empty `db/` and `configdb/` mountpoint directories that Docker created.
+
+  Two Task 23 rules rest on a false premise:
+  - Copying the legacy directory for Mongo copies nothing.
+  - The admin123 rule (`hasExistingData` → `legacyMongoPassword`) would start a brand-new, empty Mongo with the publicly known password `admin123`, because that empty legacy directory exists. That is a security regression.
+
+  Redis is not affected: `redis:7-alpine` declares `/data`, and Task 23 passes `--dir /data`.
+- **Options considered:**
+  - (a) Automatically migrate Node-era Mongo data from the old container's anonymous volume: stop the old container, copy with `--volumes-from`, start the new one, and restart the old one on failure.
+  - (b) Mount at the right path, drop the Mongo legacy copy and the admin123 backfill, and move Node-era Mongo data with a manual `mongodump`/`mongorestore` runbook step at cutover.
+  - (c) Leave the plan as written.
+- **Decision:**
+  - **STAFF-1: fix now, (b).**
+    - The mount target becomes a `RunSpec` field in the Task 16 fix round, because `RunSpec` lives in Task 16.
+    - The image-specific paths and the Mongo rules change in the Task 23 amendment.
+    - Node-era Mongo data moves through a runbook step in Task 27.
+    - Container removal stays `docker rm -f` without `-v`. The old Node container's anonymous volume therefore survives a Go redeploy, as a fallback for manual recovery.
+    - Mongo's `/data/configdb` gets a tmpfs mount, so no anonymous volume is created there. A standalone mongod never uses configdb.
+  - **VER-1 (T16):** fix now.
+  - **STAFF-2 (T16):** fix now.
+  - **STAFF-3 (T16):** fix now.
+  - **STAFF-5 (T16):** fix now.
+  - **STAFF-6 (T16):** fix now.
+  - **STAFF-4 (T16):** fix now, as an optional real-Docker test that is skipped in `-short` mode and when docker is missing. It is the only test that would have caught STAFF-1.
+  - Security's T16 report is still pending. Its items will be triaged into this same fix round when it arrives.
+- **Why:**
+  - Option (a) means stopping and copying a live database, which needs crash-consistency and rollback logic. That is a lot of complexity for one dev VM, and the data it would save never had durability under Node anyway.
+  - Option (b) costs one struct field, one map field and a few deleted lines.
+  - Option (b) removes a hardcoded-password path.
+  - Under option (b), no data is lost, because the runbook dumps the data first and the orphaned anonymous volume stays as a fallback.
+  - The other items are cheap now.
+  - VER-1 breaks `IsRunning` on the Docker version we actually run.
+- **Follow-ups:**
+  - Spec §5 (Mongo row), §6 item 3 and §9/§12 (managed-volume risk row) are edited as stated in the CTO report.
+  - The Task 16 fix-round instructions and the Task 23 and Task 27 amendments are pasted under their headings.
+  - Backlog: two lines (dangling-volume prune; refuse deleting a managed password env var).

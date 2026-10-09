@@ -80,7 +80,7 @@ Every activity has its own timeout and a retry policy: 10 s initial interval, ×
 6. **RunContainer**, named `cp-<deploymentId>`:
    - network alias `svc-<serviceId>`;
    - resource limits;
-   - named volume `cp-vol-<serviceId>` mounted at `/data` for managed DBs;
+   - named volume `cp-vol-<serviceId>` mounted at the image's data directory (`/data` for Redis, `/data/db` for Mongo, with `/data/configdb` on tmpfs) for managed DBs;
    - Redis runs with `--requirepass`;
    - no published ports, except managed DB ports bound to `127.0.0.1` when `EXPOSE_MANAGED_PORTS=true` (default on in dev only; refused when `APP_ENV=production`).
 7. **WaitHealthy:** a TCP probe of `svc-<serviceId>:<port>` from a throwaway `busybox` container on the project network, polled every 2 s for up to 60 s.
@@ -109,7 +109,7 @@ Keeps the existing claim, backoff and `dead` logic, and calls a `WorkflowStarter
 
 | Problem today | Change |
 |---|---|
-| Managed Redis has no password, Mongo uses `admin/admin123`, and both ports are published on the host | Generated passwords; no published ports in production. Existing Mongo volumes keep their original credentials: a one-time backfill writes the current password as an env var so the UI shows the right one. |
+| Managed Redis has no password, Mongo uses `admin/admin123`, and both ports are published on the host | Generated passwords; no published ports in production. Every managed DB gets a generated password. Node mounted Mongo's volume at `/data`, so its data lived only in the running container's anonymous volume. Node-era Mongo data is moved by the cutover runbook (`mongodump`/`mongorestore`), not by a credential backfill. |
 | All containers share `cp_net` | One network per project. nginx joins each project network. |
 | No resource limits | Defaults `CONTAINER_MEMORY=512m`, `CONTAINER_CPUS=0.5`, `CONTAINER_PIDS=256`, overridable in config. |
 | Builds run on the host Docker daemon | `docker buildx build --builder cp-builder --push`. `cp-builder` is a `docker-container` BuildKit builder with CPU and memory limits, so Dockerfile steps run inside BuildKit, not on the host daemon. Rootless BuildKit or a separate build VM is the next step (Phase 6). |
@@ -127,7 +127,7 @@ Keeps the existing claim, backoff and `dead` logic, and calls a `WorkflowStarter
 
 1. **Redeploys no longer leak containers:** `RetirePrevious` and `stoppedAt`.
 2. **Managed DB redeploys no longer corrupt data:** `StopPrevious` before start.
-3. **Managed data survives reboots:** named volumes instead of `/tmp/cp-volumes`. A one-time move copies existing Node-era data into `cp-vol-<serviceId>` on first deploy: from the deployment's `volumePath` if it lies inside `LEGACY_VOLUME_ROOT`, otherwise from `LEGACY_VOLUME_ROOT/<serviceId>`, if the directory exists.
+3. **Managed data survives reboots:** named volumes instead of `/tmp/cp-volumes`. A one-time move copies existing Node-era data into `cp-vol-<serviceId>` on first deploy: from the deployment's `volumePath` if it lies inside `LEGACY_VOLUME_ROOT`, otherwise from `LEGACY_VOLUME_ROOT/<serviceId>`, if the directory exists. This applies to Redis only. Node-era Mongo data was never in that directory (see §5) and is moved by the cutover runbook.
 4. **Traffic switches only after the app is up:** `WaitHealthy` before `SwitchRoute`.
 5. **Services can be deleted:** `DELETE /services/:id?purgeData=true|false` plus `TeardownWorkflow`.
 6. **Log streams survive worker restarts:** on startup, re-attach to every running deployment that has a `containerId` and no `stoppedAt`.
@@ -186,7 +186,7 @@ Enum values are not changed, so Prisma could still read every row while rollback
 
 | Plan | File | Contents | Effort |
 |---|---|---|---|
-| 1 — Foundation + Temporal worker | `docs/superpowers/plans/2026-10-07-go-plan1-worker.md` | CI; config/db/goose (00001, 00002); store subset for the worker; logs (Redis, ClickHouse, cursor); runtime (Docker `Runtime` with networks, volumes, limits and probes; nginx `Router`; buildx `Builder`; streamer with resume); `secrets` package (encrypts new values such as generated DB passwords; reads both plain and `enc:v1`; while the Node API is still running it shows these few values as ciphertext, which is acceptable); workflows and activities; outbox starter; worker binary; Temporal in dev compose; managed DB credential backfill; cutover | 2–2.5 weeks |
+| 1 — Foundation + Temporal worker | `docs/superpowers/plans/2026-10-07-go-plan1-worker.md` | CI; config/db/goose (00001, 00002); store subset for the worker; logs (Redis, ClickHouse, cursor); runtime (Docker `Runtime` with networks, volumes, limits and probes; nginx `Router`; buildx `Builder`; streamer with resume); `secrets` package (encrypts new values such as generated DB passwords; reads both plain and `enc:v1`; while the Node API is still running it shows these few values as ciphertext, which is acceptable); workflows and activities; outbox starter; worker binary; Temporal in dev compose; managed DB generated credentials; cutover | 2–2.5 weeks |
 | 2 — API | `docs/superpowers/plans/2026-10-07-go-plan2-api.md` | Rest of the store; goose 00003; auth (exp, refresh, logout, Node-token handling); every route with ownership; teardown endpoint; encrypted env and `encrypt-env`; stream tickets and SSE; rate limit, CORS allow-list, dev-login gating; request IDs and metrics; UI: one shared `src/lib/api.ts` client (replacing the six copied `apiFetch` helpers) with refresh-on-401, `useLogs` with tickets, managed DB connection panel showing `svc-<id>` and the password, delete-service action; `compare-api.sh`; cutover | 2–2.5 weeks |
 | 3 — Hardening and cleanup | `docs/superpowers/plans/2026-10-07-go-plan3-cutover.md` | Dockerfiles and prod compose (Temporal on Postgres); remove RabbitMQ and MinIO; tag `node-final`; move compose and `infra/` into `control-plane-go/`; add `FROZEN.md` (Node code kept); update `.claude/CLAUDE.md` and `README.md`; mark roadmap Phase 2 done in `SAAS_ROADMAP.md` | 3–4 days |
 
@@ -225,7 +225,7 @@ Dropped: 10–12 (RabbitMQ), 15 (S3), 23–25 (AMQP consumers and the old worker
 |---|---|
 | The team is new to Temporal | Worker-first order surfaces problems in week 1; workflow tests stay deterministic through the test suite. |
 | The Docker socket in the worker is root-equivalent | Documented. BuildKit isolation reduces exposure from builds. The real fix (separate build and run hosts) belongs to roadmap Phase 6. |
-| Existing managed DB volumes in `/tmp` and Mongo's hardcoded password | One-time migration on first Go deploy; the credential backfill keeps old volumes working. |
+| Existing managed DB volumes in `/tmp` and Mongo's hardcoded password | Redis data copied once on first Go deploy; Mongo dumped and restored by the cutover runbook; the old container's anonymous volume is kept as a fallback. |
 | Forced re-login when Node tokens are rejected | Expected once, at the Plan 2 cutover; announce it. |
 | Single API instance assumptions (in-memory rate limit, in-process log streams) | Acceptable for a single VM; listed for Phase 6 (Redis-backed limiter, streaming per host task queue). |
 

@@ -3,6 +3,7 @@ package logs_test
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,6 +23,21 @@ func TestEntryJSONShape(t *testing.T) {
 	b, _ := json.Marshal(logs.Entry{DeploymentID: "d", Source: "stdout", Message: "m", Timestamp: "t"})
 	if string(b) != `{"deploymentId":"d","source":"stdout","message":"m","timestamp":"t"}` {
 		t.Fatalf("got %s", b)
+	}
+}
+
+func TestNewRedisParseErrorHidesPassword(t *testing.T) {
+	for _, u := range []string{
+		"redis://u:s3cretPW@host:badport",
+		"redis://:s3cret PW%zz@host",
+	} {
+		_, err := logs.NewRedis(u)
+		if err == nil {
+			t.Fatalf("NewRedis(%q): want error", u)
+		}
+		if strings.Contains(err.Error(), "s3cret") {
+			t.Fatalf("error leaks password: %v", err)
+		}
 	}
 }
 

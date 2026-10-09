@@ -3,7 +3,9 @@ package logs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -19,9 +21,16 @@ const (
 
 type Redis struct{ c *redis.Client }
 
-func NewRedis(url string) (*Redis, error) {
-	opt, err := redis.ParseURL(url)
+func NewRedis(rawURL string) (*Redis, error) {
+	opt, err := redis.ParseURL(rawURL)
 	if err != nil {
+		// A *url.Error embeds the raw URL (password included), and its inner
+		// error can echo part of the userinfo (e.g. a bad %-escape), so neither
+		// may reach logs.
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			return nil, errors.New("parse REDIS_URL: invalid URL")
+		}
 		return nil, fmt.Errorf("parse REDIS_URL: %w", err)
 	}
 	return &Redis{c: redis.NewClient(opt)}, nil

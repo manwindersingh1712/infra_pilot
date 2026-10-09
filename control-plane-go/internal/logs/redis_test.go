@@ -128,6 +128,33 @@ func TestRedis(t *testing.T) {
 		t.Fatalf("ActiveStreams = %v %v", streams, err)
 	}
 
+	// An empty timestamp is defaulted once at write time: every Read and every
+	// live viewer sees the same value.
+	if err := r.Write(ctx, logs.Entry{DeploymentID: "dep1", Source: "stdout", Message: "no-ts"}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := r.Read(ctx, "dep1", 100)
+	if err != nil || len(first) != 3 {
+		t.Fatalf("Read after no-ts write = %+v err %v", first, err)
+	}
+	time.Sleep(5 * time.Millisecond) // a read-time default would now differ
+	second, err := r.Read(ctx, "dep1", 100)
+	if err != nil || len(second) != 3 {
+		t.Fatalf("second Read = %+v err %v", second, err)
+	}
+	ts := first[2].Timestamp
+	if ts == "" || second[2].Timestamp != ts {
+		t.Fatalf("timestamp not stable: %q then %q", ts, second[2].Timestamp)
+	}
+	select {
+	case e := <-live:
+		if e.Message != "no-ts" || e.Timestamp != ts {
+			t.Fatalf("live = %+v, want timestamp %q", e, ts)
+		}
+	case <-ctx.Done():
+		t.Fatal("no live entry for no-ts write")
+	}
+
 	// A quiet subscription must close when its ctx is cancelled, and stop
 	// must stay safe to call (twice) afterwards.
 	subCtx, subCancel := context.WithCancel(ctx)

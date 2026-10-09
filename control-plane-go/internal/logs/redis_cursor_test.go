@@ -47,6 +47,9 @@ func TestReadAfterAndFlushCursor(t *testing.T) {
 		t.Fatal(err)
 	}
 	cursor, _ = r.FlushCursor(ctx, "d1")
+	if cursor != all[1].ID {
+		t.Fatalf("cursor = %q, want %q", cursor, all[1].ID)
+	}
 	rest, _ := r.ReadAfter(ctx, "d1", cursor, 100)
 	if len(rest) != 1 || rest[0].Message != "c" || rest[0].DeploymentID != "d1" {
 		t.Fatalf("rest = %+v", rest)
@@ -64,6 +67,16 @@ func TestReadAfterAndFlushCursor(t *testing.T) {
 	}
 	raw := redis.NewClient(opt)
 	t.Cleanup(func() { _ = raw.Close() })
+
+	// The cursor outlives the 10m stream but still expires (15m).
+	if ttl, err := raw.PTTL(ctx, "logs:flushed:d1").Result(); err != nil || ttl <= 0 || ttl > 15*time.Minute {
+		t.Fatalf("cursor PTTL = %v err %v", ttl, err)
+	}
+	// A stream that expired (or never existed) under a live cursor reads as empty.
+	if gone, err := r.ReadAfter(ctx, "gone", cursor, 100); err != nil || len(gone) != 0 {
+		t.Fatalf("ReadAfter missing stream = %+v err %v", gone, err)
+	}
+
 	if err := raw.XAdd(ctx, &redis.XAddArgs{Stream: "logs:stream:sparse", Values: []any{"message", "only"}}).Err(); err != nil {
 		t.Fatal(err)
 	}

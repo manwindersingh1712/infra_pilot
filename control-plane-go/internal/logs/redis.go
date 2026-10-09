@@ -41,7 +41,11 @@ func (r *Redis) Close() error                   { return r.c.Close() }
 func (r *Redis) Ping(ctx context.Context) error { return r.c.Ping(ctx).Err() }
 
 // Write appends to the deployment's stream and publishes the entry to live viewers.
+// An empty Timestamp defaults to now here, so every reader sees one value.
 func (r *Redis) Write(ctx context.Context, e Entry) error {
+	if e.Timestamp == "" {
+		e.Timestamp = FormatTime(time.Now())
+	}
 	key := streamPrefix + e.DeploymentID
 	err := r.c.XAdd(ctx, &redis.XAddArgs{
 		Stream: key, MaxLen: streamMaxLen, Approx: true,
@@ -151,7 +155,7 @@ func (r *Redis) ActiveStreams(ctx context.Context) ([]string, error) {
 
 const (
 	cursorPrefix = "logs:flushed:"
-	cursorTTL    = 15 * time.Minute // longer than streamTTL, refreshed on every flush
+	cursorTTL    = 15 * time.Minute // longer than streamTTL; Flush refreshes it on every pass while the stream exists
 )
 
 // StreamEntry is a log entry with its Redis stream ID.

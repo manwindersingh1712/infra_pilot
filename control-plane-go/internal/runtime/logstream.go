@@ -22,6 +22,10 @@ const (
 	truncMarker = " …[truncated]"
 )
 
+// sinkTimeout bounds one sink write, so a hung Redis cannot pin a stream
+// (SEC-4 T19).
+const sinkTimeout = 2 * time.Second
+
 // LogSink receives log lines; *logs.Redis implements it.
 type LogSink interface {
 	Write(ctx context.Context, e logs.Entry) error
@@ -90,6 +94,7 @@ func (s *Streamer) IsStreaming(deploymentID string) bool {
 func (s *Streamer) stream(ctx context.Context, deploymentID string, cmd *exec.Cmd) {
 	defer s.Stop(deploymentID)
 	emitCtx := context.WithoutCancel(ctx)
+	cmd.WaitDelay = waitDelay
 
 	stdout, err := cmd.StdoutPipe()
 	if err == nil {
@@ -165,6 +170,8 @@ func logLine(line []byte, cut bool) string {
 
 func (s *Streamer) emit(ctx context.Context, deploymentID, source, msg string) {
 	e := logs.Entry{DeploymentID: deploymentID, Source: source, Message: msg, Timestamp: logs.FormatTime(s.now())}
+	ctx, cancel := context.WithTimeout(ctx, sinkTimeout)
+	defer cancel()
 	if err := s.sink.Write(ctx, e); err != nil {
 		s.log.Warn("log write failed", "deploymentId", deploymentID, "err", err)
 	}

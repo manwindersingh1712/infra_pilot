@@ -163,3 +163,30 @@ func TestStreamerRejectsBadIDs(t *testing.T) {
 		t.Fatalf("started=%d", started.Load())
 	}
 }
+
+// hangingSink blocks the first stdout write until its context ends, like a
+// hung Redis; every write is recorded.
+type hangingSink struct{ memorySink }
+
+func (h *hangingSink) Write(ctx context.Context, e logs.Entry) error {
+	if e.Source == "stdout" {
+		<-ctx.Done()
+	}
+	return h.memorySink.Write(ctx, e)
+}
+
+// SEC-4 T19: a sink write that hangs is bounded, so the stream still ends.
+func TestStreamerBoundsSinkWrites(t *testing.T) {
+	sink := &hangingSink{}
+	s := NewStreamer(context.Background(), sink, slog.New(slog.DiscardHandler))
+	s.newCmd = func(ctx context.Context, _ string) *exec.Cmd {
+		return exec.CommandContext(ctx, "sh", "-c", "echo out1")
+	}
+
+	s.Start("dep1", "ctr1")
+	waitFor(t, func() bool { return !s.IsStreaming("dep1") })
+	got := sink.all()
+	if last := got[len(got)-1]; last.Message != "Log stream ended (exit code: 0)" {
+		t.Fatalf("last = %+v", last)
+	}
+}

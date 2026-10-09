@@ -71,3 +71,22 @@ func (s *Store) MarkOutboxDead(ctx context.Context, id string, attempts int, las
 		id, attempts, lastErr)
 	return err
 }
+
+// CountOutboxByStatus returns how many outbox rows are in each status.
+func (s *Store) CountOutboxByStatus(ctx context.Context) (map[string]int, error) {
+	rows, err := s.db.Query(ctx, `SELECT "status"::text, count(*)::int FROM "OutboxEvent" GROUP BY "status"`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	counts := map[string]int{}
+	for rows.Next() {
+		var status string
+		var n int
+		if err := rows.Scan(&status, &n); err != nil {
+			return nil, err
+		}
+		counts[status] = n
+	}
+	return counts, rows.Err()
+}

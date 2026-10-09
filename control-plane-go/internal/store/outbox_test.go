@@ -83,3 +83,25 @@ func TestOutboxStatusTransitions(t *testing.T) {
 		t.Fatalf("c = %+v", r)
 	}
 }
+
+func TestCountOutboxByStatus(t *testing.T) {
+	st, ctx := newStore(t), context.Background()
+	a, err := st.CreateOutboxEvent(ctx, "x", map[string]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateOutboxEvent(ctx, "x", map[string]string{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MarkOutboxDead(ctx, a, 10, "gone"); err != nil {
+		t.Fatal(err)
+	}
+
+	counts, err := st.CountOutboxByStatus(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts["pending"] != 1 || counts["dead"] != 1 || counts["published"] != 0 {
+		t.Fatalf("counts = %v", counts)
+	}
+}

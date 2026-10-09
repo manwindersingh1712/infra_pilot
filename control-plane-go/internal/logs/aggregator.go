@@ -2,6 +2,7 @@ package logs
 
 import (
 	"context"
+	"log/slog"
 	"time"
 )
 
@@ -27,6 +28,9 @@ type Aggregator struct {
 	// BatchSize is the number of entries per ClickHouse insert during Flush;
 	// 0 means flushBatchSize.
 	BatchSize int64
+	// Logger receives one Warn line per failed Flush step; nil means
+	// slog.Default().
+	Logger *slog.Logger
 }
 
 type Result struct {
@@ -109,74 +113,89 @@ func (a *Aggregator) ActiveStreamCount(ctx context.Context) (int, error) {
 // batches of BatchSize, up to maxFlushBatches per run. An existing cursor is
 // re-set before reading so its TTL outlives the stream even when nothing new
 // arrives or the insert fails. It returns the number of entries copied and the
-// number of streams that failed.
+// number of streams that failed; each failure is logged with its step.
+//
+// processed counts entries both inserted and cursored: a SetFlushCursor
+// failure after a successful Insert leaves that batch uncounted, and it is
+// re-sent next run (the accepted one-batch duplicate).
 //
 // Not safe for concurrent calls: the cursor does not coordinate runs. Exactly
 // one caller, the worker's flush ticker (spec §6.7).
 func (a *Aggregator) Flush(ctx context.Context) (processed, errs int) {
+	log := a.Logger
+	if log == nil {
+		log = slog.Default()
+	}
 	ids, err := a.Hot.ActiveStreams(ctx)
 	if err != nil {
+		log.WarnContext(ctx, "log flush failed", "step", "activeStreams", "err", err)
 		return 0, 1
 	}
 	size := a.BatchSize
 	if size <= 0 {
 		size = flushBatchSize
 	}
+	fail := func(id, step string, err error) {
+		errs++
+		log.WarnContext(ctx, "log flush failed", "deploymentId", id, "step", step, "err", err)
+	}
 	for _, id := range ids {
 		if ctx.Err() != nil {
+			// shutdown: remaining streams are flushed next run.
 			return processed, errs
 		}
 		cursor, err := a.Hot.FlushCursor(ctx, id)
 		if err != nil {
-			errs++
+			fail(id, "cursor", err)
 			continue
 		}
 		if cursor != "" {
 			if err := a.Hot.SetFlushCursor(ctx, id, cursor); err != nil {
-				errs++
+				fail(id, "refresh", err)
 				continue
 			}
 		}
-		n, err := a.drain(ctx, id, cursor, size)
+		n, step, err := a.drain(ctx, id, cursor, size)
 		processed += n
 		if err != nil {
-			errs++
+			fail(id, step, err)
 		}
 	}
 	return processed, errs
 }
 
 // drain copies up to maxFlushBatches batches of one stream, starting after
-// cursor. It returns the entries copied before stopping.
-func (a *Aggregator) drain(ctx context.Context, id, cursor string, size int64) (int, error) {
+// cursor. It returns the entries copied before stopping and, on error, the
+// step that failed.
+func (a *Aggregator) drain(ctx context.Context, id, cursor string, size int64) (int, string, error) {
 	processed := 0
 	for range maxFlushBatches {
 		if err := ctx.Err(); err != nil {
-			return processed, err
+			return processed, "read", err
 		}
 		batch, err := a.Hot.ReadAfter(ctx, id, cursor, size)
 		if err != nil {
-			return processed, err
+			return processed, "read", err
 		}
 		if len(batch) == 0 {
-			return processed, nil
+			return processed, "", nil
 		}
 		entries := make([]Entry, len(batch))
 		for i, se := range batch {
 			entries[i] = se.Entry
 		}
 		if err := a.Warm.Insert(ctx, entries); err != nil {
-			return processed, err
+			return processed, "insert", err
 		}
 		last := batch[len(batch)-1].ID
 		if err := a.Hot.SetFlushCursor(ctx, id, last); err != nil {
-			return processed, err
+			return processed, "setCursor", err
 		}
 		cursor = last
 		processed += len(entries)
 		if int64(len(batch)) < size {
-			return processed, nil
+			return processed, "", nil
 		}
 	}
-	return processed, nil
+	return processed, "", nil
 }

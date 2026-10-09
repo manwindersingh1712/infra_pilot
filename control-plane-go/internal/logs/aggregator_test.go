@@ -1,17 +1,21 @@
 package logs
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 )
 
 type fakeHot struct {
-	data     map[string][]Entry
-	cursors  map[string]string
-	setCalls []string // every cursor value passed to SetFlushCursor
+	data      map[string][]Entry
+	cursors   map[string]string
+	setCalls  []string // every cursor value passed to SetFlushCursor
+	activeErr error    // returned by ActiveStreams when set
 }
 
 func newFakeHot(data map[string][]Entry) *fakeHot {
@@ -27,6 +31,9 @@ func (f *fakeHot) Read(_ context.Context, id string, count int64) ([]Entry, erro
 }
 
 func (f *fakeHot) ActiveStreams(context.Context) ([]string, error) {
+	if f.activeErr != nil {
+		return nil, f.activeErr
+	}
 	ids := []string{}
 	for id := range f.data {
 		ids = append(ids, id)
@@ -69,13 +76,21 @@ type fakeWarm struct {
 	rows      []Entry
 	inserted  []Entry
 	sizes     []int // batch size of each Insert call
-	insertErr error
+	insertErr error // returned by every Insert when set
+	failOn    int   // 1-based Insert call that fails with insertErr or a default error
 	lastQ     Query
 }
 
 func (f *fakeWarm) Insert(_ context.Context, e []Entry) error {
 	f.sizes = append(f.sizes, len(e))
-	if f.insertErr != nil {
+	if f.failOn > 0 {
+		if len(f.sizes) == f.failOn {
+			if f.insertErr != nil {
+				return f.insertErr
+			}
+			return errors.New("insert failed")
+		}
+	} else if f.insertErr != nil {
 		return f.insertErr
 	}
 	f.inserted = append(f.inserted, e...)
@@ -210,5 +225,43 @@ func TestFlushRefreshesCursorWhenIdle(t *testing.T) {
 	}
 	if fmt.Sprint(hot.setCalls) != "[2]" || len(warm.sizes) != 0 {
 		t.Fatalf("setCalls=%v inserts=%v", hot.setCalls, warm.sizes)
+	}
+}
+
+func TestFlushLogsFailedInsertWithDeploymentID(t *testing.T) {
+	hot := newFakeHot(map[string][]Entry{"d": {entry("1"), entry("2"), entry("3"), entry("4"), entry("5")}})
+	warm := &fakeWarm{failOn: 2, insertErr: errors.New("clickhouse down")}
+	var buf bytes.Buffer
+	a := &Aggregator{Hot: hot, Warm: warm, Now: time.Now, BatchSize: 2, Logger: slog.New(slog.NewJSONHandler(&buf, nil))}
+
+	processed, errs := a.Flush(context.Background())
+	if processed != 2 || errs != 1 || hot.cursors["d"] != "2" {
+		t.Fatalf("processed=%d errs=%d cursor=%q", processed, errs, hot.cursors["d"])
+	}
+	out := buf.String()
+	for _, want := range []string{`"msg":"log flush failed"`, `"level":"WARN"`, `"deploymentId":"d"`, `"step":"insert"`, `clickhouse down`} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("log missing %s: %s", want, out)
+		}
+	}
+}
+
+func TestFlushLogsActiveStreamsError(t *testing.T) {
+	hot := newFakeHot(map[string][]Entry{"d": {entry("1")}})
+	hot.activeErr = errors.New("redis down")
+	var buf bytes.Buffer
+	a := &Aggregator{Hot: hot, Warm: &fakeWarm{}, Now: time.Now, Logger: slog.New(slog.NewJSONHandler(&buf, nil))}
+
+	if processed, errs := a.Flush(context.Background()); processed != 0 || errs != 1 {
+		t.Fatalf("processed=%d errs=%d", processed, errs)
+	}
+	out := buf.String()
+	for _, want := range []string{`"msg":"log flush failed"`, `"step":"activeStreams"`, `redis down`} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("log missing %s: %s", want, out)
+		}
+	}
+	if strings.Contains(out, "deploymentId") {
+		t.Fatalf("activeStreams log has deploymentId: %s", out)
 	}
 }

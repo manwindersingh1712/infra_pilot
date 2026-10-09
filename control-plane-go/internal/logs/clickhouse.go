@@ -107,16 +107,20 @@ func (c *ClickHouse) Count(ctx context.Context, deploymentID string) (int, error
 	return int(n), err
 }
 
+// chTimeLayout keeps milliseconds: clickhouse-go formats a positional
+// time.Time bind at second precision, which would shift the bounds.
+const chTimeLayout = "2006-01-02 15:04:05.000"
+
 func buildQuery(q Query) (string, []any) {
 	where := []string{"deployment_id = ?"}
 	args := []any{q.DeploymentID}
 	if q.Start != nil {
-		where = append(where, "timestamp >= ?")
-		args = append(args, *q.Start)
+		where = append(where, "timestamp >= toDateTime64(?, 3, 'UTC')")
+		args = append(args, q.Start.UTC().Format(chTimeLayout))
 	}
 	if q.End != nil {
-		where = append(where, "timestamp <= ?")
-		args = append(args, *q.End)
+		where = append(where, "timestamp <= toDateTime64(?, 3, 'UTC')")
+		args = append(args, q.End.UTC().Format(chTimeLayout))
 	}
 	if len(q.Sources) > 0 {
 		where = append(where, "has(?, source)")

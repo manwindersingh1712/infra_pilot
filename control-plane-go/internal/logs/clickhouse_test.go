@@ -11,17 +11,17 @@ import (
 )
 
 func TestBuildQueryUsesBoundParameters(t *testing.T) {
-	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	start := time.Date(2026, 1, 1, 0, 0, 0, 7_000_000, time.UTC)
 	sql, args := buildQuery(Query{
 		DeploymentID: "d'1", Start: &start, Sources: []string{"stdout"}, Search: "err'or", Limit: 50, Offset: 10,
 	})
 	wantSQL := "SELECT deployment_id, source, message, timestamp FROM container_logs" +
-		" WHERE deployment_id = ? AND timestamp >= ? AND has(?, source) AND message ILIKE ?" +
+		" WHERE deployment_id = ? AND timestamp >= toDateTime64(?, 3, 'UTC') AND has(?, source) AND message ILIKE ?" +
 		" ORDER BY timestamp DESC LIMIT 50 OFFSET 10"
 	if sql != wantSQL {
 		t.Fatalf("sql:\n%s\nwant:\n%s", sql, wantSQL)
 	}
-	wantArgs := []any{"d'1", start, []string{"stdout"}, "%err'or%"}
+	wantArgs := []any{"d'1", "2026-01-01 00:00:00.007", []string{"stdout"}, "%err'or%"}
 	if !reflect.DeepEqual(args, wantArgs) {
 		t.Fatalf("args = %#v", args)
 	}
@@ -95,6 +95,17 @@ func TestClickHouseRoundTrip(t *testing.T) {
 	errs, _ := ch.Query(ctx, Query{DeploymentID: "d1", Search: "it's", Sources: []string{"stderr"}})
 	if len(errs) != 1 || errs[0].Message != "it's an error" {
 		t.Fatalf("filtered = %+v", errs)
+	}
+	// Sub-second bounds: entries are 1 ms apart, so the bounds must keep ms.
+	end0 := ParseTime(entries[0].Timestamp)
+	upTo, err := ch.Query(ctx, Query{DeploymentID: "d1", End: &end0})
+	if err != nil || len(upTo) != 1 || upTo[0].Message != "first" {
+		t.Fatalf("End bound = %+v %v", upTo, err)
+	}
+	start1 := ParseTime(entries[1].Timestamp)
+	from, err := ch.Query(ctx, Query{DeploymentID: "d1", Start: &start1})
+	if err != nil || len(from) != 1 || from[0].Message != "it's an error" {
+		t.Fatalf("Start bound = %+v %v", from, err)
 	}
 	if n, err := ch.Count(ctx, "d1"); err != nil || n != 2 {
 		t.Fatalf("Count = %d %v", n, err)

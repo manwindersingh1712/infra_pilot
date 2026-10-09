@@ -6290,6 +6290,13 @@ git commit -m "feat(go): build images in a resource-limited buildx builder"
 
 ### Task 23: Deploy activities
 
+> **CTO 2026-10-09 (managed volume path, `review/decisions.md`).**
+> - `ManagedImage` gains `DataDir string` and `Tmpfs []string`. Redis: `DataDir: "/data"`. Mongo: `DataDir: "/data/db"`, `Tmpfs: []string{"/data/configdb"}`.
+> - In `RunContainer`, the managed branch sets `spec.VolumeTarget = m.DataDir` and `spec.Tmpfs = m.Tmpfs`.
+> - Delete `legacyMongoPassword` and `hasExistingData`. `EnsureCredentials` always generates a random password when `env[m.PasswordEnv]` is empty, for both Mongo and Redis.
+> - `EnsureVolume` copies the legacy directory only for Redis (`job.ServiceType == store.TypeRedis`). Node never persisted Mongo data there, so Mongo always gets a fresh volume; its Node-era data moves through the Task 27 runbook.
+> - Tests: replace `TestEnsureCredentialsKeepsLegacyMongoPassword` with `TestEnsureCredentialsMongoIgnoresLegacyDir` (legacy dir present → password is not `admin123` and has 20+ chars); add `TestEnsureVolumeSkipsLegacyCopyForMongo` (only `create cp-vol-<id>`); the managed `RunContainer` test asserts Mongo `VolumeTarget "/data/db"` + `Tmpfs ["/data/configdb"]` and Redis `VolumeTarget "/data"`; `TestEnsureVolumeMigratesLegacyDataIdempotently` stays (Redis).
+
 > **CTO amendment (FWD-A1, FWD-A2, FWD-A3, `review/decisions.md` 2026-10-08):**
 > `LoadJob` sets `job.RepoURL = nil` before returning, with the comment "may embed a token; must never enter workflow history. BuildImage reads it from the store." `BuildImage(ctx, in BuildInput) (string, error)` with `type BuildInput struct{ DeploymentID string }`: it calls `a.Store.GetJob`, maps `ErrNotFound` to non-retryable `NotFound`, keeps the nil/empty `RepoURL` → `MissingRepo` check, then builds as now. If the error satisfies `errors.Is(err, gitsrc.ErrInvalid)`, it returns `temporal.NewNonRetryableApplicationError("invalid_build_source", "InvalidSource", nil)` (no cause). Other builder errors pass through, since they are already scrubbed. `legacyDir`: use `*job.VolumePath` only if it is absolute and `rel, err := filepath.Rel(filepath.Clean(a.Cfg.LegacyVolumeRoot), filepath.Clean(p))` gives `err == nil`, `rel != "."`, `rel` not `..` and not prefixed by `../`. Otherwise use `filepath.Join(LegacyVolumeRoot, job.ServiceID)` and log a warning with the deployment ID only.
 > Tests: `TestLoadJobOmitsRepoURL`: seed a service with `https://ghp_SECRET9@example.com/x.git`. `LoadJob`'s result has `RepoURL == nil`, and `converter.GetDefaultDataConverter().ToPayload(result)` data does not contain `ghp_`. `TestBuildImage` uses `BuildInput{DeploymentID}`, the fake builder receives the stored URL, and a nil URL still gives `MissingRepo`. New case: a fake builder returning `fmt.Errorf("x: %w", gitsrc.ErrInvalid)` → non-retryable `InvalidSource`. `TestLegacyDir`: `VolumePath` `/etc` → default dir; `<root>/../x` → default; `<root>/s1` → used; `<root>` itself → default; `cp-vol-x` (non-absolute) → default.
@@ -8315,7 +8322,12 @@ The Node API (`cd control-plane && npm run dev:api`) and the UI (`cd cp-ui && np
    - `docker exec cp-<id> sh -c 'redis-cli -a "$REDIS_PASSWORD" --no-auth-warning ping'` prints `PONG`, and `docker exec cp-<id> redis-cli ping` prints `NOAUTH …`.
    - The published port is bound to `127.0.0.1` only.
    - Redeploying it removes the old container **before** the new one starts (Temporal history order).
-6. **Mongo migration** (if a Node-era Mongo service exists). Redeploy it. Volume `cp-vol-<serviceId>` contains the old data, and `mongosh -u admin -p admin123` inside the container lists the old databases.
+6. **Mongo migration** (only if a Node-era Mongo service exists; CTO 2026-10-09). Do this **before** redeploying it with Go:
+   - Dump: `docker exec <node-mongo-container> mongodump --archive --gzip -u admin -p admin123 --authenticationDatabase admin > ~/cp-mongo-<serviceId>.archive.gz`.
+   - Redeploy the service with Go; read the new password with `docker exec cp-<newDeploymentId> printenv MONGO_INITDB_ROOT_PASSWORD`.
+   - Restore: `docker exec -i cp-<newDeploymentId> sh -c 'mongorestore --archive --gzip -u admin -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin' < ~/cp-mongo-<serviceId>.archive.gz`.
+   - Check: `mongosh` with the new password lists the old databases; redeploy once more and the data is still there; `docker inspect cp-<id>` shows no anonymous volume; `admin123` no longer works.
+   - The old container's anonymous volume is left as a fallback; delete it by hand after verification.
 7. **Broken repo.** Deploy a `docker` service with repo `https://github.com/octocat/does-not-exist.git`. It ends `failed`, and Temporal shows a failed workflow after the retries (several minutes because of backoff).
 8. **Logs survive restarts.** Stop and restart the Go worker. Logs for a running app keep streaming in the UI (Node API Socket.io reads the same Redis channel).
 9. **No duplicate flushes.** After two flush cycles (10+ minutes):

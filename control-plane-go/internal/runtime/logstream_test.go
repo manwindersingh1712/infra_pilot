@@ -4,10 +4,13 @@ import (
 	"context"
 	"log/slog"
 	"os/exec"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"infrapilot/internal/logs"
 )
@@ -83,4 +86,63 @@ func TestStreamerStartsOncePerDeploymentAndStops(t *testing.T) {
 	}
 	s.Stop("dep1")
 	waitFor(t, func() bool { return !s.IsStreaming("dep1") })
+}
+
+// SEC-1 / SEC-2 T19: an over-long line is cut to maxLogLine with a marker and
+// the pipe keeps draining, so later stdout and stderr lines still arrive.
+func TestStreamerTruncatesLongLineAndKeepsDraining(t *testing.T) {
+	sink := &memorySink{}
+	s := NewStreamer(context.Background(), sink, slog.New(slog.DiscardHandler))
+	s.newCmd = func(ctx context.Context, _ string) *exec.Cmd {
+		return exec.CommandContext(ctx, "sh", "-c",
+			"echo before; head -c 2097152 /dev/zero | tr '\\0' a; echo; echo after; echo err1 1>&2")
+	}
+
+	s.Start("dep1", "ctr1")
+	waitFor(t, func() bool { return !s.IsStreaming("dep1") })
+
+	got := sink.all()
+	var msgs []string
+	long := 0
+	for _, e := range got {
+		if e.Source == "stdout" && strings.HasPrefix(e.Message, "aaaa") {
+			long++
+			if len(e.Message) > maxLogLine+len(truncMarker) || !strings.HasSuffix(e.Message, truncMarker) {
+				t.Fatalf("long entry len=%d suffix=%q", len(e.Message), e.Message[len(e.Message)-20:])
+			}
+			continue
+		}
+		msgs = append(msgs, e.Source+":"+e.Message)
+	}
+	want := []string{"stdout:before", "stdout:after", "stderr:err1", "system:Log stream ended (exit code: 0)"}
+	for _, w := range want {
+		if !slices.Contains(msgs, w) {
+			t.Fatalf("missing %q in %v", w, msgs)
+		}
+	}
+	if long != 1 {
+		t.Fatalf("long entries = %d, want 1", long)
+	}
+	if last := msgs[len(msgs)-1]; last != want[3] {
+		t.Fatalf("last = %q", last)
+	}
+}
+
+// SEC-1 T19: the cut never splits a UTF-8 rune; short lines lose a trailing \r.
+func TestStreamerPumpCutsOnRuneBoundary(t *testing.T) {
+	sink := &memorySink{}
+	s := NewStreamer(context.Background(), sink, slog.New(slog.DiscardHandler))
+	in := strings.Repeat("a", maxLogLine-1) + "é" + strings.Repeat("b", 10) + "\nshort\r\n\nlast"
+	s.pump(context.Background(), "dep1", "stdout", strings.NewReader(in))
+
+	got := sink.all()
+	if len(got) != 3 {
+		t.Fatalf("entries = %d, want 3", len(got))
+	}
+	if want := strings.Repeat("a", maxLogLine-1) + truncMarker; got[0].Message != want {
+		t.Fatalf("cut len=%d valid=%v", len(got[0].Message), utf8.ValidString(got[0].Message))
+	}
+	if got[1].Message != "short" || got[2].Message != "last" {
+		t.Fatalf("got %q, %q", got[1].Message, got[2].Message)
+	}
 }

@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -9,8 +10,16 @@ import (
 	"os/exec"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"infrapilot/internal/logs"
+)
+
+// maxLogLine caps one log message (SEC-1 T19): a longer line keeps its first
+// maxLogLine bytes plus truncMarker, so a tenant cannot fill shared Redis.
+const (
+	maxLogLine  = 16 << 10
+	truncMarker = " …[truncated]"
 )
 
 // LogSink receives log lines; *logs.Redis implements it.
@@ -97,14 +106,56 @@ func (s *Streamer) stream(ctx context.Context, deploymentID string, cmd *exec.Cm
 	s.emit(emitCtx, deploymentID, "system", "Log stream error: "+err.Error())
 }
 
+// pump reads r line by line until EOF. A line longer than maxLogLine is cut
+// to that size plus truncMarker and the rest of it is discarded, so memory
+// stays bounded and the pipe is always drained (SEC-1, SEC-2 T19).
 func (s *Streamer) pump(ctx context.Context, deploymentID, source string, r io.Reader) {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 64*1024), 1024*1024)
-	for sc.Scan() {
-		if line := sc.Text(); line != "" {
-			s.emit(ctx, deploymentID, source, line)
+	br := bufio.NewReaderSize(r, maxLogLine)
+	line := make([]byte, 0, maxLogLine)
+	cut := false
+	for {
+		chunk, err := br.ReadSlice('\n')
+		if err == nil {
+			chunk = chunk[:len(chunk)-1]
+		}
+		if !cut {
+			if room := maxLogLine - len(line); len(chunk) > room {
+				line, cut = append(line, chunk[:room]...), true
+			} else {
+				line = append(line, chunk...)
+			}
+		}
+		if err == bufio.ErrBufferFull {
+			continue
+		}
+		if msg := logLine(line, cut); msg != "" {
+			s.emit(ctx, deploymentID, source, msg)
+		}
+		line, cut = line[:0], false
+		if err != nil {
+			if err != io.EOF {
+				s.log.Warn("log stream read failed", "deploymentId", deploymentID, "source", source, "err", err)
+			}
+			return
 		}
 	}
+}
+
+// logLine turns a raw line into a message: a trailing \r is dropped and a cut
+// line ends on a whole UTF-8 rune followed by truncMarker.
+func logLine(line []byte, cut bool) string {
+	if !cut {
+		return string(bytes.TrimSuffix(line, []byte("\r")))
+	}
+	for i := len(line) - 1; i >= 0 && i >= len(line)-utf8.UTFMax; i-- {
+		if utf8.RuneStart(line[i]) {
+			if !utf8.FullRune(line[i:]) {
+				line = line[:i]
+			}
+			break
+		}
+	}
+	return string(line) + truncMarker
 }
 
 func (s *Streamer) emit(ctx context.Context, deploymentID, source, msg string) {

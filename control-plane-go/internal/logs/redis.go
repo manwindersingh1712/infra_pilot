@@ -136,3 +136,50 @@ func (r *Redis) ActiveStreams(ctx context.Context) ([]string, error) {
 	}
 	return ids, iter.Err()
 }
+
+const (
+	cursorPrefix = "logs:flushed:"
+	cursorTTL    = 15 * time.Minute // longer than streamTTL, refreshed on every flush
+)
+
+// StreamEntry is a log entry with its Redis stream ID.
+type StreamEntry struct {
+	ID string
+	Entry
+}
+
+// ReadAfter returns up to count entries with IDs greater than afterID
+// (all entries when afterID is empty), oldest first.
+func (r *Redis) ReadAfter(ctx context.Context, deploymentID, afterID string, count int64) ([]StreamEntry, error) {
+	start := "-"
+	if afterID != "" {
+		start = "(" + afterID // exclusive range, Redis 6.2+
+	}
+	msgs, err := r.c.XRangeN(ctx, streamPrefix+deploymentID, start, "+", count).Result()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]StreamEntry, 0, len(msgs))
+	for _, m := range msgs {
+		out = append(out, StreamEntry{ID: m.ID, Entry: Entry{
+			DeploymentID: deploymentID,
+			Source:       fmt.Sprint(m.Values["source"]),
+			Message:      fmt.Sprint(m.Values["message"]),
+			Timestamp:    fmt.Sprint(m.Values["timestamp"]),
+		}})
+	}
+	return out, nil
+}
+
+// FlushCursor returns the last stream ID copied to ClickHouse, or "".
+func (r *Redis) FlushCursor(ctx context.Context, deploymentID string) (string, error) {
+	v, err := r.c.Get(ctx, cursorPrefix+deploymentID).Result()
+	if errors.Is(err, redis.Nil) {
+		return "", nil
+	}
+	return v, err
+}
+
+func (r *Redis) SetFlushCursor(ctx context.Context, deploymentID, id string) error {
+	return r.c.Set(ctx, cursorPrefix+deploymentID, id, cursorTTL).Err()
+}

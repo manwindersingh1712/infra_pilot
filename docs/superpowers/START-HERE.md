@@ -27,6 +27,7 @@ The Node/TypeScript backend in `control-plane/` is being rewritten in Go in `con
 | CTO decisions log | `docs/superpowers/review/decisions.md` |
 | Deferred / low-severity findings | `docs/superpowers/review/backlog.md` |
 | Per-task review records | `docs/superpowers/review/<plan>/task-<n>.md` (created during execution) |
+| **Session logs** (read the latest before resuming) | `docs/superpowers/review/session-log-2026-10-07-to-09.md` |
 | Product roadmap the design must not block | `SAAS_ROADMAP.md` |
 | Frozen Node backend (never edit or run after Plan 3) | `control-plane/` (see `control-plane/FROZEN.md` once Plan 3 adds it) |
 
@@ -65,6 +66,8 @@ The checks below were last done on 2026-10-07 (spec §14 has the full table).
 - [ ] **No paid third-party services or API keys are needed.**
 
 ## 5. Progress tracker
+
+> **Last session (2026-10-07 to 2026-10-09):** see `review/session-log-2026-10-07-to-09.md`, which covers what was built, the CTO decisions, operational changes, process problems and how to resume. Plan 1 is paused at Task 10 (code written, uncommitted).
 
 Update this section as the work moves. The orchestrating session should tick boxes and fill in dates at each plan gate.
 

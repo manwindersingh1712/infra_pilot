@@ -3,16 +3,34 @@ package runtime
 import (
 	"context"
 	"errors"
+	"maps"
 	"testing"
 
 	"infrapilot/internal/testutil"
 )
 
 func TestParseDockerPorts(t *testing.T) {
-	out := "0.0.0.0:20000->27017/tcp, :::20000->27017/tcp\n\n0.0.0.0:20003->3000/tcp\n"
-	got := parseDockerPorts(out)
-	if len(got) != 2 || !got[20000] || !got[20003] {
-		t.Fatalf("got %v", got)
+	tests := []struct {
+		name string
+		in   string
+		want map[int]bool
+	}{
+		{"ipv4", "0.0.0.0:20000->80/tcp", map[int]bool{20000: true}},
+		{"ipv6 colons", ":::20001->80/tcp", map[int]bool{20001: true}},
+		{"ipv6 brackets", "[::]:20002->80/tcp", map[int]bool{20002: true}},
+		{"loopback udp", "127.0.0.1:20003->53/udp", map[int]bool{20003: true}},
+		{"two bindings", "0.0.0.0:20004->80/tcp, 0.0.0.0:20005->443/tcp", map[int]bool{20004: true, 20005: true}},
+		{"range", "0.0.0.0:8000-8002->8000-8002/tcp", map[int]bool{8000: true, 8001: true, 8002: true}},
+		{"unpublished", "80/tcp", map[int]bool{}},
+		{"malformed range", "0.0.0.0:9-1->1/tcp", map[int]bool{}},
+		{"blank lines", "\n\n0.0.0.0:20006->80/tcp\n\n", map[int]bool{20006: true}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parseDockerPorts(tc.in); !maps.Equal(got, tc.want) {
+				t.Fatalf("parseDockerPorts(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
 	}
 }
 

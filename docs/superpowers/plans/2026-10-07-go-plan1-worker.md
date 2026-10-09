@@ -8090,7 +8090,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	if err := ch.Init(ctx); err != nil {
 		return err
 	}
-	agg := &logs.Aggregator{Hot: rdb, Warm: ch, Now: time.Now}
+	agg := &logs.Aggregator{Hot: rdb, Warm: ch, Now: time.Now, Logger: logger} // Logger: Task 14 STAFF-1 fix round (per-stream flush errors)
 
 	tc, err := client.Dial(client.Options{
 		HostPort: cfg.TemporalHostPort, Namespace: cfg.TemporalNamespace,

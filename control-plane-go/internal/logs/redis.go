@@ -68,15 +68,27 @@ func (r *Redis) Read(ctx context.Context, deploymentID string, count int64) ([]E
 	}
 	out := make([]Entry, 0, len(msgs))
 	for _, m := range msgs {
-		out = append(out, Entry{
-			DeploymentID: deploymentID,
-			Source:       fmt.Sprint(m.Values["source"]),
-			Message:      fmt.Sprint(m.Values["message"]),
-			Timestamp:    fmt.Sprint(m.Values["timestamp"]),
-		})
+		out = append(out, toEntry(deploymentID, m))
 	}
 	return out, nil
 }
+
+// toEntry converts a stream message to an Entry. Missing fields read as ""
+// (not "<nil>"), and a missing timestamp defaults to now, as in Node's readLogs.
+func toEntry(deploymentID string, m redis.XMessage) Entry {
+	ts := field(m.Values, "timestamp")
+	if ts == "" {
+		ts = FormatTime(time.Now())
+	}
+	return Entry{
+		DeploymentID: deploymentID,
+		Source:       field(m.Values, "source"),
+		Message:      field(m.Values, "message"),
+		Timestamp:    ts,
+	}
+}
+
+func field(v map[string]any, k string) string { s, _ := v[k].(string); return s }
 
 // Subscribe streams live entries for a deployment. The channel closes after
 // stop is called or ctx ends; either way the pub/sub connection is released.
@@ -161,12 +173,7 @@ func (r *Redis) ReadAfter(ctx context.Context, deploymentID, afterID string, cou
 	}
 	out := make([]StreamEntry, 0, len(msgs))
 	for _, m := range msgs {
-		out = append(out, StreamEntry{ID: m.ID, Entry: Entry{
-			DeploymentID: deploymentID,
-			Source:       fmt.Sprint(m.Values["source"]),
-			Message:      fmt.Sprint(m.Values["message"]),
-			Timestamp:    fmt.Sprint(m.Values["timestamp"]),
-		}})
+		out = append(out, StreamEntry{ID: m.ID, Entry: toEntry(deploymentID, m)})
 	}
 	return out, nil
 }

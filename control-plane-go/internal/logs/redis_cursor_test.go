@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 
 	"infrapilot/internal/logs"
@@ -53,4 +54,37 @@ func TestReadAfterAndFlushCursor(t *testing.T) {
 	if two, _ := r.ReadAfter(ctx, "d1", "", 2); len(two) != 2 {
 		t.Fatalf("count limit ignored: %d", len(two))
 	}
+
+	// A stream entry missing fields (e.g. written by another producer) must
+	// read back as "" rather than "<nil>", with the timestamp defaulted to now
+	// like Node's readLogs.
+	opt, err := redis.ParseURL(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := redis.NewClient(opt)
+	t.Cleanup(func() { _ = raw.Close() })
+	if err := raw.XAdd(ctx, &redis.XAddArgs{Stream: "logs:stream:sparse", Values: []any{"message", "only"}}).Err(); err != nil {
+		t.Fatal(err)
+	}
+	before := time.Now().Add(-time.Second)
+	check := func(name string, e logs.Entry) {
+		t.Helper()
+		if e.Message != "only" || e.Source != "" || e.DeploymentID != "sparse" {
+			t.Fatalf("%s = %+v", name, e)
+		}
+		if ts := logs.ParseTime(e.Timestamp); e.Timestamp == "" || ts.Before(before) || ts.After(time.Now().Add(time.Second)) {
+			t.Fatalf("%s timestamp = %q, want ~now", name, e.Timestamp)
+		}
+	}
+	sparse, err := r.ReadAfter(ctx, "sparse", "", 10)
+	if err != nil || len(sparse) != 1 {
+		t.Fatalf("ReadAfter sparse = %+v err %v", sparse, err)
+	}
+	check("ReadAfter", sparse[0].Entry)
+	plain, err := r.Read(ctx, "sparse", 10)
+	if err != nil || len(plain) != 1 {
+		t.Fatalf("Read sparse = %+v err %v", plain, err)
+	}
+	check("Read", plain[0])
 }

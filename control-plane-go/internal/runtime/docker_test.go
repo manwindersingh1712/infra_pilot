@@ -172,3 +172,18 @@ func TestDetectContainerPortAndPull(t *testing.T) {
 		t.Fatalf("cmds = %v", cmds)
 	}
 }
+
+// VER-1 (T16): Docker 29 prints "Error: no such object: <id>" (lower case).
+func TestIsRunningTreatsMissingContainerAsNotRunning(t *testing.T) {
+	for _, msg := range []string{"Error: No such object: abc", "error: no such object: abc"} {
+		r := &testutil.FakeRunner{Handle: func(testutil.Call) (string, error) { return "", errors.New(msg) }}
+		running, err := newDocker(r).IsRunning(context.Background(), "abc")
+		if err != nil || running {
+			t.Errorf("%q: running=%v err=%v", msg, running, err)
+		}
+	}
+	failing := &testutil.FakeRunner{Handle: func(testutil.Call) (string, error) { return "", errors.New("daemon down") }}
+	if _, err := newDocker(failing).IsRunning(context.Background(), "abc"); err == nil {
+		t.Fatal("other errors must be returned")
+	}
+}

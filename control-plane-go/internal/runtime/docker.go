@@ -150,7 +150,7 @@ func writeEnvFile(env map[string]string) (string, error) {
 // Remove force-removes a container; a missing container is not an error.
 func (d Docker) Remove(ctx context.Context, name string) error {
 	_, err := d.R.Run(ctx, "", "docker", "rm", "-f", name)
-	if err != nil && !strings.Contains(err.Error(), "No such container") {
+	if err != nil && !errContains(err, "no such container") {
 		return err
 	}
 	return nil
@@ -204,12 +204,19 @@ func (d Docker) Probe(ctx context.Context, network, host string, port int) error
 func (d Docker) IsRunning(ctx context.Context, id string) (bool, error) {
 	out, err := d.R.Run(ctx, "", "docker", "inspect", "-f", "{{.State.Running}}", id)
 	if err != nil {
-		if strings.Contains(err.Error(), "No such object") {
+		if errContains(err, "no such object") {
 			return false, nil
 		}
 		return false, err
 	}
 	return strings.TrimSpace(out) == "true", nil
+}
+
+// errContains reports whether err's message contains substr, ignoring case.
+// Docker's wording changes case between versions ("No such object" before,
+// "no such object" in Docker 29).
+func errContains(err error, substr string) bool {
+	return strings.Contains(strings.ToLower(err.Error()), strings.ToLower(substr))
 }
 
 func sortedKeys(m map[string]string) []string {

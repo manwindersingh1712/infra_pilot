@@ -42,8 +42,12 @@ type Streamer struct {
 	newCmd func(ctx context.Context, containerID string) *exec.Cmd
 
 	mu     sync.Mutex
-	active map[string]context.CancelFunc
+	active map[string]*stream
 }
+
+// stream is one running `docker logs -f`; its pointer identifies it, so the
+// cleanup of a stopped stream never removes a newer one (STAFF-2 T19).
+type stream struct{ cancel context.CancelFunc }
 
 func NewStreamer(ctx context.Context, sink LogSink, log *slog.Logger) *Streamer {
 	return &Streamer{
@@ -51,7 +55,7 @@ func NewStreamer(ctx context.Context, sink LogSink, log *slog.Logger) *Streamer 
 		newCmd: func(ctx context.Context, containerID string) *exec.Cmd {
 			return exec.CommandContext(ctx, "docker", "logs", "-f", "--tail=100", containerID)
 		},
-		active: map[string]context.CancelFunc{},
+		active: map[string]*stream{},
 	}
 }
 
@@ -68,18 +72,29 @@ func (s *Streamer) Start(deploymentID, containerID string) {
 		return
 	}
 	ctx, cancel := context.WithCancel(s.ctx)
-	s.active[deploymentID] = cancel
+	st := &stream{cancel: cancel}
+	s.active[deploymentID] = st
 	s.mu.Unlock()
 
 	s.log.Info("log stream starting", "deploymentId", deploymentID, "containerId", containerID)
-	go s.stream(ctx, deploymentID, s.newCmd(ctx, containerID))
+	go s.run(ctx, deploymentID, st, s.newCmd(ctx, containerID))
 }
 
 func (s *Streamer) Stop(deploymentID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if cancel, ok := s.active[deploymentID]; ok {
-		cancel()
+	if st, ok := s.active[deploymentID]; ok {
+		st.cancel()
+		delete(s.active, deploymentID)
+	}
+}
+
+// release ends st and forgets it, unless a newer stream took its place.
+func (s *Streamer) release(deploymentID string, st *stream) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st.cancel()
+	if s.active[deploymentID] == st {
 		delete(s.active, deploymentID)
 	}
 }
@@ -91,8 +106,8 @@ func (s *Streamer) IsStreaming(deploymentID string) bool {
 	return ok
 }
 
-func (s *Streamer) stream(ctx context.Context, deploymentID string, cmd *exec.Cmd) {
-	defer s.Stop(deploymentID)
+func (s *Streamer) run(ctx context.Context, deploymentID string, st *stream, cmd *exec.Cmd) {
+	defer s.release(deploymentID, st)
 	emitCtx := context.WithoutCancel(ctx)
 	cmd.WaitDelay = waitDelay
 

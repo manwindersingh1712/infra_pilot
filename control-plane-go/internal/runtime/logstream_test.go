@@ -190,3 +190,33 @@ func TestStreamerBoundsSinkWrites(t *testing.T) {
 		t.Fatalf("last = %+v", last)
 	}
 }
+
+// STAFF-2 T19: the cleanup of a stopped stream must not remove or cancel a
+// newer stream started for the same deployment.
+func TestStreamerStopThenStartKeepsNewStream(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sink := &memorySink{}
+	s := NewStreamer(ctx, sink, slog.New(slog.DiscardHandler))
+	s.newCmd = func(ctx context.Context, _ string) *exec.Cmd {
+		return exec.CommandContext(ctx, "sleep", "30")
+	}
+	ended := func() int {
+		n := 0
+		for _, e := range sink.all() {
+			if e.Source == "system" {
+				n++
+			}
+		}
+		return n
+	}
+
+	s.Start("dep1", "ctr1")
+	s.Stop("dep1")
+	s.Start("dep1", "ctr1")
+	waitFor(t, func() bool { return ended() >= 1 }) // first stream is ending
+	time.Sleep(300 * time.Millisecond)              // let its deferred cleanup run
+	if !s.IsStreaming("dep1") || ended() != 1 {
+		t.Fatalf("streaming=%v ended=%d entries=%+v", s.IsStreaming("dep1"), ended(), sink.all())
+	}
+}

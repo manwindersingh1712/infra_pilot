@@ -131,7 +131,7 @@ Keeps the existing claim, backoff and `dead` logic, and calls a `WorkflowStarter
 4. **Traffic switches only after the app is up:** `WaitHealthy` before `SwitchRoute`.
 5. **Services can be deleted:** `DELETE /services/:id?purgeData=true|false` plus `TeardownWorkflow`.
 6. **Log streams survive worker restarts:** on startup, re-attach to every running deployment that has a `containerId` and no `stoppedAt`.
-7. **No duplicate ClickHouse rows:** a per-deployment flush cursor in `logs:flushed:<deploymentId>`, read with `XRANGE (<lastId> +`.
+7. **No duplicate ClickHouse rows (best effort):** a per-deployment flush cursor in `logs:flushed:<deploymentId>`, read with `XRANGE (<lastId> +`. Every flush pass refreshes the cursor's TTL (15 min) while the stream exists, so a ClickHouse outage never rewinds it. A crash between the ClickHouse insert and the cursor update can duplicate at most one batch; this is accepted and readers tolerate it. Exactly one flusher runs (the single Go worker's flush ticker). (CTO 2026-10-09)
 8. **No port-allocation race:** app containers publish no ports; the dev-only managed DB ports keep the existing allocator.
 
 ## 7. Data model (goose)

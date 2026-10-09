@@ -3883,6 +3883,13 @@ git commit -m "feat(go): clickhouse warm log tier with bound parameters"
 
 Two log tiers: Redis (last 10 minutes) and ClickHouse (30 days). The S3 archive is cut (spec D8).
 
+> **CTO amendment (T12 STAFF-1, STAFF-2/SEC-1, STAFF-3, Staff note; `review/decisions.md` 2026-10-09 "Task 14 flush durability"):**
+> (a) **Cursor refresh.** In `Flush`, after `FlushCursor` returns `cursor != ""`, call `a.Hot.SetFlushCursor(ctx, id, cursor)` before reading. This refreshes the TTL even when the batch is empty or the insert fails. On error: `errs++; continue`. In `redis.go`, change the `cursorTTL` comment to "longer than streamTTL; Flush refreshes it on every pass while the stream exists".
+> (b) **Drain loop.** Add the field `BatchSize int64` to `Aggregator`; 0 means `flushBatchSize` (10000). Per stream, loop: `ReadAfter(cursor, size)`. If the batch is empty, stop. Otherwise `Insert`, then `SetFlushCursor(lastID)`, then `cursor = lastID` and `processed += len`. Stop when `len(batch) < size`, on any error (`errs++`), on `ctx.Err() != nil`, or after `maxFlushBatches = 20` iterations for that stream. The leftover is picked up on the next run.
+> (c) **Single flusher.** Doc comment on `Flush`: "Not safe for concurrent calls: the cursor does not coordinate runs. Exactly one caller, the worker's flush ticker (spec §6.7)."
+> (d) **Write-time timestamp.** In `Redis.Write`, put `if e.Timestamp == "" { e.Timestamp = FormatTime(time.Now()) }` before XADD and PUBLISH.
+> Tests: `TestFlushDrainsInBatches`: fakeHot has 5 entries and `BatchSize: 2`. Expect 3 `Insert` calls of sizes 2, 2, 1, `processed == 5`, `errs == 0`, and the cursor at the 5th ID. A second `Flush` inserts nothing. `TestFlushRefreshesCursorOnInsertFailure`: an existing cursor and a failing fake Warm. Expect `SetFlushCursor` to be called with the unchanged cursor and `errs == 1`. `TestFlushRefreshesCursorWhenIdle`: an existing cursor and no new entries. Expect the cursor to be re-set and no `Insert` call. Redis integration tests (also STAFF-3 T12): after `SetFlushCursor`, the key's `TTL` is >0 and ≤15m; `ReadAfter` on an expired or missing stream with a non-empty cursor returns `(empty, nil)`; `Write` with `Timestamp: ""` followed by two `Read`s returns the same non-empty timestamp both times, and a `Subscribe`r receives that same value.
+
 - [ ] **Step 1: Write the failing tests**
 
 `internal/logs/aggregator_test.go`:

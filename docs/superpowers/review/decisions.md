@@ -184,3 +184,19 @@ Follow-ups:
 - **Context:** Plan 1 Task 11. Three Engineer agents in a row were killed by the 10-minute stream watchdog before committing. The last one stalled before running any command, even though `caffeinate` was keeping the Mac awake. The code they wrote was byte-identical to the plan text, and the orchestrator had already run the CI checks on it.
 - **Decision (the user chose this):** when the uncommitted files are byte-identical to the plan text and the orchestrator has run the CI-equivalent checks, the orchestrator records the failing-test run and commits those files itself, and notes this as a deviation in the task record. Reviews run as normal. Engineers still write any code that differs from the plan, and every fix round.
 - **Why:** this keeps the review gate intact (the commit is still reviewed by independent agents) without spending more agent runs on a mechanical step.
+
+## 2026-10-09: Task 14 flush durability (CTO)
+- **Context:** the Task 12 reviews found four gaps in the planned `Aggregator.Flush`:
+  - the cursor can expire during a ClickHouse outage of more than 15 min, and a crash between insert and cursor write re-inserts one batch (duplicates);
+  - one batch of 10000 per run equals `streamMaxLen`, so lines can be trimmed before they are flushed (loss);
+  - an empty timestamp is re-stamped on every read;
+  - nothing coordinates concurrent flushers.
+
+  Spec §6.7 promises no duplicate rows. During the rollback window (§9), Node must still be able to use the same ClickHouse table.
+- **Decision:**
+  1. **Fix now: refresh the cursor TTL on every flush pass while the stream exists.** Spec §6.7 is reworded to "best effort". The duplicate from a crash (at most one batch) is accepted. Idempotent inserts are deferred to Plan 3.
+  2. **Fix now: drain each stream in a loop until a short batch** (`BatchSize`, at most 20 batches per stream per run). Loss when a producer writes more than about 33 lines/s is deferred to roadmap Phase 6.
+  3. **Fix now:** default an empty timestamp at write time in `Redis.Write`.
+  4. **Exactly one flusher, the worker's ticker, with no lock.** A lock is deferred to Phase 6, when there are worker replicas.
+- **Why:** each fix is small and adds no schema change, no dependency and no rollback risk. The ClickHouse table stays identical to Node's, so rollback remains a plain worker swap.
+- **Follow-ups:** spec §6.7 is updated. The Plan 1 Task 14 amendment is pasted under its heading. Backlog: three new lines. STAFF-1 (T12), STAFF-2/SEC-1 (T12) (the outage part), STAFF-3 (T12) and the Staff note (T12) are closed as covered by the amendment. Cursor-format validation is dropped, because only Flush writes the cursor.

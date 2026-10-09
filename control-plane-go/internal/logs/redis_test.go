@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 
 	"infrapilot/internal/logs"
@@ -16,6 +17,16 @@ func TestFormatTimeMatchesToISOString(t *testing.T) {
 	got := logs.FormatTime(time.Date(2026, 3, 4, 5, 6, 7, 8_000_000, time.UTC))
 	if got != "2026-03-04T05:06:07.008Z" {
 		t.Fatalf("got %s", got)
+	}
+}
+
+func TestParseTime(t *testing.T) {
+	now := time.Now()
+	if got, want := logs.ParseTime(logs.FormatTime(now)), now.Truncate(time.Millisecond); !got.Equal(want) {
+		t.Fatalf("round trip = %v, want %v", got, want)
+	}
+	if d := time.Since(logs.ParseTime("garbage")); d < -time.Second || d > time.Second {
+		t.Fatalf("ParseTime(garbage) is %v from now", d)
 	}
 }
 
@@ -76,6 +87,17 @@ func TestRedis(t *testing.T) {
 		}
 	}
 
+	// The stream must carry the hot-tier TTL (10m) after Write.
+	opt, err := redis.ParseURL(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := redis.NewClient(opt)
+	t.Cleanup(func() { _ = raw.Close() })
+	if ttl, err := raw.PTTL(ctx, "logs:stream:dep1").Result(); err != nil || ttl <= 0 || ttl > 10*time.Minute {
+		t.Fatalf("stream PTTL = %v err %v", ttl, err)
+	}
+
 	got, err := r.Read(ctx, "dep1", 100)
 	if err != nil {
 		t.Fatal(err)
@@ -90,13 +112,15 @@ func TestRedis(t *testing.T) {
 		t.Fatalf("missing stream: %v %v", empty, err)
 	}
 
-	select {
-	case e := <-live:
-		if e != e1 {
-			t.Fatalf("live = %+v", e)
+	for _, want := range []logs.Entry{e1, e2} {
+		select {
+		case e := <-live:
+			if e != want {
+				t.Fatalf("live = %+v, want %+v", e, want)
+			}
+		case <-ctx.Done():
+			t.Fatalf("no live entry %+v", want)
 		}
-	case <-ctx.Done():
-		t.Fatal("no live entry")
 	}
 
 	streams, err := r.ActiveStreams(ctx)

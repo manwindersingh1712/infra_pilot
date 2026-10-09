@@ -67,7 +67,7 @@ The checks below were last done on 2026-10-07 (spec §14 has the full table).
 
 ## 5. Progress tracker
 
-> **Last session (2026-10-07 to 2026-10-09):** see `review/session-log-2026-10-07-to-09.md`, which covers what was built, the CTO decisions, operational changes, process problems and how to resume. Plan 1 is paused at Task 10 (code written, uncommitted).
+> **Last session (2026-10-07 to 2026-10-09):** see `review/session-log-2026-10-07-to-09.md`, which covers what was built, the CTO decisions, operational changes, process problems and how to resume. Plan 1 resumed 2026-10-09 at Task 10.
 
 Update this section as the work moves. The orchestrating session should tick boxes and fill in dates at each plan gate.
 
@@ -78,9 +78,8 @@ Update this section as the work moves. The orchestrating session should tick box
 | Plan 3 — hardening | Not started | | | | Requires Plan 1's rollback window to be closed |
 
 - **Branch:** `go-migration` (created 2026-10-07 off `go`; first commit holds these docs).
-- **Current task:** Plan 1, Task 10 (Encrypted secrets), **paused 2026-10-09** at the user's request because subagents kept stalling. Tasks 1, 1a, 2, 3 (2026-10-07), 4, 5, 5a, 6, 7, 8 (2026-10-08) and 9 (2026-10-09) passed their gates.
-- **Resume Task 10 here:** the Engineer's code is written but **uncommitted** in `control-plane-go/internal/secrets/{secrets.go,secrets_test.go}` (untracked). The orchestrator's CI dry run on it passed on 2026-10-09 (gofmt, build/vet, golangci-lint 0 issues, `go test -race ./...` all ok, govulncheck exit 0, gosec clean, `-short` ok, both guard steps). Next: a fresh Engineer re-reads the files against Task 10 (plan lines 3001-3200) and spec §5, shows a failing-test run if feasible (e.g. by stashing secrets.go), commits with the task's message, then Security/Staff/Verifier review. Record in `review/plan1/task-10.md`.
-- **govulncheck can hang** on its network fetch (one run hung for an hour; the retry took 3 s). Always run it with a hard limit, e.g. `perl -e 'alarm 180; exec @ARGV' govulncheck ./...`, and retry once.
+- **Current task:** Plan 1, Task 11 (Redis hot tier). Tasks 1, 1a, 2, 3 (2026-10-07), 4, 5, 5a, 6, 7, 8 (2026-10-08), 9 and 10 (2026-10-09) passed their gates. Go toolchain is now go1.27.2 (`go.mod`, Task 10 SEC-1).
+- **govulncheck can hang** on its network fetch (one run hung for an hour; the retry took 3 s). Always run it with a hard limit, e.g. `perl -e 'alarm 180; exec @ARGV or exit 127' "$(go env GOPATH)/bin/govulncheck" ./...`, and retry once. **Use the full path and `or exit 127`:** govulncheck is not on the agent shell PATH, and the old wrapper turned "command not found" into exit 0, so the "govulncheck exit 0" results recorded for Tasks 9 and 10 before 2026-10-09 are not trustworthy (see `review/plan1/task-10.md`).
 - **Environment note:** subagents on this machine are often killed by the 10-minute stream watchdog during long commands. If a reviewer stalls twice, the orchestrator may run that reviewer's mechanical checks itself (background commands, throwaway files outside the repo) and record it in the task file.
 - **Inserted tasks:** 1a (cp-ui lint/build baseline), 5a (db and test-helper hardening). See `review/decisions.md`.
 - **Dev DB:** baselined by goose on 2026-10-07 (pre-baseline backup in that session's scratchpad). Never run `npm run prisma:migrate` again.

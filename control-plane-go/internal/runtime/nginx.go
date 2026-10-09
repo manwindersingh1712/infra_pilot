@@ -76,11 +76,40 @@ func (n Nginx) UpsertRoute(ctx context.Context, serviceID, containerName string,
 		return err
 	}
 	conf := RenderRoute(serviceID, n.BaseDomain, containerName, containerPort)
-	if err := os.WriteFile(filepath.Join(n.RoutesDir, "svc-"+serviceID+".conf"), []byte(conf), 0o644); err != nil { // #nosec G306 -- nginx (separate container, bind mount) must read route files; contents are generated from our IDs
+	if err := writeFileAtomic(filepath.Join(n.RoutesDir, "svc-"+serviceID+".conf"), []byte(conf)); err != nil {
 		return err
 	}
 	_, err := n.R.Run(ctx, "", "docker", "exec", n.Container, "nginx", "-s", "reload")
 	return err
+}
+
+// writeFileAtomic writes data to a temp file in the same directory and renames
+// it onto path (STAFF-2 T18), so nginx never reads a partial route. The temp
+// name does not match the routes/*.conf include.
+func writeFileAtomic(path string, data []byte) (err error) {
+	f, err := os.CreateTemp(filepath.Dir(path), ".svc-*.tmp")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = f.Close()
+			_ = os.Remove(f.Name())
+		}
+	}()
+	if _, err = f.Write(data); err != nil {
+		return err
+	}
+	if err = f.Sync(); err != nil {
+		return err
+	}
+	if err = f.Close(); err != nil {
+		return err
+	}
+	if err = os.Chmod(f.Name(), 0o644); err != nil { // #nosec G302 -- nginx (separate container, bind mount) must read route files; contents are generated from our IDs
+		return err
+	}
+	return os.Rename(f.Name(), path)
 }
 
 func (n Nginx) RuntimeURL(serviceID string) string {

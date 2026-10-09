@@ -91,3 +91,53 @@ func TestUpsertRouteRejectsBadInput(t *testing.T) {
 		})
 	}
 }
+
+func routeFiles(t *testing.T, dir string) []string {
+	t.Helper()
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range ents {
+		names = append(names, e.Name())
+	}
+	return names
+}
+
+func TestUpsertRouteLeavesNoTempFiles(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "routes")
+	n := Nginx{R: &testutil.FakeRunner{}, RoutesDir: dir, Container: "cp_nginx", BaseDomain: "localhost", Port: "80"}
+	for range 2 { // a second upsert replaces the existing file
+		if err := n.UpsertRoute(context.Background(), "svc-1", "cp-dep1", 3000); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := routeFiles(t, dir); len(got) != 1 || got[0] != "svc-svc-1.conf" {
+		t.Fatalf("files = %v", got)
+	}
+	fi, err := os.Stat(filepath.Join(dir, "svc-svc-1.conf"))
+	if err != nil || fi.Mode().Perm() != 0o644 {
+		t.Fatalf("mode = %v err=%v", fi.Mode(), err)
+	}
+}
+
+// A reader holding the old file (nginx mid-reload) must never see a partial
+// write: the new route replaces the old inode instead of rewriting it.
+func TestUpsertRouteReplacesFileAtomically(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "routes")
+	n := Nginx{R: &testutil.FakeRunner{}, RoutesDir: dir, Container: "cp_nginx", BaseDomain: "localhost", Port: "80"}
+	if err := n.UpsertRoute(context.Background(), "svc-1", "cp-dep1", 3000); err != nil {
+		t.Fatal(err)
+	}
+	old := filepath.Join(t.TempDir(), "old.conf")
+	if err := os.Link(filepath.Join(dir, "svc-svc-1.conf"), old); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.UpsertRoute(context.Background(), "svc-1", "cp-dep2", 3000); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(old); string(b) != wantRoute {
+		t.Fatalf("old file rewritten in place: %q", b)
+	}
+}

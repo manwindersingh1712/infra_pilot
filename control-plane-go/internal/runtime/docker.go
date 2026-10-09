@@ -101,6 +101,12 @@ func (d Docker) Run(ctx context.Context, s RunSpec) (string, error) {
 	return strings.TrimSpace(out), err
 }
 
+// limitArgs caps memory, CPU and pids for every container we start,
+// including the short-lived helper containers.
+func (d Docker) limitArgs() []string {
+	return []string{"--memory", d.Limits.Memory, "--cpus", d.Limits.CPUs, "--pids-limit", strconv.Itoa(d.Limits.Pids)}
+}
+
 // validate rejects a spec before any docker call is made.
 func (s RunSpec) validate() error {
 	if s.PublishPort > 0 && s.ContainerPort <= 0 {
@@ -153,9 +159,8 @@ func (d Docker) runArgs(s RunSpec, envFile string) []string {
 	for _, a := range s.Aliases {
 		args = append(args, "--network-alias", a)
 	}
-	args = append(args,
-		"--memory", d.Limits.Memory, "--cpus", d.Limits.CPUs,
-		"--pids-limit", strconv.Itoa(d.Limits.Pids), "--restart", "unless-stopped")
+	args = append(args, d.limitArgs()...)
+	args = append(args, "--restart", "unless-stopped")
 	for _, k := range sortedKeys(s.Labels) {
 		args = append(args, "--label", k+"="+s.Labels[k])
 	}
@@ -241,16 +246,18 @@ func (d Docker) CreateVolume(ctx context.Context, name string) error {
 // CopyIntoVolume copies hostDir into the volume once. A marker file makes
 // repeated calls (activity retries, later deploys) no-ops.
 func (d Docker) CopyIntoVolume(ctx context.Context, hostDir, volume string) error {
-	_, err := d.R.Run(ctx, "", "docker", "run", "--rm",
-		"-v", hostDir+":/from:ro", "-v", volume+":/to", d.ProbeImage,
+	args := append([]string{"run", "--rm", "--network", "none"}, d.limitArgs()...)
+	args = append(args, "-v", hostDir+":/from:ro", "-v", volume+":/to", d.ProbeImage,
 		"sh", "-c", "[ -f /to/.cp-migrated ] || (cp -a /from/. /to/ && touch /to/.cp-migrated)")
+	_, err := d.R.Run(ctx, "", "docker", args...)
 	return err
 }
 
 // Probe checks that host:port accepts TCP connections from inside network.
 func (d Docker) Probe(ctx context.Context, network, host string, port int) error {
-	_, err := d.R.Run(ctx, "", "docker", "run", "--rm", "--network", network, d.ProbeImage,
-		"nc", "-z", "-w", "2", host, strconv.Itoa(port))
+	args := append([]string{"run", "--rm", "--network", network}, d.limitArgs()...)
+	args = append(args, d.ProbeImage, "nc", "-z", "-w", "2", host, strconv.Itoa(port))
+	_, err := d.R.Run(ctx, "", "docker", args...)
 	return err
 }
 

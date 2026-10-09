@@ -151,8 +151,8 @@ func TestVolumesProbeAndInspect(t *testing.T) {
 	want := []string{
 		"docker volume inspect cp-vol-s1",
 		"docker volume create --label cp.managed=true cp-vol-s1",
-		"docker run --rm -v /tmp/cp-volumes/s1:/from:ro -v cp-vol-s1:/to busybox:1.36 sh -c [ -f /to/.cp-migrated ] || (cp -a /from/. /to/ && touch /to/.cp-migrated)",
-		"docker run --rm --network cp-proj-p1 busybox:1.36 nc -z -w 2 cp-d1 3000",
+		"docker run --rm --network none --memory 512m --cpus 0.5 --pids-limit 256 -v /tmp/cp-volumes/s1:/from:ro -v cp-vol-s1:/to busybox:1.36 sh -c [ -f /to/.cp-migrated ] || (cp -a /from/. /to/ && touch /to/.cp-migrated)",
+		"docker run --rm --network cp-proj-p1 --memory 512m --cpus 0.5 --pids-limit 256 busybox:1.36 nc -z -w 2 cp-d1 3000",
 		"docker inspect -f {{.State.Running}} abc",
 	}
 	if got := r.Commands(); strings.Join(got, "\n") != strings.Join(want, "\n") {

@@ -188,3 +188,19 @@ func TestUpsertRouteReloadFailureRestoresOldFile(t *testing.T) {
 		t.Fatalf("files = %v", got)
 	}
 }
+
+func TestUpsertRouteMkdirFailure(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := &testutil.FakeRunner{}
+	n := Nginx{R: r, RoutesDir: filepath.Join(file, "routes"), Container: "cp_nginx", BaseDomain: "localhost", Port: "80"}
+	err := n.UpsertRoute(context.Background(), "svc-1", "cp-dep1", 3000)
+	if err == nil || !strings.Contains(err.Error(), "svc-1") {
+		t.Fatalf("err = %v", err)
+	}
+	if cmds := r.Commands(); len(cmds) != 0 {
+		t.Fatalf("cmds = %v", cmds)
+	}
+}

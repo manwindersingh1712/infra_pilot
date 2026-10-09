@@ -25,3 +25,11 @@
 - `fe58874` STAFF-1 + STAFF-4: on reload failure restore the old file (or remove the new one); `nginx route <id>: …` wrapping; `errors.Join` if rollback also fails. No second reload after rollback (running nginx kept its last good config).
 - `235ef07` STAFF-3: MkdirAll failure test (reload-failure tests are in `fe58874`).
 - New annotations: `#nosec G302` (Chmod), `#nosec G304` (read previous file). Engineer CI dry run green.
+
+## Round 1 re-check (fbaf974..235ef07)
+- Both re-check agents hit an API usage limit mid-run and were resumed (Verifier leftovers were reused, then cleaned up).
+- **Staff + Security (combined): CLEAN.** SEC-1, STAFF-1..4 resolved; no re-reload after rollback accepted (`-s reload` parses before signalling; a failed reload keeps the old config; a Temporal retry covers a reload that applied but reported an error). gosec/gitleaks clean. New lows → backlog: SEC-2 T18 (raw serviceID in outer error wrap, log forging), STAFF-7 T18 (test gaps: rollback-also-fails, write failure, `"a\n"`, nil `fi`).
+- **Verifier: PASS.** Full race suite + lint green. Real nginx:alpine: route served; with a broken `other.conf` the reload fails with `[emerg] unknown directive`, the new `svc-svc-2.conf` is removed, `svc-svc-1.conf` is restored byte-for-byte (572 bytes), no `.tmp` leftovers, svc-1 keeps serving; after removing the broken file both routes serve; `../x` rejected with nothing written.
+
+## Result
+**PASSED 2026-10-10** after one fix round. Open lows: SEC-2, STAFF-7 (backlog); forward STAFF-6 (backlog, Plan 2 RemoveRoute).

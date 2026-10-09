@@ -24,3 +24,10 @@
 - `fc34418` STAFF-2: per-stream pointer token; cleanup deletes only its own entry (`stream` goroutine renamed `run`).
 - `365ff46` STAFF-5 (second half): Stop test waits for "ready", then requires the final "Log stream ended" entry.
 - Engineer CI dry run green; streamer tests 5/5 under -race.
+
+## Round 1 re-check (120d62b..365ff46)
+- **Staff + Security (combined): CLEAN.** All accepted findings resolved (16 KiB exact uncut / +1 cut, bounded memory, drains to EOF, rune-boundary cut, token logic race-clean). New → backlog: SEC-6 low (hung Redis + WithoutCancel = 2 s per buffered line after Stop), STAFF-6 info (WaitDelay ineffective with StdoutPipe), STAFF-7 low (300 ms sleep in test), STAFF-8 info (CRLF at exactly 16 KiB gets marker).
+- **Verifier: PASS.** Race suite + `-count=10` streamer green. Real Docker + dev Redis: 2 MiB line → one entry of 16399 bytes ending " …[truncated]", then out1-8/err1-8 kept arriving, `docker stop` → "Log stream ended (exit code: 0)", IsStreaming false. Stop: final entry in 52 ms, goroutines back to baseline, no leftover `docker logs`. `-x` rejected with a Warn, nothing written. VER-3/VER-4 info → backlog.
+
+## Result
+**PASSED 2026-10-10** after one fix round. Open: STAFF-4, STAFF-5 (first half), SEC-5, SEC-6, STAFF-6/7/8, VER-2/3/4 (backlog).

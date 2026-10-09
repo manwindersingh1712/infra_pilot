@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -19,7 +20,23 @@ type Nginx struct {
 	Port       string // public nginx port; "80" adds no :port suffix to URLs
 }
 
-var nonAlnum = regexp.MustCompile(`[^a-zA-Z0-9]`)
+var (
+	nonAlnum    = regexp.MustCompile(`[^a-zA-Z0-9]`)
+	serviceIDRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+	hostnameRE  = regexp.MustCompile(`^[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)*$`)
+)
+
+// checkRoute guards the values that become a file name and nginx directives
+// (SEC-1 T18): the service ID is a hostname label, the base domain a hostname.
+func checkRoute(serviceID, baseDomain, containerName string) error {
+	if !serviceIDRE.MatchString(serviceID) {
+		return fmt.Errorf("invalid service id %q", serviceID)
+	}
+	if !hostnameRE.MatchString(baseDomain) {
+		return fmt.Errorf("invalid base domain %q", baseDomain)
+	}
+	return checkName("container", containerName)
+}
 
 // RenderRoute returns the server block for <serviceID>.<baseDomain>. The
 // upstream is held in a variable so nginx resolves the container name through
@@ -52,6 +69,9 @@ func RenderRoute(serviceID, baseDomain, containerName string, containerPort int)
 }
 
 func (n Nginx) UpsertRoute(ctx context.Context, serviceID, containerName string, containerPort int) error {
+	if err := checkRoute(serviceID, n.BaseDomain, containerName); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(n.RoutesDir, 0o755); err != nil { // #nosec G301 -- nginx (separate container, bind mount) must read route files; contents are generated from our IDs
 		return err
 	}

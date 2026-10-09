@@ -62,3 +62,32 @@ func TestRuntimeURL(t *testing.T) {
 		t.Fatalf("got %s", got)
 	}
 }
+
+func TestUpsertRouteRejectsBadInput(t *testing.T) {
+	cases := []struct{ name, svc, ctr, domain string }{
+		{"svc traversal", "../x", "cp-dep1", "localhost"},
+		{"svc semicolon", "a;b", "cp-dep1", "localhost"},
+		{"svc newline", "a\nb", "cp-dep1", "localhost"},
+		{"svc upper dot", "A.b", "cp-dep1", "localhost"},
+		{"svc empty", "", "cp-dep1", "localhost"},
+		{"container space", "svc-1", "x y", "localhost"},
+		{"domain semicolon", "svc-1", "cp-dep1", "bad;domain"},
+		{"domain empty", "svc-1", "cp-dep1", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "routes")
+			r := &testutil.FakeRunner{}
+			n := Nginx{R: r, RoutesDir: dir, Container: "cp_nginx", BaseDomain: tc.domain, Port: "80"}
+			if err := n.UpsertRoute(context.Background(), tc.svc, tc.ctr, 3000); err == nil {
+				t.Fatal("want error")
+			}
+			if _, err := os.Stat(dir); !os.IsNotExist(err) {
+				t.Fatalf("routes dir touched: %v", err)
+			}
+			if cmds := r.Commands(); len(cmds) != 0 {
+				t.Fatalf("cmds = %v", cmds)
+			}
+		})
+	}
+}

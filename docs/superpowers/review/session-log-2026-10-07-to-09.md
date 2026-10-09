@@ -118,4 +118,4 @@ Parity checks against the running Node API, done read-only on the dev DB:
 - **Open tooling issue (medium):** gosec v2.29.0 can't read go1.27 export data, so its type-aware rules are blind locally and probably in CI. Needs a newer gosec (backlog). Use `$(go env GOPATH)/bin/gosec`, not Homebrew's.
 - **New rule (user):** at ~90% context, save state into START-HERE + this log and commit (START-HERE §7 rule 0).
 - **User questions answered:** 34 tasks left (Plan 1: 11 incl. 17; Plan 2: 18; Plan 3: 5). Kubernetes is roadmap Phase 6, not in the migration plans; the `Runtime`/`Router` interfaces (spec D7) keep it possible.
-- **Next step:** check whether the Task 17 fix commit landed (`git log`); if `ports.go`/`ports_test.go` are still uncommitted, run the CI dry run and have an Engineer commit (or the orchestrator, per the 2026-10-09 user ruling), then Staff + Verifier re-check, close `task-17.md`, update the tracker, start Task 18 (nginx routes).
+- **Next step:** the Task 17 fix landed as `5bc320f` (CI green). Run the Staff + Verifier re-check, close `task-17.md`, update the tracker, start Task 18 (nginx routes).

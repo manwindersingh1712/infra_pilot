@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -77,30 +78,53 @@ func (r *Redis) Read(ctx context.Context, deploymentID string, count int64) ([]E
 	return out, nil
 }
 
-// Subscribe streams live entries for a deployment. Call stop to unsubscribe;
-// the channel closes after that or when ctx ends.
+// Subscribe streams live entries for a deployment. The channel closes after
+// stop is called or ctx ends; either way the pub/sub connection is released.
+// stop is idempotent and safe to call after ctx has ended.
 func (r *Redis) Subscribe(ctx context.Context, deploymentID string) (<-chan Entry, func(), error) {
 	ps := r.c.Subscribe(ctx, channelPrefix+deploymentID)
 	if _, err := ps.Receive(ctx); err != nil { // wait until the subscription is active
 		_ = ps.Close()
 		return nil, nil, err
 	}
+	done := make(chan struct{})
+	var once sync.Once
+	stop := func() {
+		once.Do(func() {
+			close(done)
+			_ = ps.Close()
+		})
+	}
+	msgs := ps.Channel()
 	out := make(chan Entry, 64)
 	go func() {
 		defer close(out)
-		for msg := range ps.Channel() {
-			var e Entry
-			if json.Unmarshal([]byte(msg.Payload), &e) != nil {
-				continue
-			}
+		defer stop()
+		for {
 			select {
-			case out <- e:
 			case <-ctx.Done():
 				return
+			case <-done:
+				return
+			case msg, ok := <-msgs:
+				if !ok {
+					return
+				}
+				var e Entry
+				if json.Unmarshal([]byte(msg.Payload), &e) != nil {
+					continue
+				}
+				select {
+				case out <- e:
+				case <-ctx.Done():
+					return
+				case <-done:
+					return
+				}
 			}
 		}
 	}()
-	return out, func() { _ = ps.Close() }, nil
+	return out, stop, nil
 }
 
 // ActiveStreams lists deployment IDs that still have a hot log stream.

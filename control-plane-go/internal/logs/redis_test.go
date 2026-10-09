@@ -103,4 +103,23 @@ func TestRedis(t *testing.T) {
 	if err != nil || len(streams) != 1 || streams[0] != "dep1" {
 		t.Fatalf("ActiveStreams = %v %v", streams, err)
 	}
+
+	// A quiet subscription must close when its ctx is cancelled, and stop
+	// must stay safe to call (twice) afterwards.
+	subCtx, subCancel := context.WithCancel(ctx)
+	quiet, quietStop, err := r.Subscribe(subCtx, "quiet")
+	if err != nil {
+		t.Fatal(err)
+	}
+	subCancel()
+	select {
+	case _, ok := <-quiet:
+		if ok {
+			t.Fatal("unexpected entry on quiet channel")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("channel not closed after ctx cancel")
+	}
+	quietStop()
+	quietStop()
 }

@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 var errNoExposedPorts = errors.New("no_exposed_ports_found")
@@ -101,6 +103,12 @@ func (d Docker) Run(ctx context.Context, s RunSpec) (string, error) {
 
 // validate rejects a spec before any docker call is made.
 func (s RunSpec) validate() error {
+	if s.PublishPort > 0 && s.ContainerPort <= 0 {
+		return errors.New("PublishPort needs a ContainerPort")
+	}
+	if err := validateEnv(s.Env); err != nil {
+		return err
+	}
 	if s.Volume != "" {
 		if err := checkContainerPath("volume target", s.VolumeTarget); err != nil {
 			return err
@@ -109,6 +117,23 @@ func (s RunSpec) validate() error {
 	for _, p := range s.Tmpfs {
 		if err := checkContainerPath("tmpfs path", p); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+var envKeyRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// validateEnv keeps the env file well-formed: one KEY=VALUE per line. Errors
+// name the key only; values can be secrets.
+func validateEnv(env map[string]string) error {
+	for _, k := range sortedKeys(env) {
+		if !envKeyRE.MatchString(k) {
+			return fmt.Errorf("env var %q: name must match %s", k, envKeyRE)
+		}
+		v := env[k]
+		if strings.ContainsAny(v, "\n\r") || !utf8.ValidString(v) {
+			return fmt.Errorf("env var %q: value must be valid UTF-8 without line breaks", k)
 		}
 	}
 	return nil
@@ -158,11 +183,7 @@ func writeEnvFile(env map[string]string) (string, error) {
 	}
 	var b strings.Builder
 	for _, k := range sortedKeys(env) {
-		v := env[k]
-		if strings.ContainsAny(k, "=\n") || strings.Contains(v, "\n") {
-			return "", fmt.Errorf("env var %q: names cannot contain '=' or newlines, values cannot contain newlines", k)
-		}
-		b.WriteString(k + "=" + v + "\n")
+		b.WriteString(k + "=" + env[k] + "\n") // validated by validateEnv
 	}
 	f, err := os.CreateTemp("", "cp-env-*")
 	if err != nil {

@@ -215,3 +215,40 @@ func TestRunRejectsVolumeWithoutTarget(t *testing.T) {
 		t.Fatalf("no docker call expected, got %v", r.Commands())
 	}
 }
+
+// STAFF-6 (T16): publishing needs a container port to map to.
+func TestRunRejectsPublishWithoutContainerPort(t *testing.T) {
+	r := &testutil.FakeRunner{}
+	_, err := newDocker(r).Run(context.Background(), RunSpec{Image: "img", Name: "cp-d5", Network: "n", PublishPort: 20000})
+	if err == nil || len(r.Commands()) != 0 {
+		t.Fatalf("err=%v cmds=%v: want an error and no docker call", err, r.Commands())
+	}
+}
+
+// STAFF-5 / SEC-2 (T16): env keys are shell-style identifiers; values cannot
+// hold line breaks or invalid UTF-8; errors name the key, never the value.
+func TestRunValidatesEnv(t *testing.T) {
+	bad := []map[string]string{
+		{"1X": "v"}, {"A-B": "v"}, {"A=B": "v"}, {"": "v"}, {"A B": "v"}, {"X\n": "v"},
+		{"X": "a\nsecret"}, {"X": "a\rsecret"}, {"X": "secret\xff"},
+	}
+	for _, env := range bad {
+		r := &testutil.FakeRunner{}
+		_, err := newDocker(r).Run(context.Background(), RunSpec{Image: "img", Name: "cp-d6", Network: "n", Env: env})
+		if err == nil {
+			t.Errorf("env %q must be rejected", env)
+			continue
+		}
+		if strings.Contains(err.Error(), "secret") {
+			t.Errorf("error leaks the value: %v", err)
+		}
+		if len(r.Commands()) != 0 {
+			t.Errorf("env %q: no docker call expected, got %v", env, r.Commands())
+		}
+	}
+	r := &testutil.FakeRunner{}
+	ok := map[string]string{"_A1": "x=y z", "PATH_2": "", "u": "héllo"}
+	if _, err := newDocker(r).Run(context.Background(), RunSpec{Image: "img", Name: "cp-d6", Network: "n", Env: ok}); err != nil {
+		t.Fatalf("valid env rejected: %v", err)
+	}
+}

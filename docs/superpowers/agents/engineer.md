@@ -23,3 +23,8 @@ You are the only role that changes code in this migration. You work on exactly o
 - **Deviations from the plan text:** what changed and why, or "none".
 - **Test commands run:** the exact commands and the last lines of their output.
 - **Open questions** for the reviewers, if any.
+
+## Environment notes
+- govulncheck can hang on its network fetch. Run it with a hard limit (`perl -e 'alarm 180; exec @ARGV' govulncheck ./...`) and retry once.
+- Run any command that may take more than about a minute (full `go test -race ./...`, golangci-lint) in the background and read its output when it finishes; this machine sometimes pauses long commands.
+- Never print the contents of `.env` files.

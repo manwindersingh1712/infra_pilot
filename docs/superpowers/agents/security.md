@@ -38,3 +38,8 @@ evidence: <command output or code quote>
 fix: <concrete suggestion>
 ```
 End with `RESULT: CLEAN` or `RESULT: FINDINGS (<counts by severity>)`.
+
+## Environment notes
+- govulncheck can hang on its network fetch. Run it with a hard limit (`perl -e 'alarm 180; exec @ARGV' govulncheck ./...`) and retry once.
+- Run any command that may take more than about a minute (full `go test -race ./...`, golangci-lint) in the background and read its output when it finishes; this machine sometimes pauses long commands.
+- Never print the contents of `.env` files.

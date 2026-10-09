@@ -75,7 +75,9 @@ Update this section as the work moves. The orchestrating session should tick box
 | Plan 3 — hardening | Not started | | | | Requires Plan 1's rollback window to be closed |
 
 - **Branch:** `go-migration` (created 2026-10-07 off `go`; first commit holds these docs).
-- **Current task:** Plan 1, Task 10 (Encrypted secrets). Tasks 1, 1a, 2, 3 (2026-10-07), 4, 5, 5a, 6, 7, 8 (2026-10-08) and 9 (2026-10-09) passed their gates.
+- **Current task:** Plan 1, Task 10 (Encrypted secrets), **paused 2026-10-09** at the user's request because subagents kept stalling. Tasks 1, 1a, 2, 3 (2026-10-07), 4, 5, 5a, 6, 7, 8 (2026-10-08) and 9 (2026-10-09) passed their gates.
+- **Resume Task 10 here:** the Engineer's code is written but **uncommitted** in `control-plane-go/internal/secrets/{secrets.go,secrets_test.go}` (untracked). The orchestrator's CI dry run on it passed on 2026-10-09 (gofmt, build/vet, golangci-lint 0 issues, `go test -race ./...` all ok, govulncheck exit 0, gosec clean, `-short` ok, both guard steps). Next: a fresh Engineer re-reads the files against Task 10 (plan lines 3001-3200) and spec §5, shows a failing-test run if feasible (e.g. by stashing secrets.go), commits with the task's message, then Security/Staff/Verifier review. Record in `review/plan1/task-10.md`.
+- **govulncheck can hang** on its network fetch (one run hung for an hour; the retry took 3 s). Always run it with a hard limit, e.g. `perl -e 'alarm 180; exec @ARGV' govulncheck ./...`, and retry once.
 - **Environment note:** subagents on this machine are often killed by the 10-minute stream watchdog during long commands. If a reviewer stalls twice, the orchestrator may run that reviewer's mechanical checks itself (background commands, throwaway files outside the repo) and record it in the task file.
 - **Inserted tasks:** 1a (cp-ui lint/build baseline), 5a (db and test-helper hardening). See `review/decisions.md`.
 - **Dev DB:** baselined by goose on 2026-10-07 (pre-baseline backup in that session's scratchpad). Never run `npm run prisma:migrate` again.

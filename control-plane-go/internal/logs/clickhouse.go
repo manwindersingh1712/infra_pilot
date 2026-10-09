@@ -2,6 +2,7 @@ package logs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"slices"
@@ -42,7 +43,9 @@ type ClickHouse struct{ conn driver.Conn }
 func NewClickHouse(rawURL, user, password string) (*ClickHouse, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return nil, fmt.Errorf("parse CLICKHOUSE_URL: %w", err)
+		// url.Parse errors quote the raw URL (userinfo included) and inner
+		// errors can echo parts of it, so never wrap them: they may reach logs.
+		return nil, errors.New("parse CLICKHOUSE_URL: invalid URL")
 	}
 	conn, err := clickhouse.Open(&clickhouse.Options{
 		Protocol: clickhouse.HTTP,

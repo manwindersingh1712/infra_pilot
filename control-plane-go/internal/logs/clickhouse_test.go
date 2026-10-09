@@ -3,6 +3,7 @@ package logs
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,6 +31,21 @@ func TestBuildQueryDefaultsLimit(t *testing.T) {
 	sql, _ := buildQuery(Query{DeploymentID: "d"})
 	if want := "SELECT deployment_id, source, message, timestamp FROM container_logs WHERE deployment_id = ? ORDER BY timestamp DESC LIMIT 100 OFFSET 0"; sql != want {
 		t.Fatalf("sql = %s", sql)
+	}
+}
+
+func TestNewClickHouseParseErrorHidesCredentials(t *testing.T) {
+	for _, raw := range []string{
+		"http://u:s3cretpw@ho st:8123",
+		"http://user:s3cretpw@host:99999/%zz",
+	} {
+		_, err := NewClickHouse(raw, "u", "p")
+		if err == nil {
+			t.Fatalf("NewClickHouse(%q): want error", raw)
+		}
+		if strings.Contains(err.Error(), "s3cret") {
+			t.Fatalf("error leaks credentials: %v", err)
+		}
 	}
 }
 

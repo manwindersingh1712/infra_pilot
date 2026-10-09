@@ -200,3 +200,26 @@ Follow-ups:
   4. **Exactly one flusher, the worker's ticker, with no lock.** A lock is deferred to Phase 6, when there are worker replicas.
 - **Why:** each fix is small and adds no schema change, no dependency and no rollback risk. The ClickHouse table stays identical to Node's, so rollback remains a plain worker swap.
 - **Follow-ups:** spec §6.7 is updated. The Plan 1 Task 14 amendment is pasted under its heading. Backlog: three new lines. STAFF-1 (T12), STAFF-2/SEC-1 (T12) (the outage part), STAFF-3 (T12) and the Staff note (T12) are closed as covered by the amendment. Cursor-format validation is dropped, because only Flush writes the cursor.
+
+## 2026-10-09: Worker metrics scope (CTO)
+- **Context:** Task 15 (`ba6b86b`) built `internal/metrics`. Spec §8 also asks the worker for outbox lag and Temporal SDK metrics, and Plan 1 has neither (STAFF-1 T15, medium). Two lows came with it:
+  - STAFF-4 T15: the Task 26 metrics loop drops `CountOutboxByStatus` errors.
+  - STAFF-5 T15: the counters inside activities can miscount. `MarkFailed` counts `failed` on `ErrNotFound`, and also when the row is `deployed` and the 2026-10-08 amendment's guarded UPDATE changed nothing.
+
+  `go.temporal.io/sdk` is not in `go.mod` yet. A metrics handler means adding tally or otel.
+- **Options considered:**
+  - (a) Add both the lag gauge and the SDK metrics now.
+  - (b) Add the lag gauge now and move the SDK metrics to Plan 3.
+  - (c) Drop both from spec §8.
+- **Decision:**
+  - **STAFF-1: (b).** Spec §8 is edited.
+  - **STAFF-4:** fixed in the Task 26 amendment.
+  - **STAFF-5:** the miscount is fixed in the Task 23 amendment. A rare double count after a crash post-increment is accepted and documented.
+- **Why:**
+  - Lag is the signal that matters at cutover. It tells a pending backlog that is draining from one that is stuck (Temporal unreachable). It costs one query and one gauge, with no new dependency.
+  - The SDK metrics can wait. The Temporal UI covers stuck or failed runs, nothing scrapes the worker until Plan 3, and the handler is about 10 lines once a monitoring stack is chosen.
+  - The STAFF-5 miscount would be wrong data on every post-deploy failure path, and the fix is one return value on a method not built yet.
+- **Follow-ups:**
+  - Spec §8 Worker bullet replaced.
+  - Amendments pasted under Task 15 (fix round: `OldestUnpublishedOutboxAge` plus `SetOutboxLag` and tests), Task 23 (`MarkFailed` returns `(bool, error)`; count only when changed) and Task 26 (metrics loop logs errors and sets the lag gauge).
+  - Backlog line added. STAFF-1/4/5 (T15) close once the Task 15 fix round passes review.

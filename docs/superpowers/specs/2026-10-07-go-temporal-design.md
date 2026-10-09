@@ -150,7 +150,7 @@ Enum values are not changed, so Prisma could still read every row while rollback
 - **Logs:** `slog`, JSON when `LOG_FORMAT=json` (production), text in dev. Every API log line carries the `X-Request-ID` (generated if missing and echoed in the response).
 - **Metrics:** Prometheus on `METRICS_ADDR`, separate from the public port; default `127.0.0.1:9090` for the API and `127.0.0.1:9091` for the worker.
   - API: requests by route pattern, status and duration.
-  - Worker: workflow outcomes, build duration, deploy duration, outbox lag and dead count, plus Temporal SDK metrics.
+  - Worker: workflow outcomes, build duration, deploy duration, outbox rows by status (including `dead`), and outbox lag (`cp_outbox_oldest_pending_age_seconds`, the age of the oldest `pending`/`publishing` row). Temporal SDK metrics (a `client.Options.MetricsHandler` on the worker's registry) are added in Plan 3 with the production compose. (CTO 2026-10-09)
 - **CI (first task of Plan 1):** `.github/workflows/ci.yml` runs:
   - Go: `go vet`, `golangci-lint`, `go test -race ./...` (testcontainers run on GitHub's Ubuntu runners), `govulncheck ./...`, `gosec ./...` (only G204 excluded; a CI step forbids `sh`/`bash` invocation in non-test code; any other suppression is a per-line `#nosec` with a reason);
   - secrets: `gitleaks` on every push;

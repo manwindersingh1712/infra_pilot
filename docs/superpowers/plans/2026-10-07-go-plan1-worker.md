@@ -4198,6 +4198,21 @@ git commit -m "feat(go): tiered log queries and duplicate-free flush"
 
 > **CTO amendment (Task 2 redaction note, `review/decisions.md` 2026-10-07):** Config is logged only as `"config", cfg` (`Config.LogValue` redacts); never log secret fields individually.
 
+> **CTO amendment (STAFF-1 T15, `review/decisions.md` 2026-10-09):**
+> - **Store.** Append to `internal/store/outbox.go`:
+>   ```go
+>   // OldestUnpublishedOutboxAge returns the age of the oldest pending or
+>   // publishing outbox row, or 0 when there is none. createdAt is UTC (Prisma convention).
+>   func (s *Store) OldestUnpublishedOutboxAge(ctx context.Context) (time.Duration, error) {
+>   	var secs float64
+>   	err := s.db.QueryRow(ctx, `SELECT COALESCE(EXTRACT(EPOCH FROM (now() AT TIME ZONE 'UTC') - min("createdAt")), 0)::float8
+>   		FROM "OutboxEvent" WHERE "status" IN ('pending', 'publishing')`).Scan(&secs)
+>   	return time.Duration(secs * float64(time.Second)), err
+>   }
+>   ```
+> - **Metrics.** In `internal/metrics/metrics.go`, add `outboxLag prometheus.Gauge` named `cp_outbox_oldest_pending_age_seconds` (Help: "Age of the oldest pending or publishing outbox row; 0 when none."), register it, and add `func (m *Worker) SetOutboxLag(d time.Duration)` (nil-safe).
+> - **Tests.** `TestOldestUnpublishedOutboxAge` (testcontainers): with no rows it returns 0. Insert a `pending` row with `createdAt = (now() AT TIME ZONE 'UTC') - interval '90 seconds'`, plus a `published` row and a `dead` row that are both older. The result must be between 89 s and 120 s, which shows `published` and `dead` rows are ignored. The metrics test calls `SetOutboxLag(42*time.Second)` and asserts that `cp_outbox_oldest_pending_age_seconds 42` is in the handler output; a nil `*Worker` must not panic.
+
 **Files:**
 - Create: `control-plane-go/internal/logging/logging.go`, `control-plane-go/internal/metrics/metrics.go`
 - Modify: `control-plane-go/internal/store/outbox.go` (append `CountOutboxByStatus`)
@@ -6280,6 +6295,8 @@ git commit -m "feat(go): build images in a resource-limited buildx builder"
 > Tests: `TestLoadJobOmitsRepoURL`: seed a service with `https://ghp_SECRET9@example.com/x.git`. `LoadJob`'s result has `RepoURL == nil`, and `converter.GetDefaultDataConverter().ToPayload(result)` data does not contain `ghp_`. `TestBuildImage` uses `BuildInput{DeploymentID}`, the fake builder receives the stored URL, and a nil URL still gives `MissingRepo`. New case: a fake builder returning `fmt.Errorf("x: %w", gitsrc.ErrInvalid)` → non-retryable `InvalidSource`. `TestLegacyDir`: `VolumePath` `/etc` → default dir; `<root>/../x` → default; `<root>/s1` → used; `<root>` itself → default; `cp-vol-x` (non-absolute) → default.
 >
 > **CTO amendment (STAFF-4 T8, `review/decisions.md` 2026-10-08):** add `func (s *Store) MarkFailed(ctx, id string) error` running `UPDATE "Deployment" SET "status" = 'failed', "updatedAt" = now() WHERE "id" = $1 AND "status" <> 'deployed'` (0 rows → nil). The `MarkFailed` activity uses it. Store test: a deployed row stays deployed and a deploying row becomes failed. Activity test: `MarkFailed` on a deployed row leaves it deployed. Add the Task 8 STAFF-1 assertions while editing `deployments_test.go`.
+>
+> **CTO amendment (STAFF-5 T15, `review/decisions.md` 2026-10-09):** the store method becomes `func (s *Store) MarkFailed(ctx, id string) (bool, error)`. It returns `true` only when the UPDATE changed a row; a missing row and a `deployed` row both give `(false, nil)`. The `MarkFailed` activity calls `a.Metrics.DeploymentFinished("failed", 0)` only when `changed` is true, and no longer branches on `ErrNotFound`. Tests: the store test asserts `changed == true` for a `deploying` row and `false` for a `deployed` row and for an unknown id. The activity test uses a real `*metrics.Worker` and asserts that `cp_deployments_total{outcome="failed"}` stays 0 after `MarkFailed` on a deployed row. On the `MarkDeployed` activity, add a comment that the counter is best-effort: if the worker dies after the increment and before Temporal records completion, the retry counts again. This is accepted for counters.
 
 **Files:**
 - Create: `control-plane-go/internal/workflows/names.go`, `control-plane-go/internal/workflows/activities.go`
@@ -7953,6 +7970,23 @@ git commit -m "feat(go): outbox starts Temporal workflows idempotently"
 > **CTO amendment (STAFF-5 of Task 2, `review/decisions.md` 2026-10-07):** the startup log line includes the absolute nginx routes dir and the redacted config, see the `worker up` line below.
 
 > **CTO amendment (FWD-A2, `review/decisions.md` 2026-10-08):** before the worker starts, `os.Setenv("GIT_TERMINAL_PROMPT", "0")`, so a private repo without credentials fails fast instead of hanging until the 30-minute build timeout. One line plus a startup-test assertion.
+
+> **CTO amendment (STAFF-1/STAFF-4 T15, `review/decisions.md` 2026-10-09):** replace the "outbox metrics" loop body with:
+> ```go
+> every(ctx, outboxMetricInterval, func() {
+> 	if counts, err := st.CountOutboxByStatus(ctx); err != nil {
+> 		logger.Warn("outbox metrics: count failed", "err", err)
+> 	} else {
+> 		m.SetOutbox(counts)
+> 	}
+> 	if age, err := st.OldestUnpublishedOutboxAge(ctx); err != nil {
+> 		logger.Warn("outbox metrics: lag failed", "err", err)
+> 	} else {
+> 		m.SetOutboxLag(age)
+> 	}
+> })
+> ```
+> When a query fails, the gauge keeps its last value; this is acceptable because the warning is logged every 15 s. There is no Temporal `MetricsHandler` in Plan 1, so `client.Options` stays as written. Smoke step: `curl -s 127.0.0.1:9091/metrics | grep cp_outbox_oldest_pending_age_seconds` returns one line.
 
 **Files:**
 - Modify: `control-plane/docker-compose.yml` (adds the `temporal` service; this is infrastructure, not Node code)

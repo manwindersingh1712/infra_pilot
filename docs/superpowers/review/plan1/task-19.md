@@ -16,3 +16,11 @@
 ## Orchestrator decisions (fix round 1)
 - Fix: SEC-1 (cap message at 16 KiB with a truncation marker), SEC-2/STAFF-1/VER-1 (read with `bufio.Reader`, discard the rest of an over-long line, always drain), plus the cheap lows in the same code: SEC-3 (`checkName`), SEC-4/STAFF-3 (WaitDelay + per-Write timeout), STAFF-2 (per-stream token), STAFF-5 second half (Stop test asserts the final system entry).
 - Backlog: STAFF-4 (Task 20/26), STAFF-5 first half (Warn flood), SEC-5 (Plan 2 logs API/UI), T11 STAFF-2 TxPipelined stays in backlog (internal/logs, not this task), VER-2 note.
+
+## Fix round 1
+- `120d62b` SEC-1 + SEC-2/STAFF-1/VER-1: `bufio.Reader` + `ReadSlice`, 16 KiB cap (`maxLogLine`) cut on a rune boundary + ` …[truncated]`, rest discarded, always drained; read errors logged.
+- `c39b322` SEC-3: `checkName` on containerID, empty deploymentID rejected (Warn, no start).
+- `f154e90` SEC-4/STAFF-3: `cmd.WaitDelay`, 2 s timeout per sink Write.
+- `fc34418` STAFF-2: per-stream pointer token; cleanup deletes only its own entry (`stream` goroutine renamed `run`).
+- `365ff46` STAFF-5 (second half): Stop test waits for "ready", then requires the final "Log stream ended" entry.
+- Engineer CI dry run green; streamer tests 5/5 under -race.

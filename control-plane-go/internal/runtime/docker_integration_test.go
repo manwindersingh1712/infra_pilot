@@ -57,6 +57,7 @@ func TestDockerIntegrationMongoVolumeLayout(t *testing.T) {
 		Image: "mongo:7", Name: name, Network: network, Aliases: []string{"svc-" + suffix},
 		Labels: map[string]string{"cp.test": "integration"}, ContainerPort: 27017,
 		Volume: volume, VolumeTarget: "/data/db", Tmpfs: []string{"/data/configdb"},
+		CapAdd: []string{"CHOWN", "SETUID", "SETGID"}, // the mongo entrypoint chowns, then drops to mongodb with gosu
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -44,6 +44,7 @@ type RunSpec struct {
 	PublishPort   int      // 0: not published; otherwise bound to 127.0.0.1 only
 	Volume        string   // named volume, mounted at VolumeTarget
 	VolumeTarget  string   // absolute mount path inside the container (e.g. /data/db for mongo); required with Volume
+	CapAdd        []string // capabilities added back after --cap-drop ALL (managed images that drop privileges with gosu)
 	Tmpfs         []string // absolute paths mounted as tmpfs (e.g. mongo's /data/configdb, so no anonymous volume is created)
 }
 
@@ -114,8 +115,21 @@ func (d Docker) limitArgs() []string {
 	return []string{"--memory", d.Limits.Memory, "--cpus", d.Limits.CPUs, "--pids-limit", strconv.Itoa(d.Limits.Pids)}
 }
 
-// validate rejects a spec before any docker call is made.
+// ErrInvalidSpec marks a RunSpec that can never succeed (bad names, env keys or
+// values, paths). Retrying will not help, so activities map it to a
+// non-retryable error.
+var ErrInvalidSpec = errors.New("invalid run spec")
+
+// validate rejects a spec before any docker call is made. Errors wrap
+// ErrInvalidSpec and name keys, never values.
 func (s RunSpec) validate() error {
+	if err := s.check(); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidSpec, err)
+	}
+	return nil
+}
+
+func (s RunSpec) check() error {
 	if err := checkImage(s.Image); err != nil {
 		return err
 	}
@@ -149,8 +163,15 @@ func (s RunSpec) validate() error {
 			return err
 		}
 	}
+	for _, c := range s.CapAdd {
+		if !capRE.MatchString(c) {
+			return fmt.Errorf("invalid capability %q", c)
+		}
+	}
 	return nil
 }
+
+var capRE = regexp.MustCompile(`^[A-Z][A-Z_]*$`)
 
 var envKeyRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
@@ -210,6 +231,13 @@ func (d Docker) runArgs(s RunSpec, envFile string) []string {
 		args = append(args, "--network-alias", a)
 	}
 	args = append(args, d.limitArgs()...)
+	// Tenant code runs here: no capabilities beyond the explicit CapAdd, and no
+	// privilege gain through setuid binaries (T21 requirement).
+	args = append(args, "--cap-drop", "ALL")
+	for _, c := range s.CapAdd {
+		args = append(args, "--cap-add", c)
+	}
+	args = append(args, "--security-opt", "no-new-privileges")
 	args = append(args, "--restart", "unless-stopped")
 	for _, k := range sortedKeys(s.Labels) {
 		args = append(args, "--label", k+"="+s.Labels[k])

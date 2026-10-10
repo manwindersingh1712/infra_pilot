@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -63,7 +64,7 @@ func TestRunBuildsIsolatedLimitedContainer(t *testing.T) {
 	}
 	cmds := r.Commands()
 	want := "docker run -d --name cp-d1 --network cp-proj-p1 --network-alias svc-s1 " +
-		"--memory 512m --cpus 0.5 --pids-limit 256 --restart unless-stopped " +
+		"--memory 512m --cpus 0.5 --pids-limit 256 --cap-drop ALL --security-opt no-new-privileges --restart unless-stopped " +
 		"--label cp.deploymentId=d1 --label cp.serviceId=s1 " +
 		"-p 127.0.0.1:20000:6379 -v cp-vol-s1:/data --env-file " + envFile + " " +
 		"redis:7-alpine sh -c exec redis-server"
@@ -437,5 +438,54 @@ func TestVolumeExistsAndCopyErrors(t *testing.T) {
 	notRunning := &testutil.FakeRunner{Handle: func(testutil.Call) (string, error) { return "false\n", nil }}
 	if running, err := newDocker(notRunning).IsRunning(ctx, "abc"); err != nil || running {
 		t.Fatalf("running=%v err=%v", running, err)
+	}
+}
+
+// T21 requirement: every container drops all capabilities and cannot gain
+// privileges; only CapAdd entries come back.
+func TestRunDropsCapabilitiesAndAddsOnlyRequested(t *testing.T) {
+	r := &testutil.FakeRunner{}
+	_, err := newDocker(r).Run(context.Background(), RunSpec{
+		Image: "redis:7-alpine", Name: "cp-d5", Network: "n", CapAdd: []string{"CHOWN", "SETUID"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := r.Commands()[1]
+	if !strings.Contains(got, "--cap-drop ALL --cap-add CHOWN --cap-add SETUID --security-opt no-new-privileges --restart") {
+		t.Fatalf("got: %s", got)
+	}
+	_, err = newDocker(&testutil.FakeRunner{}).Run(context.Background(), RunSpec{
+		Image: "img", Name: "cp-d6", Network: "n", CapAdd: []string{"ALL"},
+	})
+	if err != nil {
+		t.Fatalf("ALL matches the pattern, only malformed names are rejected: %v", err)
+	}
+	for _, bad := range []string{"--privileged", "chown", "CHOWN x", ""} {
+		fr := &testutil.FakeRunner{}
+		_, err := newDocker(fr).Run(context.Background(), RunSpec{Image: "img", Name: "cp-d7", Network: "n", CapAdd: []string{bad}})
+		if !errors.Is(err, ErrInvalidSpec) || len(fr.Commands()) != 0 {
+			t.Fatalf("cap %q: err=%v cmds=%v", bad, err, fr.Commands())
+		}
+	}
+}
+
+// STAFF-7 (T16r1): spec validation errors are a typed, non-retryable class.
+func TestValidationErrorsWrapErrInvalidSpec(t *testing.T) {
+	ctx := context.Background()
+	for name, spec := range map[string]RunSpec{
+		"env key":    {Image: "img", Name: "cp-d8", Network: "n", Env: map[string]string{"my-key": "v"}},
+		"env value":  {Image: "img", Name: "cp-d8", Network: "n", Env: map[string]string{"K": "a\nb"}},
+		"image":      {Image: "-x", Name: "cp-d8", Network: "n"},
+		"name":       {Image: "img", Name: "--x", Network: "n"},
+		"volume dir": {Image: "img", Name: "cp-d8", Network: "n", Volume: "v"},
+	} {
+		_, err := newDocker(&testutil.FakeRunner{}).Run(ctx, spec)
+		if !errors.Is(err, ErrInvalidSpec) {
+			t.Errorf("%s: err = %v", name, err)
+		}
+		if strings.Contains(fmt.Sprint(err), "a\nb") {
+			t.Errorf("%s: error leaks the value: %v", name, err)
+		}
 	}
 }

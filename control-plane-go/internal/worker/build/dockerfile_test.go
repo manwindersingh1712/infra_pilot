@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestNodejsDockerfileDefaults(t *testing.T) {
@@ -434,5 +436,66 @@ func TestBaseImageFallback(t *testing.T) {
 		if got := baseImage(pkg); got != c.want {
 			t.Errorf("baseImage(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+// readWithTimeout runs ReadPackageJSON in a goroutine so a regression that
+// blocks on a FIFO fails the test instead of hanging the suite. On timeout the
+// FIFO is opened for writing so the stuck goroutine is released.
+func readWithTimeout(t *testing.T, repo, fifo string) PackageJSON {
+	t.Helper()
+	done := make(chan PackageJSON, 1)
+	go func() { done <- ReadPackageJSON(repo) }()
+	select {
+	case pkg := <-done:
+		return pkg
+	case <-time.After(3 * time.Second):
+		if w, err := os.OpenFile(fifo, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+			w.Close()
+		}
+		t.Fatal("ReadPackageJSON blocked on a FIFO")
+		return PackageJSON{}
+	}
+}
+
+func TestReadPackageJSONFIFODoesNotHang(t *testing.T) {
+	repo := t.TempDir()
+	fifo := filepath.Join(repo, "package.json")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Skipf("mkfifo unavailable: %v", err)
+	}
+	if pkg := readWithTimeout(t, repo, fifo); pkg.Scripts != nil || pkg.Engines.Node != "" {
+		t.Fatalf("FIFO package.json must read as empty, got %+v", pkg)
+	}
+}
+
+func TestReadPackageJSONSymlinkToFIFODoesNotHang(t *testing.T) {
+	repo := t.TempDir()
+	fifo := filepath.Join(repo, "pipe")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Skipf("mkfifo unavailable: %v", err)
+	}
+	if err := os.Symlink("pipe", filepath.Join(repo, "package.json")); err != nil {
+		t.Fatal(err)
+	}
+	if pkg := readWithTimeout(t, repo, fifo); pkg.Scripts != nil || pkg.Engines.Node != "" {
+		t.Fatalf("symlink to FIFO must read as empty, got %+v", pkg)
+	}
+}
+
+func TestReactOutputDirFIFOConfigDoesNotHang(t *testing.T) {
+	repo := t.TempDir()
+	if err := syscall.Mkfifo(filepath.Join(repo, "vite.config.js"), 0o600); err != nil {
+		t.Skipf("mkfifo unavailable: %v", err)
+	}
+	done := make(chan string, 1)
+	go func() { done <- ReactOutputDir(repo) }()
+	select {
+	case got := <-done:
+		if got != "dist" {
+			t.Fatalf("got %q, want dist (the config exists)", got)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("ReactOutputDir blocked on a FIFO")
 	}
 }

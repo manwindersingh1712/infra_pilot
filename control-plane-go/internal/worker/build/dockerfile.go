@@ -9,6 +9,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"syscall"
 )
 
 type PackageJSON struct {
@@ -31,7 +32,10 @@ func ReadPackageJSON(dir string) PackageJSON {
 		return PackageJSON{}
 	}
 	defer root.Close()
-	f, err := root.Open("package.json")
+	// O_NONBLOCK keeps a FIFO named package.json from blocking the open
+	// forever; it is harmless on a regular file, and the IsRegular check below
+	// rejects anything else.
+	f, err := root.OpenFile("package.json", os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return PackageJSON{}
 	}

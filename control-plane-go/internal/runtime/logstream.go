@@ -169,8 +169,10 @@ func (s *Streamer) pump(ctx context.Context, w *lineWriter, source string, r io.
 	cut := false
 	for {
 		chunk, err := br.ReadSlice('\n')
+		// Drop "\n" and a "\r" before it here, so a lone "\r" past
+		// maxLogLine does not count as a cut (STAFF-8 T19).
 		if err == nil {
-			chunk = chunk[:len(chunk)-1]
+			chunk = bytes.TrimSuffix(chunk[:len(chunk)-1], []byte("\r"))
 		}
 		if !cut {
 			if room := maxLogLine - len(line); len(chunk) > room {

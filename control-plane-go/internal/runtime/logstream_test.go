@@ -324,3 +324,17 @@ func TestStreamerStopCancelsHungWrite(t *testing.T) {
 		t.Fatalf("stream took %v to end after Stop", d)
 	}
 }
+
+// STAFF-8 T19: a line of exactly maxLogLine bytes ending in CRLF is whole,
+// so it gets no truncation marker.
+func TestStreamerPumpExactLineWithCRLF(t *testing.T) {
+	sink := &memorySink{}
+	s := NewStreamer(context.Background(), sink, slog.New(slog.DiscardHandler))
+	exact := strings.Repeat("a", maxLogLine)
+	s.pump(context.Background(), &lineWriter{s: s, deploymentID: "dep1"}, "stdout", strings.NewReader(exact+"\r\nnext\n"))
+
+	got := sink.all()
+	if len(got) != 2 || got[0].Message != exact || got[1].Message != "next" {
+		t.Fatalf("entries = %d, first len=%d marker=%v", len(got), len(got[0].Message), strings.HasSuffix(got[0].Message, truncMarker))
+	}
+}

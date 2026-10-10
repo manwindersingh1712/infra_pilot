@@ -45,6 +45,7 @@ type fakeDocker struct {
 	used      map[int]bool
 	usedErr   error
 	runErr    error
+	removeErr map[string]int // name -> number of Remove calls that fail before one succeeds
 }
 
 func (f *fakeDocker) rec(s string) {
@@ -69,6 +70,12 @@ func (f *fakeDocker) Run(_ context.Context, s runtime.RunSpec) (string, error) {
 }
 func (f *fakeDocker) Remove(_ context.Context, name string) error {
 	f.rec("remove " + name)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.removeErr[name] > 0 {
+		f.removeErr[name]--
+		return errors.New("docker rm failed")
+	}
 	return nil
 }
 func (f *fakeDocker) EnsureNetwork(_ context.Context, name string) error {
@@ -344,6 +351,15 @@ func TestLegacyDir(t *testing.T) {
 	}
 }
 
+func upsertErr(_ store.EnvVar, err error) error { return err }
+
+func mustT(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func ptr[T any](v T) *T { return &v }
 
 func decryptedEnv(t *testing.T, e env, serviceID string) map[string]string {
@@ -477,9 +493,10 @@ func TestRunContainerForBuiltApp(t *testing.T) {
 	j := e.job(t, store.TypeNodejs)
 	image := "reg:5001/" + j.ServiceID + ":main"
 	j.Image = &image
-	enc, _ := e.acts.Secrets.Encrypt("bar")
-	e.st.UpsertEnvVar(ctx, j.ServiceID, "FOO", enc)
-	e.st.UpsertEnvVar(ctx, j.ServiceID, "PLAIN", "legacy")
+	enc, err := e.acts.Secrets.Encrypt("bar")
+	mustT(t, err)
+	mustT(t, upsertErr(e.st.UpsertEnvVar(ctx, j.ServiceID, "FOO", enc)))
+	mustT(t, upsertErr(e.st.UpsertEnvVar(ctx, j.ServiceID, "PLAIN", "legacy")))
 
 	val, err := e.run(t, e.acts.RunContainer, RunInput{Job: j, Network: "cp-proj-" + j.ProjectID})
 	if err != nil {
@@ -517,6 +534,23 @@ func TestRunContainerStaticSiteCapsOnlyForReact(t *testing.T) {
 	}
 	if !slices.Equal(StaticSiteCaps, []string{"CHOWN", "SETUID", "SETGID"}) {
 		t.Fatalf("StaticSiteCaps %v", StaticSiteCaps)
+	}
+}
+
+// STAFF-3 (T23r1): a second RunContainer for the same deployment (activity
+// retry) replaces the first container instead of failing.
+func TestRunContainerTwiceForOneDeployment(t *testing.T) {
+	e := newEnv(t)
+	j := e.job(t, store.TypeNodejs)
+	image := "reg:5001/" + j.ServiceID + ":main"
+	j.Image = &image
+	for i := range 2 {
+		if _, err := e.run(t, e.acts.RunContainer, RunInput{Job: j, Network: "n"}); err != nil {
+			t.Fatalf("call %d: %v", i+1, err)
+		}
+	}
+	if len(e.docker.specs) != 2 || e.docker.specs[0].Name != e.docker.specs[1].Name {
+		t.Fatalf("specs %+v", e.docker.specs)
 	}
 }
 
@@ -606,11 +640,12 @@ func TestRunContainerInvalidSpecIsNonRetryableAndHidesValues(t *testing.T) {
 	j := e.job(t, store.TypeNodejs)
 	image := "reg:5001/" + j.ServiceID + ":main"
 	j.Image = &image
-	enc, _ := e.acts.Secrets.Encrypt("-----BEGIN KEY-----\nSECRETBODY")
-	e.st.UpsertEnvVar(ctx, j.ServiceID, "PEM", enc)
+	enc, err := e.acts.Secrets.Encrypt("-----BEGIN KEY-----\nSECRETBODY")
+	mustT(t, err)
+	mustT(t, upsertErr(e.st.UpsertEnvVar(ctx, j.ServiceID, "PEM", enc)))
 	e.docker.runErr = fmt.Errorf("%w: env var %q: value must be valid UTF-8 without line breaks", runtime.ErrInvalidSpec, "PEM")
 
-	_, err := e.run(t, e.acts.RunContainer, RunInput{Job: j, Network: "n"})
+	_, err = e.run(t, e.acts.RunContainer, RunInput{Job: j, Network: "n"})
 	var appErr *temporal.ApplicationError
 	if !errors.As(err, &appErr) || !appErr.NonRetryable() || appErr.Type() != "InvalidSpec" || appErr.Unwrap() != nil {
 		t.Fatalf("err = %v", err)
@@ -667,10 +702,12 @@ func TestRetirePreviousRemovesOlderContainers(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
 	f := testutil.Seed(t, e.st, store.TypeNodejs)
-	old, _ := e.st.CreateDeployment(ctx, f.ServiceID, "v1")
-	cur, _ := e.st.CreateDeployment(ctx, f.ServiceID, "v2")
+	old, err := e.st.CreateDeployment(ctx, f.ServiceID, "v1")
+	mustT(t, err)
+	cur, err := e.st.CreateDeployment(ctx, f.ServiceID, "v2")
+	mustT(t, err)
 	for _, d := range []store.Deployment{old, cur} {
-		e.st.MarkDeployed(ctx, d.ID, store.DeployedInfo{ContainerID: "c", ContainerPort: 1})
+		mustT(t, e.st.MarkDeployed(ctx, d.ID, store.DeployedInfo{ContainerID: "c", ContainerPort: 1}))
 	}
 
 	if _, err := e.run(t, e.acts.RetirePrevious, RetireInput{ServiceID: f.ServiceID, KeepDeploymentID: cur.ID}); err != nil {
@@ -679,10 +716,49 @@ func TestRetirePreviousRemovesOlderContainers(t *testing.T) {
 	if !slices.Equal(e.docker.calls, []string{"remove cp-" + old.ID}) {
 		t.Fatalf("calls %v", e.docker.calls)
 	}
-	o, _ := e.st.GetDeployment(ctx, old.ID)
-	c, _ := e.st.GetDeployment(ctx, cur.ID)
+	o, err := e.st.GetDeployment(ctx, old.ID)
+	mustT(t, err)
+	c, err := e.st.GetDeployment(ctx, cur.ID)
+	mustT(t, err)
 	if o.StoppedAt == nil || c.StoppedAt != nil {
 		t.Fatalf("old stopped=%v cur stopped=%v", o.StoppedAt, c.StoppedAt)
+	}
+}
+
+// STAFF-3 (T23r1): a Remove that fails midway leaves the work retryable, and
+// the retry ends with every older row stopped.
+func TestRetirePreviousRetriesAfterRemoveFailure(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	f := testutil.Seed(t, e.st, store.TypeNodejs)
+	var olds []store.Deployment
+	for _, sha := range []string{"v1", "v2"} {
+		d, err := e.st.CreateDeployment(ctx, f.ServiceID, sha)
+		mustT(t, err)
+		mustT(t, e.st.MarkDeployed(ctx, d.ID, store.DeployedInfo{ContainerID: "c", ContainerPort: 1}))
+		olds = append(olds, d)
+	}
+	cur, err := e.st.CreateDeployment(ctx, f.ServiceID, "v3")
+	mustT(t, err)
+	mustT(t, e.st.MarkDeployed(ctx, cur.ID, store.DeployedInfo{ContainerID: "c", ContainerPort: 1}))
+	e.docker.removeErr = map[string]int{ContainerName(olds[1].ID): 1}
+
+	in := RetireInput{ServiceID: f.ServiceID, KeepDeploymentID: cur.ID}
+	if _, err := e.run(t, e.acts.RetirePrevious, in); err == nil {
+		t.Fatal("first attempt should surface the Remove failure")
+	}
+	if _, err := e.run(t, e.acts.RetirePrevious, in); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	for _, d := range olds {
+		got, err := e.st.GetDeployment(ctx, d.ID)
+		mustT(t, err)
+		if got.StoppedAt == nil {
+			t.Fatalf("deployment %s not stopped after retry", d.ID)
+		}
+	}
+	if c, err := e.st.GetDeployment(ctx, cur.ID); err != nil || c.StoppedAt != nil {
+		t.Fatalf("current row must stay live: %+v %v", c, err)
 	}
 }
 
@@ -753,7 +829,7 @@ func TestMarkFailedLeavesDeployedRowAndCounter(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
 	j := e.job(t, store.TypeNodejs)
-	e.st.MarkDeployed(ctx, j.DeploymentID, store.DeployedInfo{ContainerID: "c", ContainerPort: 1})
+	mustT(t, e.st.MarkDeployed(ctx, j.DeploymentID, store.DeployedInfo{ContainerID: "c", ContainerPort: 1}))
 
 	if _, err := e.run(t, e.acts.MarkFailed, j.DeploymentID); err != nil {
 		t.Fatal(err)

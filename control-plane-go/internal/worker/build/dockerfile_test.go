@@ -243,3 +243,53 @@ func TestBaseImageCannotInject(t *testing.T) {
 		t.Fatalf("unsafe image reference %q", got)
 	}
 }
+
+// packageJSONOfSize returns valid package.json bytes of exactly n bytes.
+func packageJSONOfSize(t *testing.T, n int) []byte {
+	t.Helper()
+	const head = `{"engines":{"node":"22"},"pad":"`
+	const tail = `"}`
+	pad := n - len(head) - len(tail)
+	if pad < 0 {
+		t.Fatalf("size %d too small", n)
+	}
+	b := []byte(head + strings.Repeat("x", pad) + tail)
+	if len(b) != n {
+		t.Fatalf("built %d bytes, want %d", len(b), n)
+	}
+	return b
+}
+
+func TestReadPackageJSONSizeCap(t *testing.T) {
+	const limit = 1 << 20
+	cases := []struct {
+		name     string
+		size     int
+		wantNode string
+	}{
+		{"exactly at cap", limit, "22"},
+		{"one byte over cap", limit + 1, ""},
+		{"far over cap", 4 * limit, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "package.json"), packageJSONOfSize(t, c.size), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if got := ReadPackageJSON(dir).Engines.Node; got != c.wantNode {
+				t.Fatalf("engines.node = %q, want %q", got, c.wantNode)
+			}
+		})
+	}
+}
+
+func TestReadPackageJSONNotRegularFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "package.json"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if pkg := ReadPackageJSON(dir); pkg.Scripts != nil || pkg.Engines.Node != "" {
+		t.Fatalf("directory must read as missing, got %+v", pkg)
+	}
+}

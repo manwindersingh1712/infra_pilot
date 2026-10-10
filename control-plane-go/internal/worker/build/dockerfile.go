@@ -5,6 +5,7 @@ package build
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"regexp"
 	"strings"
@@ -17,9 +18,13 @@ type PackageJSON struct {
 	} `json:"engines"`
 }
 
+// maxPackageJSONBytes caps how much of a cloned repo's package.json is read.
+const maxPackageJSONBytes = 1 << 20 // 1 MiB
+
 // ReadPackageJSON returns an empty PackageJSON when the file is missing,
-// malformed, or a symlink that escapes dir. The clone is attacker-controlled,
-// so it is only read through os.OpenRoot.
+// malformed, not a regular file, larger than maxPackageJSONBytes, or a symlink
+// that escapes dir. The clone is attacker-controlled, so it is only read
+// through os.OpenRoot.
 func ReadPackageJSON(dir string) PackageJSON {
 	var pkg PackageJSON
 	root, err := os.OpenRoot(dir)
@@ -27,7 +32,18 @@ func ReadPackageJSON(dir string) PackageJSON {
 		return PackageJSON{}
 	}
 	defer root.Close()
-	b, err := root.ReadFile("package.json")
+	f, err := root.Open("package.json")
+	if err != nil {
+		return PackageJSON{}
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil || !fi.Mode().IsRegular() || fi.Size() > maxPackageJSONBytes {
+		return PackageJSON{}
+	}
+	// The LimitReader also guards against the file growing after Stat; a
+	// truncated document fails to decode and reads as malformed.
+	b, err := io.ReadAll(io.LimitReader(f, maxPackageJSONBytes))
 	if err != nil {
 		return PackageJSON{}
 	}

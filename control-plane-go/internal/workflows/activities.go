@@ -303,6 +303,9 @@ func (a *Activities) RunContainer(ctx context.Context, in RunInput) (RunResult, 
 			port = a.Cfg.DefaultContainerPort
 		}
 		spec.ContainerPort = port
+		if job.ServiceType == store.TypeReact {
+			spec.CapAdd = StaticSiteCaps
+		}
 		spec.Env = merge(map[string]string{"NODE_ENV": "production"}, env)
 	}
 

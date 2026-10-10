@@ -458,6 +458,27 @@ func TestRunContainerForBuiltApp(t *testing.T) {
 	}
 }
 
+// VER-2 (T23r1): only react static sites get the nginx master's three caps.
+func TestRunContainerStaticSiteCapsOnlyForReact(t *testing.T) {
+	for typ, want := range map[string][]string{
+		store.TypeReact: StaticSiteCaps, store.TypeNodejs: nil, store.TypeNextjs: nil, store.TypeDocker: nil,
+	} {
+		e := newEnv(t)
+		j := e.job(t, typ)
+		image := "reg:5001/" + j.ServiceID + ":main"
+		j.Image = &image
+		if _, err := e.run(t, e.acts.RunContainer, RunInput{Job: j, Network: "n"}); err != nil {
+			t.Fatalf("%s: %v", typ, err)
+		}
+		if got := e.docker.specs[0].CapAdd; !slices.Equal(got, want) {
+			t.Fatalf("%s: CapAdd %v, want %v", typ, got, want)
+		}
+	}
+	if !slices.Equal(StaticSiteCaps, []string{"CHOWN", "SETUID", "SETGID"}) {
+		t.Fatalf("StaticSiteCaps %v", StaticSiteCaps)
+	}
+}
+
 func TestRunContainerForManagedRedis(t *testing.T) {
 	e := newEnv(t)
 	e.acts.Cfg.ExposeManagedPorts = true
@@ -476,6 +497,9 @@ func TestRunContainerForManagedRedis(t *testing.T) {
 		s.VolumeTarget != "/data" || len(s.Tmpfs) != 0 || !slices.Equal(s.CapAdd, []string{"DAC_OVERRIDE"}) ||
 		!strings.Contains(strings.Join(s.Cmd, " "), `--requirepass "$REDIS_PASSWORD"`) || len(s.Env["REDIS_PASSWORD"]) != 32 {
 		t.Fatalf("spec %+v", s)
+	}
+	if strings.Contains(strings.Join(s.Cmd, " "), "appendonly") {
+		t.Fatalf("redis must run with RDB defaults (Node parity), cmd %v", s.Cmd)
 	}
 	if res.HostPort == nil || *res.HostPort != 20001 || s.PublishPort != 20001 {
 		t.Fatalf("result %+v", res)

@@ -12,6 +12,10 @@ func ServiceAlias(serviceID string) string        { return "svc-" + serviceID }
 func NetworkName(projectID string) string         { return "cp-proj-" + projectID }
 func VolumeName(serviceID string) string          { return "cp-vol-" + serviceID }
 
+// StaticSiteCaps are added back (after --cap-drop ALL) for react services:
+// stock nginx's master chowns its cache dirs and drops to the nginx user.
+var StaticSiteCaps = []string{"CHOWN", "SETUID", "SETGID"}
+
 // ManagedImage describes a managed database service.
 type ManagedImage struct {
 	Image       string
@@ -29,7 +33,7 @@ var Managed = map[string]ManagedImage{
 		Image: "redis:7-alpine", Port: 6379, PasswordEnv: "REDIS_PASSWORD",
 		// The password is expanded inside the container, so it never appears
 		// in `docker inspect` output or the host's process list.
-		Cmd:     []string{"sh", "-c", `exec redis-server --appendonly yes --dir /data --requirepass "$REDIS_PASSWORD"`},
+		Cmd:     []string{"sh", "-c", `exec redis-server --dir /data --requirepass "$REDIS_PASSWORD"`},
 		DataDir: "/data",
 		// The command runs as root (sh, not redis-server, so the image entrypoint
 		// does not drop privileges); without DAC_OVERRIDE root cannot write the

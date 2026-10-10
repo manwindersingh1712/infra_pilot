@@ -125,8 +125,10 @@ func (s *Streamer) IsStreaming(deploymentID string) bool {
 
 func (s *Streamer) run(ctx context.Context, deploymentID string, st *stream, cmd *exec.Cmd) {
 	defer s.release(deploymentID, st)
+	// No cmd.WaitDelay (STAFF-6 T19): Wait runs only after both pumps hit
+	// EOF, so the pipes are already closed, and CommandContext kills the
+	// process on cancel from Start, not from Wait.
 	w := &lineWriter{s: s, deploymentID: deploymentID}
-	cmd.WaitDelay = waitDelay
 
 	stdout, err := cmd.StdoutPipe()
 	if err == nil {

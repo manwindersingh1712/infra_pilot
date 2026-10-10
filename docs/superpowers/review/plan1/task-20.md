@@ -29,3 +29,10 @@ All findings are low, so the gate is not blocked, but restarts write a user-visi
 
 ## Fix round 2 plan
 STAFF-4 (mutex, real fix, not a looser assertion), STAFF-5 (comment), STAFF-6, STAFF-7 (trivial).
+
+## Fix round 2
+- `3eabd0f` STAFF-4: `lineWriter` mutex across failed-check + sink write + failure mark (flake reproduced 6/30 before, `-count=100` clean after; assertion not loosened; combined bound = one sinkTimeout for line writes). `914ffca` STAFF-5 comments. `d6c06c2` STAFF-6 ("stopped" when Stop cancels a failing start). `e9d6578` STAFF-7 (lone CR at EOF).
+- **Orchestrator check (no reviewer re-dispatch, diff is ~50 lines):** read the mutex diff (`end()` runs after the pumps finish so `resetFailed` can't deadlock; lock is held only during the bounded write); `-race -count=30` of the three touched tests and `-count=5` of Resume|Streamer green; gofmt/vet clean; govulncheck exit 0.
+
+## Result
+**PASSED 2026-10-10** after two fix rounds. Open (backlog): STAFF-3 T20 + STAFF-4(c) T19 (Task 26: Resume placement, `Streamer.Wait()`), SEC-1 T20 (stream cap, Plan 3), VER-1 T20 (`--tail=100` duplicates, Plan 3), VER-3 T20 info.

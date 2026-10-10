@@ -83,9 +83,9 @@ func (s *Store) MarkBuilt(ctx context.Context, id, image string) error {
 	return rowRequired(tag, err)
 }
 
-// MarkFailed records a failed deployment unless it already reached deployed.
-// It returns true only when a row changed; a missing row and a deployed row
-// both give (false, nil).
+// MarkFailed records a failed deployment unless it already reached a final
+// state (deployed or failed). It returns true only when a row changed; a
+// missing row and a final row both give (false, nil).
 func (s *Store) MarkFailed(ctx context.Context, id string) (bool, error) {
 	tag, err := s.db.Exec(ctx,
 		`UPDATE "Deployment" SET "status" = 'failed', "updatedAt" = now()

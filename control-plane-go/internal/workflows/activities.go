@@ -130,8 +130,22 @@ func (a *Activities) LoadJob(ctx context.Context, deploymentID string) (store.Jo
 	return job, err
 }
 
+// Claim moves the row from one status to the next. The workflow ID is unique
+// per deployment (REJECT_DUPLICATE), so a row already in the target status is
+// this workflow's own retry after a lost result: that is a win, not a loss.
 func (a *Activities) Claim(ctx context.Context, in ClaimInput) (bool, error) {
-	return a.Store.ClaimDeployment(ctx, in.DeploymentID, in.From, in.To)
+	won, err := a.Store.ClaimDeployment(ctx, in.DeploymentID, in.From, in.To)
+	if err != nil || won {
+		return won, err
+	}
+	d, err := a.Store.GetDeployment(ctx, in.DeploymentID)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return d.Status == in.To, nil
 }
 
 func (a *Activities) BuildImage(ctx context.Context, in BuildInput) (string, error) {

@@ -666,6 +666,32 @@ func TestRetirePreviousRemovesOlderContainers(t *testing.T) {
 	}
 }
 
+// FWD-1 (T23r1): the workflow ID is unique per deployment, so a claim that
+// finds the row already in the target status is a retry of its own lost result.
+func TestClaimIsIdempotentForOwnRetryOnly(t *testing.T) {
+	e := newEnv(t)
+	j := e.job(t, store.TypeNodejs)
+	claim := func(from, to string) bool {
+		t.Helper()
+		val, err := e.run(t, e.acts.Claim, ClaimInput{DeploymentID: j.DeploymentID, From: from, To: to})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var won bool
+		val.Get(&won)
+		return won
+	}
+	if !claim(store.StatusQueued, store.StatusBuilding) {
+		t.Fatal("first claim should win")
+	}
+	if !claim(store.StatusQueued, store.StatusBuilding) {
+		t.Fatal("retry after a lost result must return true")
+	}
+	if claim(store.StatusQueued, store.StatusDeploying) {
+		t.Fatal("a row in another status must not be claimed")
+	}
+}
+
 func TestStatusActivities(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()

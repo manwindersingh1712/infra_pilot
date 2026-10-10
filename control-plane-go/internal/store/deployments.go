@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/lucsky/cuid"
 )
 
@@ -76,10 +77,34 @@ func (s *Store) SetDeploymentStatus(ctx context.Context, id, status string) erro
 // MarkBuilt stores the pushed image and returns the deployment to queued for
 // the deploy step (the same transition the Node worker used).
 func (s *Store) MarkBuilt(ctx context.Context, id, image string) error {
-	_, err := s.db.Exec(ctx,
+	tag, err := s.db.Exec(ctx,
 		`UPDATE "Deployment" SET "image" = $2, "status" = 'queued', "updatedAt" = now() WHERE "id" = $1`,
 		id, image)
-	return err
+	return rowRequired(tag, err)
+}
+
+// MarkFailed records a failed deployment unless it already reached deployed.
+// It returns true only when a row changed; a missing row and a deployed row
+// both give (false, nil).
+func (s *Store) MarkFailed(ctx context.Context, id string) (bool, error) {
+	tag, err := s.db.Exec(ctx,
+		`UPDATE "Deployment" SET "status" = 'failed', "updatedAt" = now()
+		 WHERE "id" = $1 AND "status" <> 'deployed'`, id)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// rowRequired maps an UPDATE that matched no row to ErrNotFound.
+func rowRequired(tag pgconn.CommandTag, err error) error {
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 type DeployedInfo struct {
@@ -91,13 +116,13 @@ type DeployedInfo struct {
 }
 
 func (s *Store) MarkDeployed(ctx context.Context, id string, info DeployedInfo) error {
-	_, err := s.db.Exec(ctx,
+	tag, err := s.db.Exec(ctx,
 		`UPDATE "Deployment"
 		 SET "containerId" = $2, "hostPort" = $3, "containerPort" = $4, "runtimeUrl" = $5,
 		     "volumePath" = COALESCE($6, "volumePath"), "status" = 'deployed', "updatedAt" = now()
 		 WHERE "id" = $1`,
 		id, info.ContainerID, info.HostPort, info.ContainerPort, info.RuntimeURL, info.VolumePath)
-	return err
+	return rowRequired(tag, err)
 }
 
 // UsedHostPorts lists host ports held by deployments whose container still runs.

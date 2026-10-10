@@ -176,3 +176,92 @@ func TestManagedDeploymentKeepsHostPortAndVolume(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestMarkFailedNeverOverwritesDeployed(t *testing.T) {
+	st, ctx := newStore(t), context.Background()
+	f := testutil.Seed(t, st, store.TypeNodejs)
+	live, _ := st.CreateDeployment(ctx, f.ServiceID, "v1")
+	building, _ := st.CreateDeployment(ctx, f.ServiceID, "v2")
+	if err := st.MarkDeployed(ctx, live.ID, store.DeployedInfo{ContainerID: "c", ContainerPort: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := st.ClaimDeployment(ctx, building.ID, store.StatusQueued, store.StatusDeploying); err != nil || !ok {
+		t.Fatalf("claim: %v %v", ok, err)
+	}
+
+	changed, err := st.MarkFailed(ctx, live.ID)
+	if err != nil || changed {
+		t.Fatalf("deployed row: changed=%v err=%v", changed, err)
+	}
+	if d, _ := st.GetDeployment(ctx, live.ID); d.Status != store.StatusDeployed {
+		t.Fatalf("deployed row became %s", d.Status)
+	}
+	changed, err = st.MarkFailed(ctx, building.ID)
+	if err != nil || !changed {
+		t.Fatalf("deploying row: changed=%v err=%v", changed, err)
+	}
+	if d, _ := st.GetDeployment(ctx, building.ID); d.Status != store.StatusFailed {
+		t.Fatalf("deploying row is %s", d.Status)
+	}
+	if changed, err := st.MarkFailed(ctx, "unknown"); err != nil || changed {
+		t.Fatalf("unknown id: changed=%v err=%v", changed, err)
+	}
+}
+
+func TestMarkBuiltAndMarkDeployedReportMissingRows(t *testing.T) {
+	st, ctx := newStore(t), context.Background()
+	if err := st.MarkBuilt(ctx, "missing", "img"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("MarkBuilt err = %v", err)
+	}
+	err := st.MarkDeployed(ctx, "missing", store.DeployedInfo{ContainerID: "c", ContainerPort: 1})
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("MarkDeployed err = %v", err)
+	}
+}
+
+// STAFF-1 (T8): branches that had no assertion.
+func TestDeploymentQueryFiltersAndNotFound(t *testing.T) {
+	st, ctx := newStore(t), context.Background()
+	f := testutil.Seed(t, st, store.TypeNodejs)
+
+	if _, err := st.GetDeployment(ctx, "missing"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetDeployment err = %v", err)
+	}
+	a, _ := st.CreateDeployment(ctx, f.ServiceID, "v1")
+	if err := st.SetDeploymentStatus(ctx, a.ID, store.StatusBuilding); err != nil {
+		t.Fatal(err)
+	}
+	if d, _ := st.GetDeployment(ctx, a.ID); d.Status != store.StatusBuilding {
+		t.Fatalf("status = %s", d.Status)
+	}
+
+	// no containerId: not live, not running
+	if live, _ := st.ListLiveDeployments(ctx, f.ServiceID, "none"); len(live) != 0 {
+		t.Fatalf("live = %+v", live)
+	}
+	// a container that is not deployed is live but not running
+	if _, err := pool.Exec(ctx, `UPDATE "Deployment" SET "containerId" = 'c', "hostPort" = 20005 WHERE "id" = $1`, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	live, _ := st.ListLiveDeployments(ctx, f.ServiceID, "none")
+	running, _ := st.ListRunningDeployments(ctx)
+	if len(live) != 1 || len(running) != 0 {
+		t.Fatalf("live=%d running=%d", len(live), len(running))
+	}
+
+	// MarkStopped keeps the first stoppedAt, and a stopped row frees its host port
+	if err := st.MarkStopped(ctx, []string{a.ID}); err != nil {
+		t.Fatal(err)
+	}
+	first, _ := st.GetDeployment(ctx, a.ID)
+	if err := st.MarkStopped(ctx, []string{a.ID}); err != nil {
+		t.Fatal(err)
+	}
+	second, _ := st.GetDeployment(ctx, a.ID)
+	if first.StoppedAt == nil || !first.StoppedAt.Equal(second.StoppedAt.Time) {
+		t.Fatalf("stoppedAt changed: %v -> %v", first.StoppedAt, second.StoppedAt)
+	}
+	if ports, _ := st.UsedHostPorts(ctx); len(ports) != 0 {
+		t.Fatalf("ports = %v", ports)
+	}
+}

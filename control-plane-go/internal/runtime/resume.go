@@ -1,6 +1,13 @@
 package runtime
 
-import "context"
+import (
+	"context"
+	"time"
+)
+
+// inspectTimeout bounds one isRunning check, so a hung docker cannot hold
+// worker startup (SEC-2 T20). A var so tests can shorten it.
+var inspectTimeout = 5 * time.Second
 
 // Running identifies a deployment whose container logs should be streamed.
 type Running struct {
@@ -10,11 +17,17 @@ type Running struct {
 
 // Resume re-attaches log streams for deployments whose containers are still
 // running (streams live in worker memory and are lost on restart). It
-// returns how many new streams were started. Check errors are logged and skipped.
+// returns how many new streams were started. Check errors are logged and
+// skipped; a cancelled ctx ends the loop early.
 func (s *Streamer) Resume(ctx context.Context, deps []Running, isRunning func(context.Context, string) (bool, error)) int {
 	n := 0
 	for _, d := range deps {
-		ok, err := isRunning(ctx, d.ContainerID)
+		if ctx.Err() != nil { // STAFF-2 T20: shutting down
+			break
+		}
+		ictx, cancel := context.WithTimeout(ctx, inspectTimeout)
+		ok, err := isRunning(ictx, d.ContainerID)
+		cancel()
 		if err != nil {
 			s.log.Warn("resume: cannot inspect container", "deploymentId", d.DeploymentID, "err", err)
 			continue

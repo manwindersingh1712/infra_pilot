@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestResumeStartsOnlyRunningContainers(t *testing.T) {
@@ -58,5 +59,51 @@ func TestResumeCountsDuplicateOnce(t *testing.T) {
 	}, func(context.Context, string) (bool, error) { return true, nil })
 	if n != 1 {
 		t.Fatalf("n = %d, want 1", n)
+	}
+}
+
+// STAFF-2 T20: a cancelled context stops Resume before the next inspect.
+func TestResumeStopsWhenContextCancelled(t *testing.T) {
+	s := NewStreamer(context.Background(), &memorySink{}, slog.New(slog.DiscardHandler))
+	ctx, cancel := context.WithCancel(context.Background())
+	calls := 0
+	n := s.Resume(ctx, []Running{
+		{DeploymentID: "d1", ContainerID: "c1"},
+		{DeploymentID: "d2", ContainerID: "c2"},
+	}, func(context.Context, string) (bool, error) {
+		calls++
+		cancel()
+		return false, nil
+	})
+	if n != 0 || calls != 1 {
+		t.Fatalf("n=%d calls=%d, want 0 and 1", n, calls)
+	}
+}
+
+// SEC-2 T20: each inspect gets its own deadline, so a hung docker cannot
+// hold Resume forever.
+func TestResumeBoundsEachInspect(t *testing.T) {
+	defer func(d time.Duration) { inspectTimeout = d }(inspectTimeout)
+	inspectTimeout = 50 * time.Millisecond
+	s := NewStreamer(context.Background(), &memorySink{}, slog.New(slog.DiscardHandler))
+	calls := 0
+	done := make(chan int, 1)
+	go func() {
+		done <- s.Resume(context.Background(), []Running{
+			{DeploymentID: "d1", ContainerID: "c1"},
+			{DeploymentID: "d2", ContainerID: "c2"},
+		}, func(ctx context.Context, _ string) (bool, error) {
+			calls++
+			<-ctx.Done()
+			return false, ctx.Err()
+		})
+	}()
+	select {
+	case n := <-done:
+		if n != 0 || calls != 2 {
+			t.Fatalf("n=%d calls=%d, want 0 and 2", n, calls)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Resume did not return: inspect is unbounded")
 	}
 }

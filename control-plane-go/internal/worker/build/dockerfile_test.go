@@ -62,18 +62,43 @@ CMD ["sh", "-c", "node server.js"]`
 
 func TestStartCommandPriority(t *testing.T) {
 	cases := []struct {
+		name    string
 		scripts map[string]string
 		want    string
 	}{
-		{map[string]string{"start": "node a.js", "serve": "x"}, `CMD ["sh", "-c", "npm start"]`},
-		{map[string]string{"start:prod": "x", "serve": "y"}, `CMD ["sh", "-c", "npm run start:prod"]`},
-		{map[string]string{"serve": "y"}, `CMD ["sh", "-c", "npm run serve"]`},
+		{"start beats serve", map[string]string{"start": "node a.js", "serve": "x"}, `CMD ["sh", "-c", "npm start"]`},
+		{"start beats start:prod", map[string]string{"start": "node a.js", "start:prod": "x"}, `CMD ["sh", "-c", "npm start"]`},
+		{"start:prod beats serve", map[string]string{"start:prod": "x", "serve": "y"}, `CMD ["sh", "-c", "npm run start:prod"]`},
+		{"serve alone", map[string]string{"serve": "y"}, `CMD ["sh", "-c", "npm run serve"]`},
+		{"none", map[string]string{"test": "jest"}, `CMD ["sh", "-c", "node index.js"]`},
+		{"nodemon start", map[string]string{"start": "nodemon app.js"}, `CMD ["sh", "-c", "node app.js"]`},
 	}
 	for _, c := range cases {
-		got := NodejsDockerfile(PackageJSON{Scripts: c.scripts})
-		if last := got[len(got)-len(c.want):]; last != c.want {
-			t.Errorf("scripts %v: last line %q, want %q", c.scripts, last, c.want)
-		}
+		t.Run(c.name, func(t *testing.T) {
+			lines := strings.Split(NodejsDockerfile(PackageJSON{Scripts: c.scripts}), "\n")
+			if last := lines[len(lines)-1]; last != c.want {
+				t.Errorf("last line %q, want %q", last, c.want)
+			}
+		})
+	}
+}
+
+func TestCmdString(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"plain", "node x.js", `"node x.js"`},
+		{"and", "a && b", `"a && b"`},
+		{"env prefix", "FOO=1 node x.js", `"FOO=1 node x.js"`},
+		{"double quote", `say "hi"`, `"say \"hi\""`},
+		{"backslash", `a\b`, `"a\\b"`},
+		{"newline", "a\nb", `"a\nb"`},
+		{"angle and ampersand", "a < b > c & d", `"a < b > c & d"`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := cmdString(c.in); got != c.want {
+				t.Errorf("cmdString(%q) = %s, want %s", c.in, got, c.want)
+			}
+		})
 	}
 }
 

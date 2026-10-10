@@ -3,8 +3,10 @@ package store_test
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"infrapilot/internal/store"
 )
@@ -152,5 +154,52 @@ func TestOldestUnpublishedOutboxAge(t *testing.T) {
 	}
 	if age < 89*time.Second || age > 120*time.Second {
 		t.Fatalf("age = %v, want 89s..120s (published and dead rows must be ignored)", age)
+	}
+}
+
+func TestRequeueOutboxOnlyTouchesPublishingRows(t *testing.T) {
+	st, ctx := newStore(t), context.Background()
+	claimed, _ := st.CreateOutboxEvent(ctx, "x", map[string]string{})
+	done, _ := st.CreateOutboxEvent(ctx, "x", map[string]string{})
+	dead, _ := st.CreateOutboxEvent(ctx, "x", map[string]string{})
+	if err := st.MarkOutboxPublished(ctx, done); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MarkOutboxDead(ctx, dead, 10, "gone"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE "OutboxEvent" SET "status" = 'publishing' WHERE "id" = $1`, claimed); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RequeueOutbox(ctx, []string{claimed, done, dead}); err != nil {
+		t.Fatal(err)
+	}
+	if r := readOutbox(t, claimed); r.Status != "pending" {
+		t.Fatalf("claimed = %+v", r)
+	}
+	if r := readOutbox(t, done); r.Status != "published" {
+		t.Fatalf("published row changed: %+v", r)
+	}
+	if r := readOutbox(t, dead); r.Status != "dead" {
+		t.Fatalf("dead row resurrected: %+v", r)
+	}
+}
+
+func TestLastErrorSanitisesNULAndInvalidUTF8(t *testing.T) {
+	st, ctx := newStore(t), context.Background()
+	a, _ := st.CreateOutboxEvent(ctx, "x", map[string]string{})
+	b, _ := st.CreateOutboxEvent(ctx, "x", map[string]string{})
+	bad := "boom\x00 \xff\xfe end"
+	if err := st.MarkOutboxRetry(ctx, a, 1, bad, 5); err != nil {
+		t.Fatalf("retry with NUL/invalid UTF-8: %v", err)
+	}
+	if err := st.MarkOutboxDead(ctx, b, 10, bad); err != nil {
+		t.Fatalf("dead with NUL/invalid UTF-8: %v", err)
+	}
+	for _, id := range []string{a, b} {
+		r := readOutbox(t, id)
+		if r.LastErr == nil || strings.ContainsRune(*r.LastErr, 0) || !utf8.ValidString(*r.LastErr) || !strings.HasPrefix(*r.LastErr, "boom") {
+			t.Fatalf("lastError = %q", *r.LastErr)
+		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -60,7 +61,7 @@ func (s *Store) ClaimOutboxBatch(ctx context.Context, limit int) ([]OutboxEvent,
 // RequeueOutbox returns claimed rows to pending untouched: no attempt is
 // burned and nextAttemptAt (already due) stays, so the next tick takes them.
 func (s *Store) RequeueOutbox(ctx context.Context, ids []string) error {
-	_, err := s.db.Exec(ctx, `UPDATE "OutboxEvent" SET "status" = 'pending' WHERE "id" = ANY($1)`, ids)
+	_, err := s.db.Exec(ctx, `UPDATE "OutboxEvent" SET "status" = 'pending' WHERE "id" = ANY($1) AND "status" = 'publishing'`, ids)
 	return err
 }
 
@@ -74,7 +75,11 @@ func (s *Store) MarkOutboxPublished(ctx context.Context, id string) error {
 // error cannot bloat the row.
 const MaxLastErrorRunes = 500
 
-func truncateRunes(s string, n int) string {
+// cleanLastError makes an error string safe for a Postgres text column (NUL
+// and invalid UTF-8 are rejected there, which would fail the UPDATE and loop
+// the row every tick) and caps it at n runes.
+func cleanLastError(s string, n int) string {
+	s = strings.ToValidUTF8(strings.ReplaceAll(s, "\x00", ""), "\uFFFD")
 	if utf8.RuneCountInString(s) <= n {
 		return s
 	}
@@ -86,14 +91,14 @@ func (s *Store) MarkOutboxRetry(ctx context.Context, id string, attempts int, la
 		`UPDATE "OutboxEvent"
 		 SET "status" = 'pending', "attempts" = $2, "lastError" = $3,
 		     "nextAttemptAt" = now() + $4::int * interval '1 second'
-		 WHERE "id" = $1`, id, attempts, truncateRunes(lastErr, MaxLastErrorRunes), delaySeconds)
+		 WHERE "id" = $1`, id, attempts, cleanLastError(lastErr, MaxLastErrorRunes), delaySeconds)
 	return err
 }
 
 func (s *Store) MarkOutboxDead(ctx context.Context, id string, attempts int, lastErr string) error {
 	_, err := s.db.Exec(ctx,
 		`UPDATE "OutboxEvent" SET "status" = 'dead', "attempts" = $2, "lastError" = $3 WHERE "id" = $1`,
-		id, attempts, truncateRunes(lastErr, MaxLastErrorRunes))
+		id, attempts, cleanLastError(lastErr, MaxLastErrorRunes))
 	return err
 }
 

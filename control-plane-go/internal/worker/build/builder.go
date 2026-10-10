@@ -165,6 +165,9 @@ func (b Builder) BuildAndPush(ctx context.Context, s Spec) error {
 	if err := gitsrc.Validate(s.RepoURL, s.Branch, s.CommitSha); err != nil {
 		return err
 	}
+	if err := gitsrc.ValidImageTag(s.ImageTag, s.CommitSha); err != nil {
+		return err
+	}
 	if err := os.RemoveAll(s.WorkDir); err != nil {
 		return err
 	}

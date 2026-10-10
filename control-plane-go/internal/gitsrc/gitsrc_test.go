@@ -131,3 +131,34 @@ func TestScrubFullURLAndQuery(t *testing.T) {
 		t.Errorf("got %q", out)
 	}
 }
+
+func TestValidImageTag(t *testing.T) {
+	for _, c := range [][2]string{
+		{"localhost:5001/svc1:abc1234", "abc1234"},
+		{"registry.example.com/team/svc:main", "main"},
+		{"svc:HEAD", "HEAD"},
+	} {
+		if err := ValidImageTag(c[0], c[1]); err != nil {
+			t.Errorf("%v: %v", c, err)
+		}
+	}
+	for _, c := range [][2]string{
+		{"-oops/svc:abc1234", "abc1234"},
+		{"localhost:5001/svc:other", "abc1234"},
+		{"localhost:5001/svc", "abc1234"},
+		{"svc:abc1234", ""},
+		{"Svc:abc1234", "abc1234"},
+		{"s v:abc1234", "abc1234"},
+		{"r/\u00e9:abc1234", "abc1234"},
+		{"r/x\u2028:abc1234", "abc1234"},
+		{strings.Repeat("a", 250) + ":abc1234", "abc1234"},
+		{"", "abc1234"},
+	} {
+		err := ValidImageTag(c[0], c[1])
+		if !errors.Is(err, ErrInvalid) {
+			t.Errorf("%q: err = %v", c, err)
+		} else if c[0] != "" && strings.Contains(err.Error(), c[0]) {
+			t.Errorf("%q: message leaks tag: %v", c, err)
+		}
+	}
+}

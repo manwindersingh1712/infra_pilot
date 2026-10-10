@@ -64,6 +64,24 @@ func ValidRef(s string) error {
 	return nil
 }
 
+var imageTagRe = regexp.MustCompile(`^[a-z0-9][A-Za-z0-9._:/-]*$`)
+
+// ValidImageTag checks the image reference the build pushes: at most 255 bytes,
+// the docker reference shape (so it cannot be read as an option), and ending
+// in ":<ref>". Messages never echo the value.
+func ValidImageTag(tag, ref string) error {
+	if len(tag) > 255 {
+		return invalid("image tag", "is too long")
+	}
+	if !imageTagRe.MatchString(tag) {
+		return invalid("image tag", "is not a valid image reference")
+	}
+	if ref == "" || !strings.HasSuffix(tag, ":"+ref) {
+		return invalid("image tag", "does not end in the commit")
+	}
+	return nil
+}
+
 // Validate runs all three checks.
 func Validate(repoURL, branch, ref string) error {
 	if err := ValidRepoURL(repoURL); err != nil {

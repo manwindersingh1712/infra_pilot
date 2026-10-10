@@ -98,7 +98,7 @@ func TestBuildAndPushReusesBuilderAndKeepsDockerfile(t *testing.T) {
 	var dockerfile string
 	r := fakeDocker(map[string]string{"Dockerfile": "FROM custom"}, true, &dockerfile)
 	err := newBuilder(r).BuildAndPush(context.Background(), Spec{
-		RepoURL: "https://example.com/r.git", Branch: "main", CommitSha: "main", ImageTag: "img", WorkDir: t.TempDir() + "/w", ServiceType: "nodejs",
+		RepoURL: "https://example.com/r.git", Branch: "main", CommitSha: "main", ImageTag: "img:main", WorkDir: t.TempDir() + "/w", ServiceType: "nodejs",
 	})
 	if err != nil || dockerfile != "FROM custom" {
 		t.Fatalf("err=%v dockerfile=%q", err, dockerfile)
@@ -120,7 +120,7 @@ func TestBuildAndPushStopsOnBuildFailure(t *testing.T) {
 		}
 		return "", nil
 	}}
-	err := newBuilder(r).BuildAndPush(context.Background(), Spec{RepoURL: "https://example.com/r.git", Branch: "main", CommitSha: "abc1234", ImageTag: "i", WorkDir: t.TempDir() + "/w", ServiceType: "docker"})
+	err := newBuilder(r).BuildAndPush(context.Background(), Spec{RepoURL: "https://example.com/r.git", Branch: "main", CommitSha: "abc1234", ImageTag: "i:abc1234", WorkDir: t.TempDir() + "/w", ServiceType: "docker"})
 	if err == nil || !strings.Contains(err.Error(), "build broke") {
 		t.Fatalf("err = %v", err)
 	}
@@ -150,7 +150,7 @@ func TestBuildAndPushDoesNotWriteThroughDanglingDockerfileSymlink(t *testing.T) 
 		return "", nil
 	}}
 	err := newBuilder(r).BuildAndPush(context.Background(), Spec{
-		RepoURL: "https://example.com/r.git", Branch: "main", CommitSha: "abc1234", ImageTag: "img", WorkDir: t.TempDir() + "/w", ServiceType: "nodejs",
+		RepoURL: "https://example.com/r.git", Branch: "main", CommitSha: "abc1234", ImageTag: "img:abc1234", WorkDir: t.TempDir() + "/w", ServiceType: "nodejs",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -187,7 +187,7 @@ var rejectedSources = []Spec{
 func TestBuildAndPushRejectsUnsafeSource(t *testing.T) {
 	for _, s := range rejectedSources {
 		r := &testutil.FakeRunner{}
-		s.ImageTag, s.WorkDir, s.ServiceType = "img", t.TempDir()+"/w", "docker"
+		s.ImageTag, s.WorkDir, s.ServiceType = "img:abc1234", t.TempDir()+"/w", "docker"
 		err := newBuilder(r).BuildAndPush(context.Background(), s)
 		if !errors.Is(err, gitsrc.ErrInvalid) {
 			t.Errorf("%+v: err = %v", s, err)
@@ -212,7 +212,7 @@ func TestBuildAndPushHidesRepoCredentials(t *testing.T) {
 		}}
 		b := newBuilder(r)
 		b.Log = slog.New(slog.NewJSONHandler(&logs, nil))
-		err := b.BuildAndPush(context.Background(), Spec{RepoURL: url, Branch: "main", CommitSha: "abc1234", ImageTag: "img", WorkDir: t.TempDir() + "/w", ServiceType: "docker"})
+		err := b.BuildAndPush(context.Background(), Spec{RepoURL: url, Branch: "main", CommitSha: "abc1234", ImageTag: "img:abc1234", WorkDir: t.TempDir() + "/w", ServiceType: "docker"})
 		if err == nil || strings.Contains(err.Error(), "ghp_") || strings.Contains(logs.String(), "ghp_") {
 			t.Fatalf("leak: err=%v logs=%s", err, logs.String())
 		}
@@ -222,7 +222,7 @@ func TestBuildAndPushHidesRepoCredentials(t *testing.T) {
 		var df string
 		b = newBuilder(fakeDocker(nil, true, &df))
 		b.Log = slog.New(slog.NewJSONHandler(&logs, nil))
-		if err := b.BuildAndPush(context.Background(), Spec{RepoURL: url, Branch: "main", CommitSha: "abc1234", ImageTag: "img", WorkDir: t.TempDir() + "/w", ServiceType: "docker"}); err != nil {
+		if err := b.BuildAndPush(context.Background(), Spec{RepoURL: url, Branch: "main", CommitSha: "abc1234", ImageTag: "img:abc1234", WorkDir: t.TempDir() + "/w", ServiceType: "docker"}); err != nil {
 			t.Fatal(err)
 		}
 		if strings.Contains(logs.String(), "ghp_") || !strings.Contains(logs.String(), "****@example.com") {
@@ -237,14 +237,14 @@ func TestBuildAndPushReturnsContextErrorOnCloneFailure(t *testing.T) {
 		cancel()
 		return "", errors.New("signal: killed")
 	}}
-	err := newBuilder(r).BuildAndPush(ctx, Spec{RepoURL: "https://example.com/r.git", Branch: "main", CommitSha: "abc1234", ImageTag: "img", WorkDir: t.TempDir() + "/w", ServiceType: "docker"})
+	err := newBuilder(r).BuildAndPush(ctx, Spec{RepoURL: "https://example.com/r.git", Branch: "main", CommitSha: "abc1234", ImageTag: "img:abc1234", WorkDir: t.TempDir() + "/w", ServiceType: "docker"})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v", err)
 	}
 }
 
 func gitSpec(ref string) Spec {
-	return Spec{RepoURL: "https://example.com/r.git", Branch: "main", CommitSha: ref, ImageTag: "img", ServiceType: "docker"}
+	return Spec{RepoURL: "https://example.com/r.git", Branch: "main", CommitSha: ref, ImageTag: "img:" + ref, ServiceType: "docker"}
 }
 
 func countSub(cmds []string, sub string) int {
@@ -435,5 +435,31 @@ func TestBuildAndPushScrubsFetchWarning(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), "ghp_") || !strings.Contains(logs.String(), "git fetch failed") {
 		t.Fatalf("logs: %s", logs.String())
+	}
+}
+
+func TestBuildAndPushRejectsBadImageTag(t *testing.T) {
+	for _, tag := range []string{
+		"-oops/svc:abc1234",        // option-like registry value
+		"localhost:5001/svc:other", // does not end in the ref
+		"localhost:5001/svc",       // no tag at all
+		"UPPER/svc:abc1234",        // docker refs start lower-case alnum
+		"reg/svc:abc1234 --push",   // whitespace
+		"reg/\u00e9/svc:abc1234",   // non-ASCII
+		strings.Repeat("a", 260) + ":abc1234",
+		"",
+	} {
+		r := &testutil.FakeRunner{}
+		s := gitSpec("abc1234")
+		s.ImageTag, s.WorkDir = tag, t.TempDir()+"/w"
+		err := newBuilder(r).BuildAndPush(context.Background(), s)
+		if !errors.Is(err, gitsrc.ErrInvalid) {
+			t.Errorf("tag %q: err = %v", tag, err)
+		} else if tag != "" && strings.Contains(err.Error(), tag) {
+			t.Errorf("tag %q echoed: %v", tag, err)
+		}
+		if cmds := r.Commands(); len(cmds) != 0 {
+			t.Errorf("tag %q ran %v", tag, cmds)
+		}
 	}
 }

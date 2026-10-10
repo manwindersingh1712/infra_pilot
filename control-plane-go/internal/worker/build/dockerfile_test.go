@@ -389,3 +389,25 @@ func TestReadPackageJSONMalformedStaysEmpty(t *testing.T) {
 		}
 	}
 }
+
+func TestBaseImageFallback(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"^18 || ^20", "node:18-alpine"},
+		{">=18 <21", "node:18-alpine"},
+		{"18.x", "node:18.x-alpine"},
+		{"lts/*", "node:20-alpine"},
+		{">=", "node:20-alpine"},
+		{"^", "node:20-alpine"},
+		{"-x", "node:20-alpine"},
+		{"   ", "node:20-alpine"},
+		{"latest", "node:20-alpine"},
+		{"22-alpine3.19", "node:22-alpine3.19"},
+	}
+	for _, c := range cases {
+		pkg := PackageJSON{}
+		pkg.Engines.Node = c.in
+		if got := baseImage(pkg); got != c.want {
+			t.Errorf("baseImage(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

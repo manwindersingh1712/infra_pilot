@@ -49,18 +49,28 @@ func ReadPackageJSON(dir string) PackageJSON {
 	return parsePackageJSON(b)
 }
 
-var nonVersionChars = regexp.MustCompile(`[^0-9a-zA-Z.-]`)
+// defaultNodeTag is used when engines.node is absent or yields no usable
+// version.
+const defaultNodeTag = "20-alpine"
 
+// firstVersion matches the first run of version characters that starts with a
+// digit, so only [0-9a-zA-Z.-] can ever reach the image reference.
+var firstVersion = regexp.MustCompile(`[0-9][0-9a-zA-Z.-]*`)
+
+// baseImage picks the node image tag from engines.node. The rule: take the
+// first run of version characters that starts with a digit ("^18 || ^20" and
+// ">=18 <21" give 18, "^20.11.0" gives 20.11.0), trim trailing "." and "-",
+// and fall back to defaultNodeTag when there is none (">=", "^", "-x",
+// "lts/*", "latest", empty).
 func baseImage(pkg PackageJSON) string {
-	v := pkg.Engines.Node
+	v := strings.TrimRight(firstVersion.FindString(pkg.Engines.Node), ".-")
 	if v == "" {
-		v = "20-alpine"
+		v = defaultNodeTag
 	}
-	clean := nonVersionChars.ReplaceAllString(v, "")
-	if strings.Contains(clean, "alpine") {
-		return "node:" + clean
+	if strings.Contains(v, "alpine") {
+		return "node:" + v
 	}
-	return "node:" + clean + "-alpine"
+	return "node:" + v + "-alpine"
 }
 
 // cmdString renders s as a JSON string literal so a tenant-controlled value

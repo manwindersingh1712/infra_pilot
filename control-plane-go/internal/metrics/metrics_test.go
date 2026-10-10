@@ -50,3 +50,16 @@ func TestOutboxLagIsExposed(t *testing.T) {
 	var nilWorker *Worker
 	nilWorker.SetOutboxLag(time.Second)
 }
+
+func TestUnknownOutcomeIsIgnored(t *testing.T) {
+	m := NewWorker()
+	m.DeploymentFinished("whatever-"+time.Now().String(), time.Second)
+	m.DeploymentFinished(OutcomeFailed, 0)
+
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+	body := rec.Body.String()
+	if strings.Contains(body, "whatever") || !strings.Contains(body, `cp_deployments_total{outcome="failed"} 1`) {
+		t.Fatalf("body:\n%s", body)
+	}
+}

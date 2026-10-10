@@ -204,3 +204,11 @@ func TestUpsertRouteMkdirFailure(t *testing.T) {
 		t.Fatalf("cmds = %v", cmds)
 	}
 }
+
+func TestUpsertRouteErrorQuotesServiceID(t *testing.T) {
+	n := Nginx{R: &testutil.FakeRunner{}, RoutesDir: t.TempDir(), Container: "cp_nginx", BaseDomain: "localhost", Port: "80"}
+	err := n.UpsertRoute(context.Background(), "bad\nINJECT", "cp-dep1", 3000)
+	if err == nil || strings.Contains(err.Error(), "\n") || !strings.Contains(err.Error(), `bad\nINJECT`) {
+		t.Fatalf("err = %q", err)
+	}
+}

@@ -11,18 +11,15 @@ import (
 // or "0.0.0.0:8000-8002->".
 var hostPortRe = regexp.MustCompile(`:(\d+)(?:-(\d+))?->`)
 
-// maxPortSpan caps how many ports one published range may mark, so malformed
-// input cannot drive a huge loop.
-const maxPortSpan = 65536
-
-// UsedPorts returns host ports published by running containers. Errors are
-// treated as "none in use", as in the Node worker.
-func (d Docker) UsedPorts(ctx context.Context) map[int]bool {
+// UsedPorts returns host ports published by running containers. When the
+// docker scan fails it returns an empty (non-nil) map together with the error,
+// so a caller can fail open as the Node worker did, but log it.
+func (d Docker) UsedPorts(ctx context.Context) (map[int]bool, error) {
 	out, err := d.R.Run(ctx, "", "docker", "ps", "--format", "{{.Ports}}")
 	if err != nil {
-		return map[int]bool{}
+		return map[int]bool{}, err
 	}
-	return parseDockerPorts(out)
+	return parseDockerPorts(out), nil
 }
 
 func parseDockerPorts(out string) map[int]bool {
@@ -38,7 +35,7 @@ func parseDockerPorts(out string) map[int]bool {
 				continue
 			}
 		}
-		if hi < lo || hi-lo >= maxPortSpan {
+		if lo < 1 || hi > 65535 || hi < lo { // bounds the loop below
 			continue
 		}
 		for p := lo; p <= hi; p++ {

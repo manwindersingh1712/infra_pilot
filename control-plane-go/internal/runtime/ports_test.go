@@ -23,6 +23,9 @@ func TestParseDockerPorts(t *testing.T) {
 		{"range", "0.0.0.0:8000-8002->8000-8002/tcp", map[int]bool{8000: true, 8001: true, 8002: true}},
 		{"unpublished", "80/tcp", map[int]bool{}},
 		{"malformed range", "0.0.0.0:9-1->1/tcp", map[int]bool{}},
+		{"range above 65535", "0.0.0.0:9223372036854775807->1/tcp", map[int]bool{}},
+		{"high end beyond 65535", "0.0.0.0:65535-65536->1/tcp", map[int]bool{}},
+		{"port zero", "0.0.0.0:0->1/tcp", map[int]bool{}},
 		{"blank lines", "\n\n0.0.0.0:20006->80/tcp\n\n", map[int]bool{20006: true}},
 	}
 	for _, tc := range tests {
@@ -44,10 +47,11 @@ func TestPickFreePort(t *testing.T) {
 	}
 }
 
-func TestUsedPortsIgnoresDockerErrors(t *testing.T) {
+func TestUsedPortsReturnsEmptyMapWithDockerError(t *testing.T) {
 	r := &testutil.FakeRunner{Handle: func(testutil.Call) (string, error) { return "", errors.New("docker down") }}
-	if got := (Docker{R: r}).UsedPorts(context.Background()); len(got) != 0 {
-		t.Fatalf("got %v", got)
+	got, err := (Docker{R: r}).UsedPorts(context.Background())
+	if err == nil || got == nil || len(got) != 0 {
+		t.Fatalf("got %v err=%v: want an empty non-nil map and the docker error", got, err)
 	}
 	if cmds := r.Commands(); cmds[0] != "docker ps --format {{.Ports}}" {
 		t.Fatalf("cmds = %v", cmds)

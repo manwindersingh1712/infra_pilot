@@ -67,11 +67,17 @@ func (b *Box) Decrypt(value string) (string, error) {
 func IsEncrypted(value string) bool { return strings.HasPrefix(value, prefix) }
 
 // RandomPassword returns 32 URL-safe characters (24 random bytes), safe to put
-// in connection strings and shell-quoted commands.
+// in connection strings and shell-quoted commands. It never starts with '-'
+// or '_', so an option parser cannot read it as a flag (SEC-3 T10).
 func RandomPassword() (string, error) {
 	buf := make([]byte, 24)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
+	for {
+		if _, err := rand.Read(buf); err != nil {
+			return "", err
+		}
+		p := base64.RawURLEncoding.EncodeToString(buf)
+		if p[0] != '-' && p[0] != '_' {
+			return p, nil
+		}
 	}
-	return base64.RawURLEncoding.EncodeToString(buf), nil
 }

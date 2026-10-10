@@ -56,14 +56,22 @@ func (m *Worker) ObserveBuild(d time.Duration) {
 	}
 }
 
+// Deployment outcomes accepted by DeploymentFinished.
+const (
+	OutcomeDeployed = "deployed"
+	OutcomeFailed   = "failed"
+)
+
 // DeploymentFinished counts an outcome; d is the total time since the
 // deployment was created and is recorded only for successful deployments.
+// Any outcome other than OutcomeDeployed or OutcomeFailed is ignored, so the
+// label set stays bounded (SEC-2 T15).
 func (m *Worker) DeploymentFinished(outcome string, d time.Duration) {
-	if m == nil {
+	if m == nil || (outcome != OutcomeDeployed && outcome != OutcomeFailed) {
 		return
 	}
 	m.deployments.WithLabelValues(outcome).Inc()
-	if outcome == "deployed" {
+	if outcome == OutcomeDeployed {
 		m.deploy.Observe(d.Seconds())
 	}
 }

@@ -79,3 +79,15 @@ func TestRandomPassword(t *testing.T) {
 		t.Fatalf("a=%q b=%q", a, b)
 	}
 }
+
+func TestRandomPasswordStartsAlphanumeric(t *testing.T) {
+	for range 2000 {
+		p, err := RandomPassword()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(p) != 32 || p[0] == '-' || p[0] == '_' {
+			t.Fatalf("password %q must be 32 chars and not start with - or _", p)
+		}
+	}
+}

@@ -75,7 +75,7 @@ func RenderRoute(serviceID, baseDomain, containerName string, containerPort int)
 // break every later reload (STAFF-1 T18).
 func (n Nginx) UpsertRoute(ctx context.Context, serviceID, containerName string, containerPort int) error {
 	if err := n.upsertRoute(ctx, serviceID, containerName, containerPort); err != nil {
-		return fmt.Errorf("nginx route %s: %w", serviceID, err)
+		return fmt.Errorf("nginx route %q: %w", serviceID, err)
 	}
 	return nil
 }

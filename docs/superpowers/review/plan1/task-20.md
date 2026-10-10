@@ -18,3 +18,14 @@ All findings are low, so the gate is not blocked, but restarts write a user-visi
 - `53d3170` STAFF-5 + SEC-6 (T19): per-stream `lineWriter` warns once and drops later lines after a sink failure (pipe still drained); lines use the stream ctx; final system entry tried once with WithoutCancel + timeout (≤ 2 sink timeouts per stream).
 - `c2496b7` VER-3 + STAFF-4(b): doc comments. `871ed00` STAFF-8. `35fb60e` STAFF-7 (release hook, mutation-checked). `75b97de` STAFF-6 (WaitDelay removed, comment).
 - Engineer CI dry run green; Resume/Streamer tests 5/5 under -race.
+
+## Round 1 re-check (f95df5a..75b97de)
+- **Staff + Security (combined): CHANGES REQUESTED (1 medium, 3 low).** All original items resolved; no leaks, no races, gosec/gitleaks clean; public `Start(id, ctr)` signature kept. The final-entry-after-failure choice is accepted.
+  - STAFF-4 T20 (medium, test flake): `TestStreamerStopsWritingAfterSinkFailure` failed 1 in 5 under -race (`line writes=2`): stdout and stderr pumps can both pass `failed.Load()` before either stores. Fix: hold a mutex across check+write in `lineWriter.write` (or loosen to `<= 2`).
+  - STAFF-5 T20 (low): `end()` resets `failed`, so the final entry is a third attempt; correct the comment/record (bound = 1 concurrent line timeout + 1 final-entry timeout).
+  - STAFF-6 T20 (low): `Stop()` racing a start failure writes "Log stream error: context canceled" instead of "stopped"; use "stopped" if the stream ctx is cancelled.
+  - STAFF-7 T20 (low, cosmetic): unterminated exactly-16 KiB final line + lone `\r` at EOF is flagged as cut.
+- **Verifier: PASS.** Suite + `-count=10` green. Real Docker + dev Redis: shutdown cancel leaves 0 system entries (no more false "exit code: -1"); resume streams again (7 duplicated lines = expected tail, Plan 3); `Stop` → "Log stream stopped", goroutines at baseline; `docker stop` → "ended (exit code: 0)"; failing sink → exactly 1 Warn, container unblocked, 0 leftover `docker logs`; 2 MiB line → one 16399-byte entry (16384 + 15-byte marker; "≤16 KiB" means the payload), later lines kept arriving. VER-3 T20 info only.
+
+## Fix round 2 plan
+STAFF-4 (mutex, real fix, not a looser assertion), STAFF-5 (comment), STAFF-6, STAFF-7 (trivial).

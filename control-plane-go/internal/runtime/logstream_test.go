@@ -249,11 +249,17 @@ func TestStreamerStopThenStartKeepsNewStream(t *testing.T) {
 		return n
 	}
 
+	released := make(chan struct{}, 2)
+	s.released = func(string) { released <- struct{}{} }
+
 	s.Start("dep1", "ctr1")
 	s.Stop("dep1")
 	s.Start("dep1", "ctr1")
-	waitFor(t, func() bool { return ended() >= 1 }) // first stream is ending
-	time.Sleep(300 * time.Millisecond)              // let its deferred cleanup run
+	select { // STAFF-7 T19: the first stream's cleanup has run
+	case <-released:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first stream was not released")
+	}
 	if !s.IsStreaming("dep1") || ended() != 1 {
 		t.Fatalf("streaming=%v ended=%d entries=%+v", s.IsStreaming("dep1"), ended(), sink.all())
 	}

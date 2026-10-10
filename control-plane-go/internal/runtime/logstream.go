@@ -44,6 +44,8 @@ type Streamer struct {
 
 	mu     sync.Mutex
 	active map[string]*stream
+
+	released func(deploymentID string) // test hook: a stream's cleanup ran
 }
 
 // stream is one running `docker logs -f`; its pointer identifies it, so the
@@ -104,10 +106,13 @@ func (s *Streamer) Stop(deploymentID string) {
 // release ends st and forgets it, unless a newer stream took its place.
 func (s *Streamer) release(deploymentID string, st *stream) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	st.cancel()
 	if s.active[deploymentID] == st {
 		delete(s.active, deploymentID)
+	}
+	s.mu.Unlock()
+	if s.released != nil {
+		s.released(deploymentID)
 	}
 }
 

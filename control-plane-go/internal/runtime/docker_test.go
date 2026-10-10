@@ -455,13 +455,14 @@ func TestRunDropsCapabilitiesAndAddsOnlyRequested(t *testing.T) {
 	if !strings.Contains(got, "--cap-drop ALL --cap-add CHOWN --cap-add SETUID --security-opt no-new-privileges --restart") {
 		t.Fatalf("got: %s", got)
 	}
-	_, err = newDocker(&testutil.FakeRunner{}).Run(context.Background(), RunSpec{
-		Image: "img", Name: "cp-d6", Network: "n", CapAdd: []string{"ALL"},
-	})
-	if err != nil {
-		t.Fatalf("ALL matches the pattern, only malformed names are rejected: %v", err)
+	for _, ok := range []string{"CHOWN", "SETUID", "SETGID", "DAC_OVERRIDE", "DAC_READ_SEARCH", "NET_BIND_SERVICE"} {
+		if _, err := newDocker(&testutil.FakeRunner{}).Run(context.Background(), RunSpec{
+			Image: "img", Name: "cp-d6", Network: "n", CapAdd: []string{ok},
+		}); err != nil {
+			t.Fatalf("allow-listed cap %s rejected: %v", ok, err)
+		}
 	}
-	for _, bad := range []string{"--privileged", "chown", "CHOWN x", ""} {
+	for _, bad := range []string{"--privileged", "chown", "CHOWN x", "", "SYS_ADMIN", "ALL", "NET_ADMIN"} {
 		fr := &testutil.FakeRunner{}
 		_, err := newDocker(fr).Run(context.Background(), RunSpec{Image: "img", Name: "cp-d7", Network: "n", CapAdd: []string{bad}})
 		if !errors.Is(err, ErrInvalidSpec) || len(fr.Commands()) != 0 {

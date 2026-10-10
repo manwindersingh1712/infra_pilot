@@ -164,14 +164,19 @@ func (s RunSpec) check() error {
 		}
 	}
 	for _, c := range s.CapAdd {
-		if !capRE.MatchString(c) {
-			return fmt.Errorf("invalid capability %q", c)
+		if !allowedCaps[c] {
+			return fmt.Errorf("capability %q is not allowed", c)
 		}
 	}
 	return nil
 }
 
-var capRE = regexp.MustCompile(`^[A-Z][A-Z_]*$`)
+// allowedCaps is the union of the managed-database and static-site sets
+// (spec section 5); anything else is refused before docker is called.
+var allowedCaps = map[string]bool{
+	"CHOWN": true, "SETUID": true, "SETGID": true,
+	"DAC_OVERRIDE": true, "DAC_READ_SEARCH": true, "NET_BIND_SERVICE": true,
+}
 
 var envKeyRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 

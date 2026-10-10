@@ -495,7 +495,7 @@ func TestRunContainerForManagedMongo(t *testing.T) {
 	val.Get(&res)
 	s := e.docker.specs[0]
 	if s.Image != "mongo:7" || s.ContainerPort != 27017 || s.VolumeTarget != "/data/db" ||
-		!slices.Equal(s.Tmpfs, []string{"/data/configdb"}) || !slices.Equal(s.CapAdd, []string{"CHOWN", "SETUID", "SETGID"}) ||
+		!slices.Equal(s.Tmpfs, []string{"/data/configdb"}) || !slices.Equal(s.CapAdd, []string{"CHOWN", "SETUID", "SETGID", "DAC_READ_SEARCH"}) ||
 		s.Env["MONGO_INITDB_ROOT_USERNAME"] != "admin" || len(s.Env["MONGO_INITDB_ROOT_PASSWORD"]) != 32 {
 		t.Fatalf("spec %+v", s)
 	}

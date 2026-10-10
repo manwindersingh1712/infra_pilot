@@ -41,7 +41,8 @@ var Managed = map[string]ManagedImage{
 		Env:     map[string]string{"MONGO_INITDB_ROOT_USERNAME": "admin"},
 		DataDir: "/data/db",
 		Tmpfs:   []string{"/data/configdb"},
-		// The entrypoint chowns the data dir and drops to mongodb with gosu.
-		CapAdd: []string{"CHOWN", "SETUID", "SETGID"},
+		// The entrypoint chowns the data dir and drops to mongodb with gosu;
+		// DAC_READ_SEARCH lets root read journal files on an existing volume.
+		CapAdd: []string{"CHOWN", "SETUID", "SETGID", "DAC_READ_SEARCH"},
 	},
 }

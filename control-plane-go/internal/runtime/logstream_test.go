@@ -344,3 +344,21 @@ func TestStreamerPumpExactLineWithCRLF(t *testing.T) {
 		t.Fatalf("entries = %d, first len=%d marker=%v", len(got), len(got[0].Message), strings.HasSuffix(got[0].Message, truncMarker))
 	}
 }
+
+// STAFF-6 T20: Stop racing a start failure ends the stream with "stopped",
+// not "context canceled".
+func TestStreamerStopDuringStartFailureSaysStopped(t *testing.T) {
+	sink := &memorySink{}
+	s := NewStreamer(context.Background(), sink, slog.New(slog.DiscardHandler))
+	s.newCmd = func(ctx context.Context, _ string) *exec.Cmd {
+		s.Stop("dep1") // cancels ctx, so cmd.Start fails with context canceled
+		return exec.CommandContext(ctx, "sh", "-c", "true")
+	}
+
+	s.Start("dep1", "ctr1")
+	waitFor(t, func() bool { return len(sink.all()) > 0 })
+	got := sink.all()
+	if len(got) != 1 || got[0].Message != "Log stream stopped" {
+		t.Fatalf("entries = %+v", got)
+	}
+}

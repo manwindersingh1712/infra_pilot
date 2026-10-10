@@ -149,6 +149,12 @@ func (s *Streamer) run(ctx context.Context, deploymentID string, st *stream, cmd
 			}
 		}
 	}
+	if ctx.Err() != nil && s.ctx.Err() == nil {
+		// Stop cancelled this stream while it was starting (STAFF-6 T20);
+		// a root-ctx shutdown is left to end(), which writes nothing.
+		s.end(ctx, w, "Log stream stopped")
+		return
+	}
 	s.end(ctx, w, "Log stream error: "+err.Error())
 }
 

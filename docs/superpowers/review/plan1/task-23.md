@@ -23,3 +23,11 @@ Gate blocked. CTO to rule on fix-round scope (VER-1, VER-2, STAFF-1, STAFF-2, SE
 
 ## Fix round 2 plan
 SEC-6 (replace empty stored password), SEC-7 (return the resolved path). STAFF-7 → Task 24/26 cutover note.
+
+## Fix round 2
+- `4ab62f6` SEC-6: `EnsureCredentials` now decrypts the stored value; non-empty (user-set or winner's) → no write; absent → `InsertEnvVarIfAbsent`; empty (raw or encrypted) → `Store.ReplaceEnvVarIfEquals` (compare-and-swap on the exact stored string, so racers converge on one password; up to 5 re-reads). Whitespace counts as a value. `RunContainer` also refuses (non-retryable `PasswordMissing`) to start a managed DB with an empty password. Tests: empty raw/encrypted for Redis and Mongo, user password untouched, 20-way race over an empty row, store CAS test.
+- `285174a` SEC-7: `legacyDir` returns the symlink-resolved path.
+- Engineer CI dry run green (full race suite without -short, lint, gosec, govulncheck "No vulnerabilities found"); orchestrator re-ran `go test ./internal/workflows ./internal/store -race -count=2`: green.
+
+## Result
+**PASSED 2026-10-10** after a CTO-ruled fix round plus one small second round. Open (backlog): STAFF-7 (Node worker must be stopped before Go workers run), SEC-4/STAFF-6 (read-only rootfs, `--user`), SEC-5, STAFF-4 (Redis as root), Redis RDB-only durability (Phase 3). Forward items are pasted into Task 24 (RunContainer options, healthOptions, Claim semantics) and Task 26 (probe image pre-pull, non-nil Activities fields, config for Health*).

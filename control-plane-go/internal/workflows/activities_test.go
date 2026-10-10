@@ -463,6 +463,85 @@ func TestEnsureCredentialsConcurrentCallsStoreOneValue(t *testing.T) {
 	}
 }
 
+// SEC-6 (T23r2): an empty stored password (raw or encrypted) is replaced; a
+// non-empty one never is.
+func TestEnsureCredentialsReplacesEmptyPassword(t *testing.T) {
+	ctx := context.Background()
+	for _, typ := range []string{store.TypeRedis, store.TypeMongoDB} {
+		key := Managed[typ].PasswordEnv
+		for name, stored := range map[string]func(e env) string{
+			"raw empty":       func(e env) string { return "" },
+			"encrypted empty": func(e env) string { v, _ := e.acts.Secrets.Encrypt(""); return v },
+		} {
+			e := newEnv(t)
+			j := e.job(t, typ)
+			mustT(t, upsertErr(e.st.UpsertEnvVar(ctx, j.ServiceID, key, stored(e))))
+			if err := e.acts.EnsureCredentials(ctx, j); err != nil {
+				t.Fatal(err)
+			}
+			if got := decryptedEnv(t, e, j.ServiceID)[key]; len(got) != 32 {
+				t.Fatalf("%s/%s: stored password %q, want a generated one", typ, name, got)
+			}
+		}
+	}
+}
+
+func TestEnsureCredentialsKeepsUserPassword(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	j := e.job(t, store.TypeRedis)
+	enc, _ := e.acts.Secrets.Encrypt("mine")
+	mustT(t, upsertErr(e.st.UpsertEnvVar(ctx, j.ServiceID, "REDIS_PASSWORD", enc)))
+	mustT(t, e.acts.EnsureCredentials(ctx, j))
+	if got := decryptedEnv(t, e, j.ServiceID)["REDIS_PASSWORD"]; got != "mine" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestEnsureCredentialsConcurrentOverEmptyStoresOneValue(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	j := e.job(t, store.TypeRedis)
+	mustT(t, upsertErr(e.st.UpsertEnvVar(ctx, j.ServiceID, "REDIS_PASSWORD", "")))
+	var wg sync.WaitGroup
+	seen := make(chan string, 20)
+	for range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := e.acts.EnsureCredentials(ctx, j); err != nil {
+				t.Error(err)
+			}
+			m, _ := e.st.EnvMap(ctx, j.ServiceID)
+			seen <- m["REDIS_PASSWORD"]
+		}()
+	}
+	wg.Wait()
+	close(seen)
+	final := decryptedEnv(t, e, j.ServiceID)["REDIS_PASSWORD"]
+	raw, _ := e.st.EnvMap(ctx, j.ServiceID)
+	if len(final) != 32 {
+		t.Fatalf("final %q", final)
+	}
+	for v := range seen {
+		if v != raw["REDIS_PASSWORD"] {
+			t.Fatal("a caller observed a password that was later replaced")
+		}
+	}
+}
+
+// Defence in depth: never start a managed DB without a password.
+func TestRunContainerRefusesEmptyManagedPassword(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	j := e.job(t, store.TypeRedis)
+	mustT(t, upsertErr(e.st.UpsertEnvVar(ctx, j.ServiceID, "REDIS_PASSWORD", "")))
+	_, err := e.run(t, e.acts.RunContainer, RunInput{Job: j, Network: "n", Volume: "v"})
+	if err == nil || !isNonRetryable(err) || len(e.docker.specs) != 0 {
+		t.Fatalf("err=%v specs=%d", err, len(e.docker.specs))
+	}
+}
+
 func TestEnsureCredentialsMongoIgnoresLegacyDir(t *testing.T) {
 	e := newEnv(t)
 	j := e.job(t, store.TypeMongoDB)

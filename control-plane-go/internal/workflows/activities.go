@@ -193,17 +193,14 @@ func (a *Activities) EnsureNetwork(ctx context.Context, projectID string) (strin
 }
 
 // EnsureCredentials stores an encrypted random password for a managed DB on
-// first deploy. A password that already exists is never replaced.
+// first deploy. A non-empty password that already exists is never replaced.
+// An empty stored value (raw or encrypted; whitespace counts as a value, as in
+// RunContainer) would start the database without auth, so it is replaced.
+// Both writes are conditional (insert-if-absent, compare-and-swap on the
+// observed stored value), so racing or retried calls converge on one password.
 func (a *Activities) EnsureCredentials(ctx context.Context, job store.Job) error {
 	m, ok := Managed[job.ServiceType]
 	if !ok {
-		return nil
-	}
-	env, err := a.Store.EnvMap(ctx, job.ServiceID)
-	if err != nil {
-		return err
-	}
-	if env[m.PasswordEnv] != "" {
 		return nil
 	}
 	password, err := secrets.RandomPassword()
@@ -214,10 +211,34 @@ func (a *Activities) EnsureCredentials(ctx context.Context, job store.Job) error
 	if err != nil {
 		return err
 	}
-	// Insert-if-absent: a concurrent or retried call must not replace a
-	// password the volume may already have been initialised with.
-	_, err = a.Store.InsertEnvVarIfAbsent(ctx, job.ServiceID, m.PasswordEnv, enc)
-	return err
+	for range 5 {
+		env, err := a.Store.EnvMap(ctx, job.ServiceID)
+		if err != nil {
+			return err
+		}
+		raw, present := env[m.PasswordEnv]
+		var done bool
+		if !present {
+			done, err = a.Store.InsertEnvVarIfAbsent(ctx, job.ServiceID, m.PasswordEnv, enc)
+		} else {
+			plain, derr := a.Secrets.Decrypt(raw)
+			if derr != nil {
+				return fmt.Errorf("env var %s: %w", m.PasswordEnv, derr)
+			}
+			if plain != "" {
+				return nil
+			}
+			done, err = a.Store.ReplaceEnvVarIfEquals(ctx, job.ServiceID, m.PasswordEnv, raw, enc)
+		}
+		if err != nil {
+			return err
+		}
+		if done {
+			return nil
+		}
+		// Lost a race: re-read; the winner's value is normally non-empty now.
+	}
+	return fmt.Errorf("could not store a password for %s after repeated conflicts", m.PasswordEnv)
 }
 
 // EnsureVolume returns the managed DB's named volume, creating it on first
@@ -319,6 +340,10 @@ func (a *Activities) RunContainer(ctx context.Context, in RunInput) (RunResult, 
 	if m, ok := Managed[job.ServiceType]; ok {
 		spec.Image, spec.ContainerPort, spec.Volume, spec.Cmd = m.Image, m.Port, in.Volume, m.Cmd
 		spec.VolumeTarget, spec.Tmpfs, spec.CapAdd = m.DataDir, m.Tmpfs, m.CapAdd
+		if env[m.PasswordEnv] == "" {
+			// Defence in depth: never start a managed DB without auth.
+			return RunResult{}, temporal.NewNonRetryableApplicationError("managed_password_empty", "PasswordMissing", nil)
+		}
 		spec.Env = merge(m.Env, env)
 		if a.Cfg.ExposeManagedPorts {
 			if spec.PublishPort, err = a.allocatePort(ctx); err != nil {

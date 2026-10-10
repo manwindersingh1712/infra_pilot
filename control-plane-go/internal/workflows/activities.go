@@ -200,7 +200,9 @@ func (a *Activities) EnsureCredentials(ctx context.Context, job store.Job) error
 	if err != nil {
 		return err
 	}
-	_, err = a.Store.UpsertEnvVar(ctx, job.ServiceID, m.PasswordEnv, enc)
+	// Insert-if-absent: a concurrent or retried call must not replace a
+	// password the volume may already have been initialised with.
+	_, err = a.Store.InsertEnvVarIfAbsent(ctx, job.ServiceID, m.PasswordEnv, enc)
 	return err
 }
 

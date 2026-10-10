@@ -157,3 +157,21 @@ func TestEnvVars(t *testing.T) {
 		t.Fatalf("after delete: %+v", list)
 	}
 }
+
+func TestInsertEnvVarIfAbsentNeverReplaces(t *testing.T) {
+	st, ctx := newStore(t), context.Background()
+	f := testutil.Seed(t, st, store.TypeNodejs)
+
+	ok, err := st.InsertEnvVarIfAbsent(ctx, f.ServiceID, "K", "first")
+	if err != nil || !ok {
+		t.Fatalf("first insert: ok=%v err=%v", ok, err)
+	}
+	ok, err = st.InsertEnvVarIfAbsent(ctx, f.ServiceID, "K", "second")
+	if err != nil || ok {
+		t.Fatalf("second insert: ok=%v err=%v", ok, err)
+	}
+	m, _ := st.EnvMap(ctx, f.ServiceID)
+	if m["K"] != "first" {
+		t.Fatalf("EnvMap = %v", m)
+	}
+}

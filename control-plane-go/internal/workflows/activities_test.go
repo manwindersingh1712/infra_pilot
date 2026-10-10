@@ -374,6 +374,46 @@ func TestEnsureCredentialsGeneratesEncryptedPasswordOnce(t *testing.T) {
 	}
 }
 
+// STAFF-2 (T23r1): concurrent first deploys must agree on one stored password.
+func TestEnsureCredentialsConcurrentCallsStoreOneValue(t *testing.T) {
+	e := newEnv(t)
+	j := e.job(t, store.TypeRedis)
+	var wg sync.WaitGroup
+	errs := make(chan error, 20)
+	seen := make(chan string, 20) // the value each caller observes right after its call
+	for range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err := e.acts.EnsureCredentials(context.Background(), j)
+			m, _ := e.st.EnvMap(context.Background(), j.ServiceID)
+			errs <- err
+			seen <- m["REDIS_PASSWORD"]
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	close(seen)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	raw, err := e.st.EnvMap(context.Background(), j.ServiceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vars, err := e.st.ListEnvVars(context.Background(), j.ServiceID)
+	if err != nil || len(vars) != 1 || vars[0].Value != raw["REDIS_PASSWORD"] {
+		t.Fatalf("vars=%v err=%v", vars, err)
+	}
+	for v := range seen {
+		if v != raw["REDIS_PASSWORD"] {
+			t.Fatal("a caller observed a password that was later replaced")
+		}
+	}
+}
+
 func TestEnsureCredentialsMongoIgnoresLegacyDir(t *testing.T) {
 	e := newEnv(t)
 	j := e.job(t, store.TypeMongoDB)

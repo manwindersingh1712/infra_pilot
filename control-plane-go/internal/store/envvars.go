@@ -29,6 +29,19 @@ func (s *Store) UpsertEnvVar(ctx context.Context, serviceID, key, value string) 
 		cuid.New(), serviceID, key, value))
 }
 
+// InsertEnvVarIfAbsent stores the value only when the key is unset and reports
+// whether it did. An existing value is never replaced.
+func (s *Store) InsertEnvVarIfAbsent(ctx context.Context, serviceID, key, value string) (bool, error) {
+	tag, err := s.db.Exec(ctx,
+		`INSERT INTO "EnvVar" ("id", "serviceId", "key", "value") VALUES ($1, $2, $3, $4)
+		 ON CONFLICT ("serviceId", "key") DO NOTHING`,
+		cuid.New(), serviceID, key, value)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 func (s *Store) DeleteEnvVar(ctx context.Context, serviceID, key string) error {
 	_, err := s.db.Exec(ctx, `DELETE FROM "EnvVar" WHERE "serviceId" = $1 AND "key" = $2`, serviceID, key)
 	return err

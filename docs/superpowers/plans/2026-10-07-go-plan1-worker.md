@@ -8316,66 +8316,102 @@ The orchestrator dispatches, on the full range `master..go-migration`:
 
 Open findings follow the usual fix loop.
 
-- [ ] **Step 2: Ask the user to approve the cutover**
+> **CTO go/no-go (`review/decisions.md` 2026-10-10, "Plan 1 gate: worker cutover go/no-go"): GO, conditional.** Start Step 2 only when (1) T16 STAFF-7 (invalid env key is a non-retryable `InvalidSpec`) and (2) the `REGISTRY_HOST` default `localhost:5001` are committed and re-verified, (3) the Verifier re-ran the full CI set (no `-short`) and `scripts/smoke-worker.sh` on that commit, and (4) the release note `docs/superpowers/release-note-plan1.md` exists. Steps marked **[USER APPROVAL]** change the running system and wait for an explicit yes.
 
-Report the gate results, the checklist below and the rollback steps. Wait for explicit approval.
+- [ ] **Step 2: Ask the user to approve the cutover [USER APPROVAL]**
 
-- [ ] **Step 3: Cut over**
+Report the gate results, `docs/superpowers/release-note-plan1.md`, the checklist below and the rollback steps. Wait for explicit approval. Do not run Step 3 before it.
 
-```bash
-cd /Users/manwindersingh/Desktop/infra-pilot/control-plane && docker compose up -d && cd ../control-plane-go
-# CTO 2026-10-08: if this database was not created by goose and was not baselined in Task 3
-# (any Node-era DB other than the dev DB), first take `pg_dump -Fc` and run
-# `go run ./cmd/migrate baseline`; `migrate status` must list 00001 as applied before `up`.
-# `migrate up` refuses an un-baselined Node-era schema with 'run `migrate baseline` first'.
-go run ./cmd/migrate up
-# 1. Drain RabbitMQ: both queues must show 0 messages
-curl -s -u cp:cp http://localhost:15672/api/queues | jq -r '.[] | "\(.name) \(.messages)"'
-# 2. Stop the Node worker (Ctrl-C in its terminal). This also stops its outbox publisher.
-# 3. Start the Go worker:
-go run ./cmd/worker
-```
-The Node API (`cd control-plane && npm run dev:api`) and the UI (`cd cp-ui && npm run dev`) keep running.
+- [ ] **Step 3: Cut over [USER APPROVAL, run in this order, stop at the first failure]**
 
-- [ ] **Step 4: Cutover checklist** (the Verifier runs it and records each result)
+**3.0 Preconditions.** Docker Desktop is running. The Node API (`cd control-plane && npm run dev:api`), the Node worker (`npm run dev:worker`) and the UI (`cd cp-ui && npm run dev`) are running. `jq`, `openssl` and `psql` (or `docker exec cp_postgres psql`) are available. Check the Postgres container name with `docker ps --format '{{.Names}}'` (expected `cp_postgres`; use the real name below).
+
+**3.1 Create `control-plane-go/.env`** (not committed; never print it). Required keys:
+
+| Key | Value |
+|---|---|
+| `DATABASE_URL` | the same URL as `control-plane/.env` |
+| `ENV_ENCRYPTION_KEY` | `openssl rand -base64 32`. **Back it up outside the repo now.** It is the only way to read generated managed-DB passwords. Losing it loses access to every Go-initialised managed DB. |
+| `REGISTRY_HOST` | `localhost:5001` (compose maps the registry to 5001) |
+| `NGINX_ROUTES_DIR` | absolute path: `/Users/manwindersingh/Desktop/infra-pilot/control-plane/infra/nginx/conf.d/routes` (the default is relative to the working directory and wrong) |
+| `TEMPORAL_HOST_PORT` | `localhost:7233` |
+| `REDIS_URL` | `redis://localhost:6379` |
+| `CLICKHOUSE_URL`, `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD` | as in `control-plane/.env` (the URL defaults to `http://localhost:8123`) |
+| `WORKER_METRICS_ADDR` | `127.0.0.1:9091` |
+| `APP_ENV` | `development` for this dev stack (managed DB host ports are published on `127.0.0.1` only in development) |
+
+**3.2 Backup.** `mkdir -p ~/cp-backups && umask 077 && docker exec cp_postgres pg_dump -U cp -Fc control_plane > ~/cp-backups/pre-go-cutover-$(date +%F).dump` and check that the file is not empty (`ls -l`; `pg_restore -l <file> | head`). Failure: stop.
+
+**3.3 Step 1 SQL** (read-only, never print full URLs or values), run against the dev DB:
+- the two queries from the Step 1 amendment above;
+- affected env rows (keys Go rejects, or values with line breaks): `SELECT "serviceId", "key" FROM "EnvVar" WHERE "key" !~ '^[A-Za-z_][A-Za-z0-9_]*$' OR position(E'\n' in "value") > 0 OR position(E'\r' in "value") > 0;`
+Write the affected service ids into the release note. Those services fail with `invalid_build_source` or `InvalidSpec` until fixed. Decide with the user whether to fix them first.
+
+**3.4 Infrastructure.** `cd /Users/manwindersingh/Desktop/infra-pilot/control-plane && docker compose up -d && docker compose ps`. This brings up postgres, rabbitmq, registry, nginx, redis, minio (not used by Go), clickhouse and temporal. All must be `running`/`healthy`. Failure: fix compose first; do not continue.
+
+**3.5 Migrate.** `cd ../control-plane-go && go run ./cmd/migrate status`, then `go run ./cmd/migrate up`.
+- `status` must list 00001 as applied. If `up` says "run `migrate baseline` first" (a Node-era DB that goose never saw), run `go run ./cmd/migrate baseline` once. `baseline` requires the `_prisma_migrations` table with every Prisma migration finished (true for any DB the Node side migrated); it fails otherwise, which means the schema diverged: stop.
+- `up` should apply 00002 only; a second `up` is a no-op.
+- Failure of `up`: restore `~/cp-backups/pre-go-cutover-<date>.dump` (`docker exec -i cp_postgres pg_restore -U cp -d control_plane --clean --if-exists < file`), do not start the Go worker, keep the Node worker running.
+
+**3.6 Drain check (needs `jq`).** `curl -s -u cp:cp http://localhost:15672/api/queues | jq -r '.[] | "\(.name) \(.messages)"'`: `cp.build.q` and `cp.deploy.q` must both be `0`. Also `SELECT id, status FROM "Deployment" WHERE status IN ('building','deploying');` should be empty. If not, wait for the Node worker to finish them; do not stop it yet.
+
+**3.7 Stop the Node worker** (Ctrl-C in its terminal; this also stops its outbox publisher). Then run the stuck-row check again: `SELECT id, status FROM "Deployment" WHERE status IN ('building','deploying');`. A row can be left here when Ctrl-C hit a job whose RabbitMQ message was already consumed and whose outbox row is already `published`, so Go would never see it. For each id: `UPDATE "Deployment" SET status='queued' WHERE id='<id>';` and insert a new outbox row: `INSERT INTO "OutboxEvent" ("id","type","payload","status","attempts","nextAttemptAt","createdAt") VALUES (gen_random_uuid()::text,'build.requested','{"deploymentId":"<id>"}','pending',0,now(),now());` (use `deploy.requested` for mongodb/redis services; if the INSERT complains about a missing column default, check `\d "OutboxEvent"` and supply it). The Go worker starts only when the list is empty or every id was reset and re-queued. Failure to start the Go worker later: restart the Node worker (`cd control-plane && npm run dev:worker`) after the rollback state reset in Step 5.
+
+**3.8 Start the Go worker in its own terminal (blocks).** `cd /Users/manwindersingh/Desktop/infra-pilot/control-plane-go && go run ./cmd/worker`. Success signals: a `worker up` log line (it prints the routes dir and the redacted config), the Temporal UI at http://localhost:8233 shows the worker on task queue `deployments`, and `curl -s 127.0.0.1:9091/metrics | grep cp_outbox` returns lines. A config error (missing `ENV_ENCRYPTION_KEY`, relative routes dir) exits at once with the key name: fix `.env`, rerun.
+
+**3.9 Managed-DB handling** (after checklist items 1-4 pass, before the window is called stable):
+1. **Mongo hard gate: do not redeploy any `mongodb` service until it is dumped and the dump verified.** A Mongo redeployed under Go without the dump starts empty and `admin123` stops working; the old data stays only in the old container's anonymous volume.
+   - `umask 077; docker exec <node-mongo-container> mongodump --archive --gzip -u admin -p admin123 --authenticationDatabase admin > ~/cp-mongo-<serviceId>.archive.gz; chmod 600 ~/cp-mongo-<serviceId>.archive.gz` (the archive holds all data: delete it after verification).
+   - Verify: file size is plausible, `gzip -t` passes, and after the restore below the old databases are listed.
+2. Redeploy every managed DB (mongodb, redis) through the UI, one at a time. For Mongo: read the password with `docker exec cp-<newDeploymentId> printenv MONGO_INITDB_ROOT_PASSWORD`, restore with `docker exec -i cp-<newDeploymentId> sh -c 'mongorestore --archive --gzip -u admin -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin' < ~/cp-mongo-<serviceId>.archive.gz`, check with `mongosh` that the old databases are there, redeploy once more and confirm the data survived, `docker inspect cp-<id>` shows no anonymous volume, and `admin123` no longer works. For Redis the connection panel shows no password (PROD-1): use `docker exec cp-<deploymentId> printenv REDIS_PASSWORD`.
+3. Then `docker ps --format '{{.Names}} {{.Ports}}'` and look for any `0.0.0.0:` binding, and `docker network inspect cp_net -f '{{range .Containers}}{{.Name}} {{end}}'` for any container still on `cp_net`. Node-era Redis/Mongo containers left there (Mongo with admin/admin123, ports open on all interfaces) are a security leftover: remove them with `docker rm -f <name>` (no `-v`, so the anonymous volume stays as a fallback). The cutover is complete only when both lists are clean or the user accepts a named leftover in writing.
+4. After verification, delete `~/cp-mongo-*.archive.gz`. Prune the old anonymous volumes by hand later (backlog, Plan 3).
+
+The Node API and the UI keep running throughout.
+
+- [ ] **Step 4: Cutover checklist [USER APPROVAL for the deploys it triggers]** (the Verifier runs it and records each result; dev DB leftover test data from earlier runs is expected, ignore it)
 
 1. **Workflow visible.** Deploy an existing `nodejs` service from the UI. The deployment goes `queued → building → deploying → deployed`, and the Temporal UI shows `deploy-<deploymentId>` completed.
 2. **App reachable.** `http://<serviceId>.localhost/` serves the app.
 3. **Isolation and limits.**
    - `docker inspect cp-<deploymentId> -f '{{json .HostConfig.PortBindings}} {{.HostConfig.Memory}} {{.HostConfig.NanoCpus}} {{.HostConfig.PidsLimit}}'` shows `{} 536870912 500000000 256`.
    - `docker network inspect cp-proj-<projectId> -f '{{range .Containers}}{{.Name}} {{end}}'` lists the app container and `cp_nginx`.
-4. **Old containers retired.** Redeploy the same service. The previous `cp-<oldId>` container is gone (`docker ps -a --filter label=cp.serviceId=<serviceId>`), and its row has `stoppedAt` set.
-5. **Redis credentials.** Deploy a `redis` service (new or existing).
+4. **Old containers retired.** Redeploy the same service. The previous `cp-<oldId>` container (Go or Node-era, same name scheme) is gone (`docker ps -a --filter label=cp.serviceId=<serviceId>`; for Node-era containers check by name), and its row has `stoppedAt` set.
+5. **Redis credentials.** Deploy a `redis` service (new or existing; an existing one gets the migrated data from `dump.rdb`).
    - `docker exec cp-<id> sh -c 'redis-cli -a "$REDIS_PASSWORD" --no-auth-warning ping'` prints `PONG`, and `docker exec cp-<id> redis-cli ping` prints `NOAUTH …`.
    - The published port is bound to `127.0.0.1` only.
-   - Redeploying it removes the old container **before** the new one starts (Temporal history order).
-6. **Mongo migration** (only if a Node-era Mongo service exists; CTO 2026-10-09). Do this **before** redeploying it with Go:
-   - Dump: `docker exec <node-mongo-container> mongodump --archive --gzip -u admin -p admin123 --authenticationDatabase admin > ~/cp-mongo-<serviceId>.archive.gz`.
-   - Redeploy the service with Go; read the new password with `docker exec cp-<newDeploymentId> printenv MONGO_INITDB_ROOT_PASSWORD`.
-   - Restore: `docker exec -i cp-<newDeploymentId> sh -c 'mongorestore --archive --gzip -u admin -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin' < ~/cp-mongo-<serviceId>.archive.gz`.
-   - Check: `mongosh` with the new password lists the old databases; redeploy once more and the data is still there; `docker inspect cp-<id>` shows no anonymous volume; `admin123` no longer works.
-   - The old container's anonymous volume is left as a fallback; delete it by hand after verification.
-7. **Broken repo.** Deploy a `docker` service with repo `https://github.com/octocat/does-not-exist.git`. It ends `failed`, and Temporal shows a failed workflow after the retries (several minutes because of backoff).
-8. **Logs survive restarts.** Stop and restart the Go worker. Logs for a running app keep streaming in the UI (Node API Socket.io reads the same Redis channel).
-9. **No duplicate flushes.** After two flush cycles (10+ minutes):
+   - Redeploying it removes the old container **before** the new one starts (Temporal history order; a brief outage is expected).
+6. **Mongo migration** (only if a Node-era Mongo service exists): follow Step 3.9 item 1 and 2 exactly. This item is a hard gate; nothing else in the checklist redeploys a Mongo service.
+7. **Broken repo.** Deploy a `docker` service with repo `https://github.com/octocat/does-not-exist.git`. It ends `failed`. Allow several minutes (retry backoff); Temporal shows a failed workflow after the retries. The reason is only in the Temporal UI and the worker log.
+8. **Logs survive restarts.** Stop and restart the Go worker (Ctrl-C, then `go run ./cmd/worker` again). Logs for a running app keep streaming in the UI (Node API Socket.io reads the same Redis channel).
+9. **No duplicate flushes.** After two flush cycles (10+ minutes of waiting):
    `curl -s 'http://localhost:8123/' --data-binary "SELECT count() = uniqExact(timestamp, message) FROM container_logs WHERE deployment_id='<id>'"` prints `1`.
 10. **Metrics.** `curl -s 127.0.0.1:9091/metrics | grep cp_deployments_total` shows the deployed and failed counts.
 
-- [ ] **Step 5: Record the rollback window**
+Failure handling: an in-flight deploy that fails is first checked in the Temporal UI (http://localhost:8233) and the worker log; roll back only for a systemic fault (worker cannot start, every deploy fails, data at risk), not for one bad repo.
 
-Append to `docs/superpowers/review/decisions.md`: the cutover date, and "rollback window open until <date + 14 days>".
+- [ ] **Step 5: Record the rollback window and rollback procedure [USER APPROVAL to roll back]**
 
-Rollback procedure:
-1. Wait for running workflows to finish (Temporal UI: no running `deploy-*`).
-2. Stop the Go worker.
-3. Run `cd control-plane && npm run dev:worker`.
+Append to `docs/superpowers/review/decisions.md`: the cutover date (when checklist items 1-4 pass) and "rollback window open until <date + 14 days>". The Plan 2 API cutover must not start inside the window unless the user closes the window early in writing.
 
-RabbitMQ stays up for the whole window.
+Rollback procedure (RabbitMQ stays up for the whole window):
+1. No running `deploy-*` workflows (Temporal UI). Wait, or terminate them and note the ids.
+2. Stop the Go worker (Ctrl-C).
+3. Reset the state Go leaves behind (Node only claims `queued`/`pending`):
+   - `UPDATE "OutboxEvent" SET status='pending' WHERE status='publishing';`
+   - `SELECT id, status, "updatedAt" FROM "Deployment" WHERE status IN ('building','deploying');` reset each to `queued` (`UPDATE "Deployment" SET status='queued' WHERE id='<id>';`); a `deploying` row older than 1 hour (`updatedAt`) is stale and is reset the same way.
+   - Every `queued` deployment whose workflow was terminated in step 1 needs a new `build.requested` (or `deploy.requested` for managed services) outbox row with `{"deploymentId":"<id>"}`.
+4. Start the Node worker: `cd control-plane && npm run dev:worker`.
+5. Containers started by Go stay on their project networks and nginx stays attached, so routes keep working.
+6. **Managed DB caveat (PROD-3).** Rollback is clean for app services only. A managed DB that Go initialised has a generated password and the named volume `cp-vol-<serviceId>`, which Node does not know: a Node redeploy would start it with `admin123` and no auth against a different volume. After a rollback do not redeploy managed DBs under Node; restore them from the dump if needed.
 
 - [ ] **Step 6: Commit the records**
 
+The orchestrator stages by explicit path (never `git add -A`: `ruvector.db`, `agentdb.rvf*` and `README_NEW.md` are untracked and must not be committed):
+
 ```bash
 cd /Users/manwindersingh/Desktop/infra-pilot
-git add docs/superpowers/review
+git add docs/superpowers/review docs/superpowers/release-note-plan1.md
 git commit -m "docs: Plan 1 gate results and worker cutover record"
 ```

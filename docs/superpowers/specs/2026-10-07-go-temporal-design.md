@@ -47,17 +47,17 @@ Docker host: nginx ── attached to every project network ── cp-proj-<proj
                                                              └─ managed DBs (password, named volume)
 ```
 
-Package layout (Go module `infrapilot`):
-- `cmd/`: `api`, `worker`, `migrate`.
+Package layout (Go module `infrapilot`). Plan 1 delivers the worker side only; `cmd/api`, `internal/auth` and `internal/api` are **Plan 2** and do not exist after the Plan 1 cutover (the Node API keeps running and writes the outbox rows):
+- `cmd/`: `worker`, `migrate` (Plan 1); `api` (Plan 2).
 - `internal/`:
   - `config`, `db`, `store` (all SQL);
-  - `auth` (JWT, refresh tokens, bcrypt);
+  - `auth` (JWT, refresh tokens, bcrypt; Plan 2);
   - `secrets` (AES-GCM for env vars);
   - `logs` (Redis, ClickHouse, aggregator);
   - `runtime` (Docker implementation of `Runtime`, nginx implementation of `Router`, buildx `Builder`, streamer);
   - `workflows` (workflows and activities);
   - `worker/outbox`;
-  - `api`;
+  - `api` (Plan 2);
   - `metrics`;
   - `testutil`.
 
@@ -90,7 +90,7 @@ Every activity has its own timeout and a retry policy: 10 s initial interval, ×
 11. **StartLogStream.**
 12. **On final failure:** cleanup runs in a disconnected context. `MarkFailed` never overwrites `deployed`. The new container is removed only if the route was never attempted, or the attempt failed and `RevertRoute` (repoint to the previous live deployment, or remove the route) succeeded; if the revert fails, or after a successful `SwitchRoute`, the container is kept. When the route was attempted, the order is `RevertRoute`, then `RemoveContainer` (only if the revert succeeded), then `MarkFailed` last, because `MarkFailed` releases the service-scoped `ClaimDeploy` lock and a successor must not switch the route before the revert ran; `MarkFailed` is called even if the revert failed. In the other paths the order is irrelevant. After `MarkDeployed`, the deployment stays `deployed`: `RetirePrevious` and `StartLogStream` also run in a disconnected context so a cancel cannot skip them, and a failure of either fails the workflow run (visible in the Temporal UI) but runs no cleanup. Failed runs are visible in the Temporal UI, which replaces the DLQ.
 
-### TeardownWorkflow(serviceID, purgeData)
+### TeardownWorkflow(serviceID, purgeData) (Plan 2: not implemented in Plan 1)
 
 1. Stop and remove every container of the service.
 2. Remove the nginx route.
@@ -103,7 +103,7 @@ The API has already soft-deleted the service (`deletedAt`), so it disappears fro
 
 Keeps the existing claim, backoff and `dead` logic, and calls a `WorkflowStarter` interface. Event mapping:
 - `build.requested` and `deploy.requested` start `DeployWorkflow`. Both keep their names, because the Node API still writes them during Plan 1.
-- `teardown.requested` starts `TeardownWorkflow`.
+- `teardown.requested` starts `TeardownWorkflow` (**Plan 2**). In Plan 1 the starter has no mapping for it, so such a row dead-letters after 10 attempts; nothing writes it until Plan 2 adds the endpoint, the workflow and this mapping together.
 
 ## 5. Security changes (roadmap Phase 2, folded into the migration)
 
@@ -130,7 +130,7 @@ Keeps the existing claim, backoff and `dead` logic, and calls a `WorkflowStarter
 2. **Managed DB redeploys no longer corrupt data:** `StopPrevious` before start.
 3. **Managed data survives reboots:** named volumes instead of `/tmp/cp-volumes`. A one-time move copies existing Node-era data into `cp-vol-<serviceId>` on first deploy: from the deployment's `volumePath` if it lies inside `LEGACY_VOLUME_ROOT`, otherwise from `LEGACY_VOLUME_ROOT/<serviceId>`, if the directory exists. This applies to Redis only. Node-era Mongo data was never in that directory (see §5) and is moved by the cutover runbook.
 4. **Traffic switches only after the app is up:** `WaitHealthy` before `SwitchRoute`.
-5. **Services can be deleted:** `DELETE /services/:id?purgeData=true|false` plus `TeardownWorkflow`.
+5. **Services can be deleted (Plan 2):** `DELETE /services/:id?purgeData=true|false` plus `TeardownWorkflow`.
 6. **Log streams survive worker restarts:** on startup, re-attach to every running deployment that has a `containerId` and no `stoppedAt`.
 7. **No duplicate ClickHouse rows (best effort):** a per-deployment flush cursor in `logs:flushed:<deploymentId>`, read with `XRANGE (<lastId> +`. Every flush pass refreshes the cursor's TTL (15 min) while the stream exists, so a ClickHouse outage never rewinds it. A crash between the ClickHouse insert and the cursor update can duplicate at most one batch; this is accepted and readers tolerate it. Exactly one flusher runs (the single Go worker's flush ticker). (CTO 2026-10-09)
 8. **No port-allocation race:** app containers publish no ports; the dev-only managed DB ports keep the existing allocator.
@@ -149,7 +149,7 @@ Enum values are not changed, so Prisma could still read every row while rollback
 ## 8. Observability and delivery
 
 - **Logs:** `slog`, JSON when `LOG_FORMAT=json` (production), text in dev. Every API log line carries the `X-Request-ID` (generated if missing and echoed in the response).
-- **Metrics:** Prometheus on `METRICS_ADDR`, separate from the public port; default `127.0.0.1:9090` for the API and `127.0.0.1:9091` for the worker.
+- **Metrics:** Prometheus on `API_METRICS_ADDR` (default `127.0.0.1:9090`, Plan 2) and `WORKER_METRICS_ADDR` (default `127.0.0.1:9091`), separate from the public port.
   - API: requests by route pattern, status and duration.
   - Worker: workflow outcomes, build duration, deploy duration, outbox rows by status (including `dead`), and outbox lag (`cp_outbox_oldest_pending_age_seconds`, the age of the oldest `pending`/`publishing` row). Temporal SDK metrics (a `client.Options.MetricsHandler` on the worker's registry) are added in Plan 3 with the production compose. (CTO 2026-10-09)
 - **CI (first task of Plan 1):** `.github/workflows/ci.yml` runs:
@@ -164,13 +164,18 @@ Enum values are not changed, so Prisma could still read every row while rollback
 
 ## 9. Rollout and rollback
 
-1. **Plan 1 cutover (worker):**
-   1. Wait until `cp.build.q` and `cp.deploy.q` are empty.
-   2. Stop the Node worker, which also stops its outbox publisher.
-   3. Start the Go worker. The Node API keeps running.
-2. **Rollback window (2 weeks from the Plan 1 cutover):**
-   - Rollback means: stop the Go worker, start the Node worker. RabbitMQ stays up.
+1. **Plan 1 cutover (worker).** The runbook with commands, success signals and failure handling is Task 27 Steps 2-6 of the Plan 1 file; the order is:
+   1. User approval; `control-plane-go/.env` with the required keys (`DATABASE_URL`, `ENV_ENCRYPTION_KEY`, `REGISTRY_HOST=localhost:5001`, absolute `NGINX_ROUTES_DIR`, `TEMPORAL_HOST_PORT`, `REDIS_URL`, `CLICKHOUSE_*`, `WORKER_METRICS_ADDR`).
+   2. `pg_dump -Fc` backup; the Step 1 SQL (non-https repo URLs, odd commit refs, invalid env keys).
+   3. `docker compose up -d`; `migrate status`, then `migrate up` (`migrate baseline` only for a Node-era DB goose never saw; it needs `_prisma_migrations` with all Prisma migrations finished). If `up` fails: restore the dump and do not start Go.
+   4. Drain check: `cp.build.q` and `cp.deploy.q` empty and no `building`/`deploying` rows.
+   5. Stop the Node worker; list `building`/`deploying` rows again and reset each to `queued` with a new `build.requested` outbox row (its old row is already `published`).
+   6. Start the Go worker; the Node API keeps running.
+   7. Checklist items 1-10, including the Mongo hard gate (dump and verify before any Mongo redeploy), redeploying every managed DB, and a `docker ps` check for `0.0.0.0:` bindings and containers left on `cp_net`.
+2. **Rollback window (14 days from the Plan 1 cutover date, recorded in `decisions.md`; Plan 2's API cutover does not start inside it unless the user closes it early in writing):**
+   - Rollback means: no running `deploy-*` workflows; stop the Go worker; set `publishing` outbox rows back to `pending`; reset `building`/`deploying` rows (including `deploying` older than 1 hour) to `queued`; re-queue any `queued` deployment whose workflow was terminated; start the Node worker. RabbitMQ stays up.
    - Containers started by Go stay on their project networks, and nginx is still attached, so routes keep working.
+   - Clean for app services only: a Go-initialised managed DB has a generated password and the volume `cp-vol-<serviceId>`, which Node cannot see; Node would redeploy it with `admin123` and no auth. Do not redeploy managed DBs under Node; restore from the dump.
    - Plan 2 is built during this window.
 3. **Plan 2 cutover (API) is the point of no return for Node.**
    1. `pg_dump` backup.
@@ -293,9 +298,9 @@ No paid third-party service or API key is needed to execute the three plans. Eve
 
 | Need | Status (checked 2026-10-07) | Action |
 |---|---|---|
-| Go 1.24+ | Not installed | `brew install go` (Plan 1, Task 1) |
+| Go 1.27.2 (`go.mod`; CI uses 1.27.x) | Installed in Plan 1, Task 1 | `brew install go` |
 | git >= 2.30 (`switch --detach --end-of-options`, `fetch --end-of-options`) | Apple git 2.39.5 here; worker image alpine/Debian ships >= 2.39 | Task 26 logs `git --version` at startup and refuses to start below 2.30 |
-| golangci-lint, gosec, gitleaks | Not installed | `brew install golangci-lint gosec gitleaks` |
+| golangci-lint (2.14.0 in CI), gosec, gitleaks | Installed in Plan 1 | `brew install golangci-lint gosec gitleaks`. Note: gosec v2.29.0 loses type information on go1.27; bump it after the first CI run (backlog SEC-3, 2026-10-10) |
 | govulncheck | Not installed | `go install golang.org/x/vuln/cmd/govulncheck@latest` |
 | Docker Desktop running | Installed, daemon not running | Start Docker Desktop before executing (testcontainers, builds, deploys) |
 | GitHub repo + Actions | `origin` = `github.com/manwindersingh1712/infra_pilot`, `gh` logged in | None; CI uses the built-in `GITHUB_TOKEN` |

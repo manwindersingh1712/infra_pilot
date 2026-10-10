@@ -184,6 +184,29 @@ For `nodejs`, `nextjs`, and `react` service types, if the cloned repo does not c
 - For React apps, detects Vite (looks for `vite.config.js`) vs CRA to determine build output directory (`dist` vs `build`)
 - React apps use a multi-stage build with `nginx:alpine` serving static files
 
+## Go worker (control-plane-go)
+
+Plan 1 of the Go + Temporal migration: the Go worker replaces the Node worker (the Node API still writes the outbox rows). Runbook: `docs/superpowers/plans/2026-10-07-go-plan1-worker.md`, Task 27; release note: `docs/superpowers/release-note-plan1.md`.
+
+```bash
+cd control-plane-go
+go run ./cmd/migrate status|up|baseline   # goose; baseline only for a Node-era DB (needs _prisma_migrations)
+go run ./cmd/worker                       # reads control-plane-go/.env (godotenv); Temporal UI http://localhost:8233
+scripts/smoke-worker.sh                   # throwaway compose project smoke test
+scripts/e2e-temporal.sh                   # real-Temporal e2e (kill-worker, cancel, queued pair, reject-duplicate)
+```
+
+Env vars the worker reads (`internal/config/config.go`; defaults in brackets):
+- Required: `DATABASE_URL`, `ENV_ENCRYPTION_KEY` (base64, 32 bytes: `openssl rand -base64 32`; back it up, it decrypts generated managed-DB passwords).
+- App/log: `APP_ENV` or `NODE_ENV` [production], `LOG_FORMAT` [text], `WORKER_METRICS_ADDR` [127.0.0.1:9091]. (API-only, Plan 2: `API_PORT`, `JWT_SECRET`, `CORS_ORIGINS`, `API_METRICS_ADDR`.)
+- Temporal: `TEMPORAL_HOST_PORT` [localhost:7233], `TEMPORAL_NAMESPACE` [default].
+- Stores: `REDIS_URL` [redis://localhost:6379], `CLICKHOUSE_URL` [http://localhost:8123], `CLICKHOUSE_USER` [default], `CLICKHOUSE_PASSWORD`.
+- Build/registry: `REGISTRY_HOST` [localhost:5001], `BUILD_WORKDIR` [/tmp/cp-builds], `BUILDER_NAME` [cp-builder], `BUILDER_MEMORY` [2g], `BUILDER_CPUS` [2], `PROBE_IMAGE` [busybox:1.36].
+- Containers: `CONTAINER_MEMORY` [512m], `CONTAINER_CPUS` [0.5], `CONTAINER_PIDS` [256], `DEFAULT_CONTAINER_PORT` [3080], `HEALTH_TIMEOUT_SECONDS` [60, max 600], `EXPOSE_MANAGED_PORTS` [true only when APP_ENV=development], `DATA_PLANE_PORT_RANGE_START/END` [20000/20100], `LEGACY_VOLUME_ROOT` [/tmp/cp-volumes].
+- Nginx: `NGINX_ROUTES_DIR` [infra/nginx/conf.d/routes, relative: set an absolute path, e.g. `<repo>/control-plane/infra/nginx/conf.d/routes`], `NGINX_CONTAINER` [cp_nginx], `NGINX_PORT` [80], `SERVICE_BASE_DOMAIN` [localhost].
+
+Never commit `ruvector.db`, `agentdb.rvf*`, `README_NEW.md` or any `.env`; stage by explicit path.
+
 ## Other Docs
 
 `docs/` has deeper write-ups (`logging-service.md`, `INFRA-PILOT-NODEJS.md`, diagrams). `IMPLEMENTATION_PLAN.md` and the untracked `SAAS_ROADMAP.md` describe planned work, not current behavior.

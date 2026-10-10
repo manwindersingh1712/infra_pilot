@@ -11,3 +11,11 @@
 
 ## Fix round 1 plan (orchestrator): STAFF-1, STAFF-3 (script), SEC-2 (metrics server timeouts), SEC-3 (redact URL query values)
 STAFF-2 recorded here + backlog line for Plan 3.
+
+## Fix round 1 (commits 5728ee5, 8720ca9, 48385e7, 72409b0)
+- `5728ee5` STAFF-1: `resumeLoop` runs `streamer.Resume` under `sup.Start(..., "resume", ...)` and blocks on `<-ctx.Done()` after it finishes (a normal finish does not cancel the process); `TestResumeLoopDoesNotBlockOthersOrCancel`. `8720ca9` SEC-2: metrics server Read 10 s / Write 30 s / Idle 60 s / MaxHeaderBytes 8 KiB, bind before logging with the real address, Warn on a non-loopback address. `48385e7` SEC-3: `redactURL` masks query-string values (`xxxxx`) and drops the fragment. `72409b0` STAFF-3: `control-plane-go/scripts/smoke-worker.sh` (throwaway compose project, refuses dev project names and ports 5432/6379/7233/8123/80, never reads `.env` files, `env -i`, tmpfs data dirs, trap teardown by exact names, asserts one running container + CapDrop ALL / no-new-privileges / limits / loopback port / metrics gauge / no secrets in the worker log).
+- Engineer's real run PASSED (third run; the first two exposed script bugs: ClickHouse `CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1`, a BSD sed regex). Output ends `smoke: PASS`. shellcheck not installed (only `bash -n` + the real run).
+- **Orchestrator check:** read the resume loop and the script header; `go test ./cmd/worker ./internal/metrics ./internal/config -race -count=2` green; Engineer CI dry run green (all packages, race, no -short, lint, workflowcheck, gosec, govulncheck exit 0).
+
+## Result
+**PASSED 2026-10-10** after one fix round. Open (backlog): STAFF-2 (Postgres idle-in-transaction timeout ≥ 300 s, Plan 3), deferred hardening (Streamer.Wait, ClickHouse validation, redis logger, ParseTime counter), VER-1/2 (heartbeat on short activities, image digest pin), smoke script run output = the baseline for Task 27's Verifier.

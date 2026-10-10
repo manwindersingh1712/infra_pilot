@@ -621,7 +621,7 @@ func (c *capLog) add(level, msg string, kv []any) {
 	var b strings.Builder
 	b.WriteString(level + " " + msg)
 	for i := 0; i+1 < len(kv); i += 2 {
-		b.WriteString(fmt.Sprintf(" %v=%v", kv[i], kv[i+1]))
+		fmt.Fprintf(&b, " %v=%v", kv[i], kv[i+1])
 	}
 	c.mu.Lock()
 	c.lines = append(c.lines, b.String())

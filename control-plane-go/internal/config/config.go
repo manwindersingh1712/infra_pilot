@@ -263,6 +263,18 @@ func redactURL(raw string) string {
 	if err != nil {
 		return "[unparseable]"
 	}
+	// Mask query values (T26 SEC-3): ?password= and DSN sslpassword= must not
+	// reach logs. Keys stay, order is kept, the fragment is dropped.
+	if u.RawQuery != "" {
+		pairs := strings.Split(u.RawQuery, "&")
+		for i, p := range pairs {
+			if k, _, ok := strings.Cut(p, "="); ok {
+				pairs[i] = k + "=xxxxx"
+			}
+		}
+		u.RawQuery = strings.Join(pairs, "&")
+	}
+	u.Fragment, u.RawFragment = "", ""
 	return u.Redacted()
 }
 

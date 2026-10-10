@@ -269,3 +269,21 @@ func TestSecretsNeverPrinted(t *testing.T) {
 		}
 	}
 }
+
+func TestRedactURLMasksQueryValues(t *testing.T) {
+	for _, c := range []struct{ in, want string }{
+		{"http://ch:8123/?password=SECRET&user=a", "http://ch:8123/?password=xxxxx&user=xxxxx"},
+		{"postgresql://u:pw@db:5432/x?sslpassword=SECRET&sslmode=disable#frag", "postgresql://u:xxxxx@db:5432/x?sslpassword=xxxxx&sslmode=xxxxx"},
+		{"redis://:pw@r:6379/0", "redis://:xxxxx@r:6379/0"},
+		{"", ""},
+		{"http://a b/%zz", "[unparseable]"},
+	} {
+		got := redactURL(c.in)
+		if got != c.want {
+			t.Errorf("redactURL(%q) = %q, want %q", c.in, got, c.want)
+		}
+		if strings.Contains(got, "SECRET") {
+			t.Errorf("secret leaked: %q", got)
+		}
+	}
+}

@@ -41,6 +41,8 @@ type ContainerRuntime interface {
 // Router is implemented by runtime.Nginx.
 type Router interface {
 	UpsertRoute(ctx context.Context, serviceID, containerName string, containerPort int) error
+	// RemoveRoute is idempotent.
+	RemoveRoute(ctx context.Context, serviceID string) error
 	RuntimeURL(serviceID string) string
 }
 
@@ -104,6 +106,7 @@ type RouteInput struct {
 	ContainerName string
 	Port          int
 }
+type RevertInput struct{ ServiceID, DeploymentID string }
 type RetireInput struct{ ServiceID, KeepDeploymentID string }
 type DeployedInput struct {
 	DeploymentID  string
@@ -443,6 +446,23 @@ func (a *Activities) SwitchRoute(ctx context.Context, in RouteInput) (string, er
 		return "", err
 	}
 	return a.Router.RuntimeURL(in.ServiceID), nil
+}
+
+// RevertRoute puts the service's route back to what it was before this
+// deployment's SwitchRoute: the newest other deployment that is deployed, not
+// stopped and has a container, or no route at all. It decides from the
+// database, never from the failed call, so it is idempotent and safe to retry.
+func (a *Activities) RevertRoute(ctx context.Context, in RevertInput) error {
+	live, err := a.Store.ListLiveDeployments(ctx, in.ServiceID, in.DeploymentID)
+	if err != nil {
+		return err
+	}
+	for i := len(live) - 1; i >= 0; i-- { // ListLiveDeployments is oldest first
+		if d := live[i]; d.Status == store.StatusDeployed && d.ContainerPort != nil {
+			return a.Router.UpsertRoute(ctx, in.ServiceID, ContainerName(d.ID), *d.ContainerPort)
+		}
+	}
+	return a.Router.RemoveRoute(ctx, in.ServiceID)
 }
 
 // MarkDeployed records the running container. The deployed counter is

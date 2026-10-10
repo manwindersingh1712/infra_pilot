@@ -113,6 +113,10 @@ func mockAll(env *testsuite.TestWorkflowEnvironment, tr *trace, job store.Job) {
 		tr.rec("route", in)
 		return "http://s1.localhost", nil
 	}).Maybe()
+	env.OnActivity(a.RevertRoute, mock.Anything, mock.Anything).Return(func(_ context.Context, in RevertInput) error {
+		tr.rec("revert", in)
+		return nil
+	}).Maybe()
 	env.OnActivity(a.MarkDeployed, mock.Anything, mock.Anything).Return(func(_ context.Context, in DeployedInput) error {
 		tr.rec("deployed", in)
 		return nil
@@ -200,7 +204,10 @@ func TestHealthFailureRemovesContainer(t *testing.T) {
 	env.AssertExpectations(t)
 }
 
-func TestSwitchRouteFailureRemovesContainer(t *testing.T) {
+// Failure path 2: SwitchRoute errored, so the route state is unknown. The row
+// is marked failed, the route is reverted, and the container is removed only
+// after the revert succeeded.
+func TestSwitchRouteErrorRevertsRouteThenRemoves(t *testing.T) {
 	env, tr := newWorkflowEnv(), &trace{}
 	var a *Activities
 	env.OnActivity(a.SwitchRoute, mock.Anything, mock.Anything).Return("", nonRetryable("nginx reload failed", "Route")).Once()
@@ -210,8 +217,54 @@ func TestSwitchRouteFailureRemovesContainer(t *testing.T) {
 	if env.GetWorkflowError() == nil {
 		t.Fatal("want error")
 	}
-	if got := tr.get(); !slices.Equal(got[len(got)-2:], []string{"failed", "remove:cp-d1"}) || tr.has("deployed") {
+	got := tr.get()
+	if want := []string{"run", "healthy", "failed", "revert", "remove:cp-d1"}; !slices.Equal(got[len(got)-len(want):], want) || tr.has("deployed") {
 		t.Fatalf("steps: %v", got)
+	}
+	if in := tr.in(); !slices.Contains(in, `revert {"ServiceID":"s1","DeploymentID":"d1"}`) {
+		t.Fatalf("inputs: %v", in)
+	}
+}
+
+// If the revert fails the container is kept: it may be serving.
+func TestSwitchRouteErrorRevertFailsKeepsContainer(t *testing.T) {
+	env, tr := newWorkflowEnv(), &trace{}
+	var a *Activities
+	env.OnActivity(a.SwitchRoute, mock.Anything, mock.Anything).Return("", nonRetryable("nginx reload failed", "Route")).Once()
+	env.OnActivity(a.RevertRoute, mock.Anything, mock.Anything).Return(nonRetryable("nginx still down", "Route")).Once()
+	mockAll(env, tr, appJob())
+	env.ExecuteWorkflow(DeployWorkflow, "d1")
+
+	if env.GetWorkflowError() == nil {
+		t.Fatal("want error")
+	}
+	if !tr.has("failed") || tr.hasPrefix("remove:") || tr.has("deployed") || tr.has("retire") {
+		t.Fatalf("steps: %v", tr.get())
+	}
+	env.AssertExpectations(t)
+}
+
+// A cancel during SwitchRoute is waited for (WaitForCancellation), then the
+// route state is treated as unknown.
+func TestCancelDuringSwitchRouteReverts(t *testing.T) {
+	env, tr := newWorkflowEnv(), &trace{}
+	var a *Activities
+	env.OnActivity(a.SwitchRoute, mock.Anything, mock.Anything).Return(func(ctx context.Context, _ RouteInput) (string, error) {
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(5 * time.Second):
+			return "http://s1.localhost", nil
+		}
+	}).Once()
+	mockAll(env, tr, appJob())
+	env.RegisterDelayedCallback(env.CancelWorkflow, time.Second)
+	env.ExecuteWorkflow(DeployWorkflow, "d1")
+
+	got := tr.get()
+	if env.GetWorkflowError() == nil || tr.has("deployed") ||
+		!slices.Equal(got[len(got)-3:], []string{"failed", "revert", "remove:cp-d1"}) {
+		t.Fatalf("err=%v steps=%v", env.GetWorkflowError(), got)
 	}
 }
 
@@ -222,8 +275,10 @@ func TestRunContainerFailureMarksFailed(t *testing.T) {
 	mockAll(env, tr, appJob())
 	env.ExecuteWorkflow(DeployWorkflow, "d1")
 
-	if env.GetWorkflowError() == nil || !tr.has("failed") || tr.has("route") {
-		t.Fatalf("err=%v steps=%v", env.GetWorkflowError(), tr.get())
+	got := tr.get()
+	if env.GetWorkflowError() == nil || tr.has("route") || tr.has("revert") ||
+		!slices.Equal(got[len(got)-2:], []string{"failed", "remove:cp-d1"}) {
+		t.Fatalf("err=%v steps=%v", env.GetWorkflowError(), got)
 	}
 }
 
@@ -532,6 +587,12 @@ func TestActivityOptions(t *testing.T) {
 		t.Fatalf("build = %+v", b)
 	}
 	r := runOptions()
+	if !r.WaitForCancellation {
+		t.Fatal("RunContainer must wait for cancellation: cleanup may only run after docker run ended")
+	}
+	if !routeOptions().WaitForCancellation {
+		t.Fatal("SwitchRoute must wait for cancellation: its outcome decides the cleanup")
+	}
 	if r.StartToCloseTimeout != 10*time.Minute || r.HeartbeatTimeout != time.Minute || r.RetryPolicy.MaximumAttempts != 3 {
 		t.Fatalf("run = %+v", r)
 	}

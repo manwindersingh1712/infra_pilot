@@ -42,10 +42,21 @@ func claimDeployOptions() workflow.ActivityOptions {
 func runOptions() workflow.ActivityOptions {
 	return workflow.ActivityOptions{
 		StartToCloseTimeout: 10 * time.Minute, HeartbeatTimeout: time.Minute,
+		// A cancel must not return before docker run ended, or cleanup could
+		// run first and miss the container the run is about to create.
+		WaitForCancellation: true,
 		RetryPolicy: &temporal.RetryPolicy{
 			InitialInterval: 10 * time.Second, BackoffCoefficient: 2, MaximumInterval: 5 * time.Minute, MaximumAttempts: 3,
 		},
 	}
+}
+
+// routeOptions: SwitchRoute is one call with no heartbeat. Waiting for a
+// cancel makes the workflow see its real outcome before any cleanup runs.
+func routeOptions() workflow.ActivityOptions {
+	o := shortOptions()
+	o.WaitForCancellation = true
+	return o
 }
 
 // healthStartToClose is fixed. The probe deadline (HEALTH_TIMEOUT_SECONDS) is
@@ -63,7 +74,11 @@ func healthOptions() workflow.ActivityOptions {
 }
 
 // stage records how far a deploy got, so cleanup never undoes live traffic.
-type stage struct{ routeSwitched, deployed bool }
+//
+// routeAttempted is set BEFORE SwitchRoute: an error or cancel there does not
+// prove nginx was untouched (file written, reload failed; or a timeout after
+// the reload). routeSwitched is set only after SwitchRoute succeeded.
+type stage struct{ routeAttempted, routeSwitched, deployed bool }
 
 // DeployWorkflow builds (if needed) and runs one deployment. Its ID is
 // DeployWorkflowID(deploymentID), so starting it twice is harmless.
@@ -97,8 +112,20 @@ func DeployWorkflow(ctx workflow.Context, deploymentID string) error {
 	if cerr := workflow.ExecuteActivity(cleanup, a.MarkFailed, deploymentID).Get(cleanup, nil); cerr != nil {
 		log.Warn("MarkFailed failed", "deploymentId", deploymentID)
 	}
-	// After SwitchRoute the new container is serving: keep it.
-	if !st.routeSwitched {
+	switch {
+	case st.routeSwitched:
+		// The new container is serving: keep it.
+	case st.routeAttempted:
+		// Route state unknown. Remove the container only once the route is known
+		// not to point at it; if the revert fails, keep it (it may be serving)
+		// and leave it to the Plan 3 reconciler.
+		rev := RevertInput{ServiceID: job.ServiceID, DeploymentID: deploymentID}
+		if cerr := workflow.ExecuteActivity(cleanup, a.RevertRoute, rev).Get(cleanup, nil); cerr != nil {
+			log.Warn("RevertRoute failed; container kept", "deploymentId", deploymentID)
+		} else if cerr := workflow.ExecuteActivity(cleanup, a.RemoveContainer, ContainerName(deploymentID)).Get(cleanup, nil); cerr != nil {
+			log.Warn("RemoveContainer failed", "deploymentId", deploymentID)
+		}
+	default:
 		if cerr := workflow.ExecuteActivity(cleanup, a.RemoveContainer, ContainerName(deploymentID)).Get(cleanup, nil); cerr != nil {
 			log.Warn("RemoveContainer failed", "deploymentId", deploymentID)
 		}
@@ -171,7 +198,8 @@ func deploy(ctx workflow.Context, job store.Job) (stage, error) {
 	if !managed {
 		var url string
 		route := RouteInput{ServiceID: job.ServiceID, ContainerName: run.ContainerName, Port: run.ContainerPort}
-		if err := workflow.ExecuteActivity(short, a.SwitchRoute, route).Get(ctx, &url); err != nil {
+		st.routeAttempted = true
+		if err := workflow.ExecuteActivity(workflow.WithActivityOptions(ctx, routeOptions()), a.SwitchRoute, route).Get(ctx, &url); err != nil {
 			return st, err
 		}
 		st.routeSwitched = true

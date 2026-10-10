@@ -119,11 +119,19 @@ func (f *fakeDocker) UsedPorts(context.Context) (map[int]bool, error) {
 	return out, f.usedErr
 }
 
-type fakeRouter struct{ routes []string }
+type fakeRouter struct {
+	routes  []string
+	removed []string
+	err     error // returned by UpsertRoute and RemoveRoute
+}
 
 func (f *fakeRouter) UpsertRoute(_ context.Context, serviceID, name string, port int) error {
 	f.routes = append(f.routes, serviceID+"->"+name)
-	return nil
+	return f.err
+}
+func (f *fakeRouter) RemoveRoute(_ context.Context, serviceID string) error {
+	f.removed = append(f.removed, serviceID)
+	return f.err
 }
 func (f *fakeRouter) RuntimeURL(serviceID string) string { return "http://" + serviceID + ".localhost" }
 
@@ -944,6 +952,68 @@ func TestClaimDeployActivity(t *testing.T) {
 	}
 	if won, err := claim("missing"); err != nil || won {
 		t.Fatalf("a missing row must lose: %v, %v", won, err)
+	}
+}
+
+// T24r1 SEC-1: RevertRoute repoints to the newest other live deployment, or
+// removes the route when there is none. It is idempotent.
+func TestRevertRouteRepointsToNewestOtherDeployedOrRemoves(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	f := testutil.Seed(t, e.st, store.TypeNodejs)
+	mk := func(sha string) store.Deployment {
+		d, err := e.st.CreateDeployment(ctx, f.ServiceID, sha)
+		mustT(t, err)
+		return d
+	}
+	deploy := func(d store.Deployment, port int) {
+		mustT(t, e.st.MarkDeployed(ctx, d.ID, store.DeployedInfo{ContainerID: "c-" + d.ID, ContainerPort: port}))
+	}
+	revert := func(cur store.Deployment) error {
+		_, err := e.run(t, e.acts.RevertRoute, RevertInput{ServiceID: f.ServiceID, DeploymentID: cur.ID})
+		return err
+	}
+	cur := mk("new")
+
+	// No other live deployment: the route is removed.
+	if err := revert(cur); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(e.router.removed, []string{f.ServiceID}) || len(e.router.routes) != 0 {
+		t.Fatalf("removed=%v routes=%v", e.router.removed, e.router.routes)
+	}
+
+	// Older deployed, a newer one stopped, a failed one with a container, and the current one:
+	// only the newest deployed and not stopped row counts.
+	older, newer, stopped, failed := mk("v1"), mk("v2"), mk("v3"), mk("v4")
+	deploy(older, 3001)
+	deploy(newer, 3002)
+	deploy(stopped, 3003)
+	mustT(t, e.st.MarkStopped(ctx, []string{stopped.ID}))
+	_, err := pool.Exec(ctx, `UPDATE "Deployment" SET "containerId" = 'c', "containerPort" = 3004, "status" = 'failed' WHERE "id" = $1`, failed.ID)
+	mustT(t, err)
+	_, err = pool.Exec(ctx, `UPDATE "Deployment" SET "createdAt" = now() + (CASE "id" WHEN $1 THEN 1 WHEN $2 THEN 2 WHEN $3 THEN 3 ELSE 4 END) * interval '1 second'
+	                         WHERE "id" IN ($1, $2, $3, $4)`, older.ID, newer.ID, stopped.ID, failed.ID)
+	mustT(t, err)
+	e.router.removed = nil
+	for range 2 {
+		if err := revert(cur); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := f.ServiceID + "->cp-" + newer.ID
+	if !slices.Equal(e.router.routes, []string{want, want}) || len(e.router.removed) != 0 {
+		t.Fatalf("routes=%v removed=%v", e.router.routes, e.router.removed)
+	}
+}
+
+func TestRevertRoutePropagatesRouterErrors(t *testing.T) {
+	e := newEnv(t)
+	j := e.job(t, store.TypeNodejs)
+	e.router.err = errors.New("reload failed")
+	_, err := e.run(t, e.acts.RevertRoute, RevertInput{ServiceID: j.ServiceID, DeploymentID: j.DeploymentID})
+	if err == nil || !strings.Contains(err.Error(), "reload failed") {
+		t.Fatalf("err = %v", err)
 	}
 }
 

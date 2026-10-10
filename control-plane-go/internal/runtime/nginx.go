@@ -112,6 +112,23 @@ func (n Nginx) upsertRoute(ctx context.Context, serviceID, containerName string,
 	return nil
 }
 
+// RemoveRoute deletes the service's route file and reloads nginx. It is
+// idempotent: a missing file is not an error, and nginx is reloaded anyway, so
+// a retry after a failed reload still takes the route out of service.
+func (n Nginx) RemoveRoute(ctx context.Context, serviceID string) error {
+	if !serviceIDRE.MatchString(serviceID) {
+		return fmt.Errorf("invalid service id %q", serviceID)
+	}
+	path := filepath.Join(n.RoutesDir, "svc-"+serviceID+".conf")
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("remove nginx route %q: %w", serviceID, err)
+	}
+	if _, err := n.R.Run(ctx, "", "docker", "exec", n.Container, "nginx", "-s", "reload"); err != nil {
+		return fmt.Errorf("remove nginx route %q: reload: %w", serviceID, err)
+	}
+	return nil
+}
+
 // writeFileAtomic writes data to a temp file in the same directory and renames
 // it onto path (STAFF-2 T18), so nginx never reads a partial route. The temp
 // name does not match the routes/*.conf include.

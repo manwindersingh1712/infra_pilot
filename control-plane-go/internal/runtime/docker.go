@@ -347,8 +347,12 @@ func (d Docker) CopyIntoVolume(ctx context.Context, hostDir, volume string) erro
 	if err := checkName("volume", volume); err != nil {
 		return err
 	}
+	// Root inside the helper must read Node-written 0600/0700 files owned by
+	// other uids and preserve their ownership; nothing else is added back.
 	args := append([]string{"run", "--rm", "--network", "none"}, d.limitArgs()...)
-	args = append(args, "-v", hostDir+":/from:ro", "-v", volume+":/to", d.ProbeImage,
+	args = append(args, "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE",
+		"--cap-add", "DAC_READ_SEARCH", "--cap-add", "FOWNER", "--security-opt", "no-new-privileges",
+		"-v", hostDir+":/from:ro", "-v", volume+":/to", d.ProbeImage,
 		"sh", "-c", "[ -f /to/.cp-migrated ] || (cp -a /from/. /to/ && touch /to/.cp-migrated)")
 	_, err := d.R.Run(ctx, "", "docker", args...)
 	return err
@@ -363,7 +367,7 @@ func (d Docker) Probe(ctx context.Context, network, host string, port int) error
 		return err
 	}
 	args := append([]string{"run", "--rm", "--network", network}, d.limitArgs()...)
-	args = append(args, d.ProbeImage, "nc", "-z", "-w", "2", host, strconv.Itoa(port))
+	args = append(args, "--cap-drop", "ALL", "--security-opt", "no-new-privileges", d.ProbeImage, "nc", "-z", "-w", "2", host, strconv.Itoa(port))
 	_, err := d.R.Run(ctx, "", "docker", args...)
 	return err
 }

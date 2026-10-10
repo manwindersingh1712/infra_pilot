@@ -343,11 +343,43 @@ func TestLegacyDir(t *testing.T) {
 		}
 	}
 	used := filepath.Join(root, "s1")
+	mustT(t, os.MkdirAll(used, 0o755))
 	if got := e.acts.legacyDir(store.Job{ServiceID: "svc1", VolumePath: &used}); got != used {
 		t.Errorf("inside root: legacyDir = %q, want %q", got, used)
 	}
 	if log := e.logBuf.String(); !strings.Contains(log, "d1") || strings.Contains(log, "/etc") {
 		t.Errorf("warning must name the deployment and not the path: %s", log)
+	}
+}
+
+// SEC-2 (T23r1): a symlink inside the root that points outside must not be
+// followed, whether it is the stored path or the default <root>/<serviceId>.
+func TestLegacyDirRejectsSymlinkEscape(t *testing.T) {
+	e := newEnv(t)
+	root := e.acts.Cfg.LegacyVolumeRoot
+	outside := t.TempDir()
+	link := filepath.Join(root, "evil")
+	mustT(t, os.Symlink(outside, link))
+	def := filepath.Join(root, "svc1")
+	if got := e.acts.legacyDir(store.Job{DeploymentID: "d1", ServiceID: "svc1", VolumePath: &link}); got != def {
+		t.Errorf("stored symlink escape: legacyDir = %q, want %q", got, def)
+	}
+	mustT(t, os.Symlink(outside, filepath.Join(root, "svc2")))
+	if got := e.acts.legacyDir(store.Job{DeploymentID: "d2", ServiceID: "svc2"}); dirExists(got) {
+		t.Errorf("default symlink escape: legacyDir = %q must not resolve to a directory", got)
+	}
+	// A symlink that stays inside the root is fine.
+	inner := filepath.Join(root, "real")
+	mustT(t, os.MkdirAll(inner, 0o755))
+	ok := filepath.Join(root, "alias")
+	mustT(t, os.Symlink(inner, ok))
+	if got := e.acts.legacyDir(store.Job{ServiceID: "svc1", VolumePath: &ok}); got != ok {
+		t.Errorf("inside symlink: legacyDir = %q, want %q", got, ok)
+	}
+	// A path that does not exist counts as absent: the default is returned.
+	missing := filepath.Join(root, "nope")
+	if got := e.acts.legacyDir(store.Job{ServiceID: "svc1", VolumePath: &missing}); got != def {
+		t.Errorf("missing: legacyDir = %q, want %q", got, def)
 	}
 }
 

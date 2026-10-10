@@ -7220,6 +7220,8 @@ git commit -m "feat(go): deploy activities with isolation, credentials, health c
 
 ### Task 24: `DeployWorkflow`
 
+> **CTO amendment, fix round 1 (`review/decisions.md` 2026-10-10 "Task 24 fix round 1"):** (1) `RunContainer` and `SwitchRoute` options get `WaitForCancellation: true`; `stage` gains `routeAttempted`, set immediately before `SwitchRoute`; if `routeAttempted && !routeSwitched`, cleanup runs new activity `RevertRoute{ServiceID, DeploymentID}` (repoint the route to the newest other deployed, not stopped deployment; none: remove the route) and removes the container only if it returned nil. (2) `MarkDeployed` runs in a disconnected context with `commitOptions` (StartToClose 1 min, retry 5 s x2 max 1 min, ScheduleToClose 30 min). (3) The deploying claim is the service-scoped `ClaimDeploy` (store transaction: lock the Service row `FOR UPDATE`; own `deploying` row wins; not queued loses; another `deploying` row of the service newer than 1 h is busy; busy is retryable `ServiceBusy` under `claimDeployOptions`: StartToClose 30 s, fixed 5 s retry, no attempt cap, ScheduleToClose 30 min). The building claim stays `Claim`. (4) Remove `SetHealthTimeout`; `const healthStartToClose = 11 * time.Minute`; `internal/config` `maxHealthTimeoutSeconds = 600`. (5) Build `ScheduleToCloseTimeout` 90 min. (6) Rename `TestDeployIsDeterministicAcrossRuns` to `TestDeployTraceIsStableAcrossRuns`; add a pinned `workflowcheck` step to `ci.yml`. (7) Cleanup logs carry deploymentId, serviceId and err; `TestRunContainerFailureMarksFailed` asserts the tail `["failed","remove:cp-d1"]`. Tests and the numbered list are in the decision entry.
+
 > **CTO amendment (FWD-2, FWD-3, `review/decisions.md` 2026-10-10 "Task 23 fix round 1"):** `RunContainer` must not use `shortOptions`: give it its own options, `StartToClose` 10 min, `HeartbeatTimeout` 1 min, 3 attempts (it pulls an image and starts a container, and heartbeats via `keepAlive`). `healthOptions` keeps one attempt; its `StartToClose` is at least `HealthTimeout` + 60 s so a first busybox pull cannot time it out. `Claim` now returns true on a retry whose row is already in the target status; the workflow still treats `false` as "not ours, end silently".
 
 > **CTO amendment (STAFF-4 T8, `review/decisions.md` 2026-10-08):** `deploy` returns `(stage, error)`, where `type stage struct{ routeSwitched, deployed bool }`. It sets `routeSwitched` after `SwitchRoute` succeeds (managed services never switch a route, so it stays false for them) and `deployed` after `MarkDeployed` succeeds. Post-deploy errors are wrapped as `fmt.Errorf("post-deploy %s: %w", step, err)`. `DeployWorkflow` on error: if `st.deployed`, log a warning (`workflow.GetLogger`) and return the error with no cleanup activities. Otherwise run `MarkFailed`, and run `RemoveContainer` only if `!st.routeSwitched`. Build gate: `if !managed && job.Image == nil { claim building, BuildImage, MarkBuilt }`; with an image already set, go straight to `claim(queued, deploying)` and run with `*job.Image`.
@@ -7592,6 +7594,8 @@ git commit -m "feat(go): DeployWorkflow with health-gated route switch and clean
 ---
 
 ### Task 25: Outbox → Temporal starter
+
+> **CTO amendment (T24 fix round 1, `review/decisions.md` 2026-10-10):** (1) Treat `WorkflowExecutionAlreadyStarted` as success (the event is marked published). The per-service serialisation lives in the workflow (`ClaimDeploy`), not in the starter; do not add a service-level check here. (2) Authorization: the workflow does no ownership check, so the starter starts workflows only from outbox rows written by the ownership-checked API and never from request input; document it in `starter.go`. (3) The Temporal address is the only way to start workflows: tenants must never reach it.
 
 **Files:**
 - Create: `control-plane-go/internal/worker/outbox/publisher.go`, `control-plane-go/internal/workflows/starter.go`
@@ -7987,6 +7991,8 @@ git commit -m "feat(go): outbox starts Temporal workflows idempotently"
 
 ### Task 26: Temporal in docker-compose and the worker binary
 
+> **CTO amendment (T24 fix round 1, `review/decisions.md` 2026-10-10):** do NOT call `workflows.SetHealthTimeout` (removed; the health activity timeout is the constant 11 min and config rejects `HEALTH_TIMEOUT_SECONDS` > 600). Publish the Temporal port (7233) on 127.0.0.1 only in compose. Smoke test against a real Temporal server (dev server or the compose service): start the worker, run one managed Redis deployment end to end, then two deployments of one service back to back and confirm they run one after the other.
+
 > **CTO amendment (FWD-3, FWD-4, `review/decisions.md` 2026-10-10 "Task 23 fix round 1"):** at startup pull the probe image (`docker pull busybox:1.36`, log a warning on failure, do not exit). Build `Activities` with every field non-nil: `Logs`, `Metrics` and `Log` get real values (a nil-field test fails construction), and `HealthInterval`/`HealthTimeout` come from config (defaults 2 s / 60 s).
 
 > **CTO amendment (T22 fix round 1, `review/decisions.md` 2026-10-10):** at startup run `git --version`, log it, and refuse to start (`log.Fatal`) when the parsed version is below 2.30 (spec §14); a test for the parser with `git version 2.39.5 (Apple Git-154)`, `2.43.0` and `2.29.9`.
@@ -8288,6 +8294,8 @@ git commit -m "feat(go): worker binary and Temporal dev server in compose"
 ---
 
 ### Task 27: Plan 1 gate and worker cutover
+
+> **CTO amendment (T24 fix round 1, `review/decisions.md` 2026-10-10):** the e2e runs on a real Temporal server and covers what the Verifier could not run in Task 24: kill the worker mid-deploy and resume (no duplicate container, row ends `deployed`); cancel during RunContainer and during SwitchRoute (no leaked container, serving container never removed); two deployments of one service queued together (one `ServiceBusy` wait, both end `deployed` in turn, exactly one container left running, route points at it); record a real DeployWorkflow history to `internal/workflows/testdata/deploy_history.json` and replay it with `ReplayWorkflowHistoryFromJSONFile` as a test. Cutover checklist: the Node worker is stopped, and no Node row is left in `deploying`.
 
 > **CTO amendment, Step 1 (FWD-A1, `review/decisions.md` 2026-10-08)** (Product and Security inputs; read-only): `SELECT "id", "serviceType", split_part("repoUrl", ':', 1) AS scheme FROM "Service" WHERE "repoUrl" IS NOT NULL AND "repoUrl" !~ '^https://';` and `SELECT count(*) FROM "Deployment" WHERE "commitSha" !~ '^[A-Za-z0-9][A-Za-z0-9._-]{3,99}$' AND "status" = 'queued';`. Never print full URLs. Builds for those services will fail with `invalid_build_source` after cutover, and Product names this in the release note.
 

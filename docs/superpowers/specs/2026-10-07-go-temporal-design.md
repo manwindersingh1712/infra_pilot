@@ -72,7 +72,7 @@ Every activity has its own timeout and a retry policy: 10 s initial interval, ×
    1. `SetStatus(building)`.
    2. `BuildImage`: buildx, StartToClose 30 min, heartbeat 1 min.
    3. `MarkBuilt(image)`.
-3. `SetStatus(deploying)`.
+3. **ClaimDeploy:** a service-scoped claim `queued → deploying`. In one transaction it locks the service row and refuses (retryable `ServiceBusy`, retried every 5 s for up to 30 min) while another deployment of the same service is `deploying` (a `deploying` row older than 1 h counts as abandoned). A row already `deploying` is this run's own and wins (crash resume). Builds may overlap; deploys of one service run one at a time.
 4. **EnsureNetwork:** `cp-proj-<projectId>`, with nginx attached (idempotent).
 5. **Managed DBs only:**
    1. **EnsureCredentials:** generate a 24-byte random password on first deploy and store it as an encrypted env var (`REDIS_PASSWORD` or `MONGO_INITDB_ROOT_PASSWORD`).
@@ -84,11 +84,11 @@ Every activity has its own timeout and a retry policy: 10 s initial interval, ×
    - Redis runs with `--requirepass`;
    - no published ports, except managed DB ports bound to `127.0.0.1` when `EXPOSE_MANAGED_PORTS=true` (default on in dev only; refused when `APP_ENV=production`).
 7. **WaitHealthy:** a TCP probe of `svc-<serviceId>:<port>` from a throwaway `busybox` container on the project network, polled every 2 s for up to 60 s.
-8. **SwitchRoute:** write the nginx server block and reload nginx (app services only).
-9. **MarkDeployed.**
+8. **SwitchRoute:** write the nginx server block and reload nginx (app services only). The activity runs with `WaitForCancellation`; the workflow marks the route as attempted before the call, because an error does not prove nginx was untouched.
+9. **MarkDeployed:** the commit point; runs in a disconnected context with extended retries (up to 30 min).
 10. **RetirePrevious** (app services only): stop and remove containers of this service's older deployments, and set their `stoppedAt`.
 11. **StartLogStream.**
-12. **On final failure:** `MarkFailed` in a disconnected context; it never overwrites `deployed`. The new container is removed only if traffic was not yet switched to it. After `SwitchRoute`, the container is kept, because it is serving. After `MarkDeployed`, the deployment stays `deployed`: a `RetirePrevious` or `StartLogStream` failure fails the workflow run (visible in the Temporal UI) but runs no cleanup. Failed runs are visible in the Temporal UI, which replaces the DLQ.
+12. **On final failure:** `MarkFailed` in a disconnected context; it never overwrites `deployed`. The new container is removed only if the route was never attempted, or the attempt failed and `RevertRoute` (repoint to the previous live deployment, or remove the route) succeeded; if the revert fails, or after a successful `SwitchRoute`, the container is kept. After `MarkDeployed`, the deployment stays `deployed`: a `RetirePrevious` or `StartLogStream` failure fails the workflow run (visible in the Temporal UI) but runs no cleanup. Failed runs are visible in the Temporal UI, which replaces the DLQ.
 
 ### TeardownWorkflow(serviceID, purgeData)
 

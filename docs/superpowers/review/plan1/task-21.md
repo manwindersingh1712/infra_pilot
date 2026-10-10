@@ -10,3 +10,12 @@
 
 ## Fix round 1 plan
 SEC-1 (size cap), STAFF-1 (GenerateDockerfile table test), STAFF-2 (tolerant field parsing), STAFF-3 (version fallback), STAFF-4 (tests). Backlog: SEC-2 note, root-user/isolation requirements for Task 22 + spec §5, VER-1.
+
+## Fix round 1 (b7ee458..d3ae1b6)
+- `b7ee458` SEC-1 (1 MiB cap, regular file, Open+f.Stat+LimitReader), `15c2abd` STAFF-1 (`TestGenerateDockerfile`, 10 rows), `c708157` STAFF-2 (per-field RawMessage parsing), `0a967a8` STAFF-3 (first digit-run rule, `defaultNodeTag = "20-alpine"` fallback), `d3ae1b6` STAFF-4 (named tables). Engineer CI dry run green; orchestrator ran `go test ./... -race` green.
+
+## Round 1 re-check
+- **Staff + Security (combined): CHANGES REQUESTED (1 medium, 1 low).** Original five resolved. **SEC-3 T21 (medium):** `root.Open` is a blocking O_RDONLY open, so a FIFO named `package.json` hangs the worker (reproduced: HANG after 10 s; the `IsRegular` check never runs). Needs a pre-build step or in-root symlink to a FIFO (git cannot store FIFOs), so narrow, but one tenant could wedge a worker goroutine forever. Fix: `root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)` then the `f.Stat` regular-file check (or `root.Lstat` first; symlinks need Stat); test with `syscall.Mkfifo` + timeout. **STAFF-5 T21 (low):** `baseImage` tag not length-capped (a 1 MiB digit run exceeds Docker's 128-char tag limit); fall back to the default if longer than ~64.
+
+## Fix round 2 plan
+SEC-3, STAFF-5. Check the same blocking-open pattern anywhere else a clone file is opened (Task 22 BuildAndPush uses `Lstat`+`OpenFile(O_EXCL)` for writing: fine).

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"infrapilot/internal/gitsrc"
 	"infrapilot/internal/testutil"
@@ -71,9 +72,9 @@ func TestBuildAndPushCreatesBuilderAndGeneratesDockerfile(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo := filepath.Join(wd, "repo")
-	safe := "-c protocol.allow=never -c protocol.https.allow=always -c credential.helper="
+	safe := "-c protocol.allow=never -c protocol.https.allow=always -c credential.helper= -c core.hooksPath=/dev/null -c submodule.recurse=false"
 	want := []string{
-		"git " + safe + " clone --depth 1 --branch main -- https://example.com/r.git " + repo,
+		"git " + safe + " clone --depth 1 --single-branch --no-tags --branch main -- https://example.com/r.git " + repo,
 		"git " + safe + " fetch --depth 50 --no-tags --end-of-options origin abc1234",
 		"git " + safe + " switch --detach --end-of-options abc1234",
 		"git " + safe + " rev-parse HEAD",
@@ -320,5 +321,56 @@ func TestBuildAndPushVerifiesSha(t *testing.T) {
 				t.Errorf("ref %s ran %s", ref, sub)
 			}
 		}
+	}
+}
+
+// blockingRunner blocks every git call until its ctx is done, like a hung clone.
+type blockingRunner struct {
+	gitStep string // subcommand that blocks
+	calls   []string
+}
+
+func (r *blockingRunner) Run(ctx context.Context, _ string, name string, args ...string) (string, error) {
+	r.calls = append(r.calls, name)
+	if name == "git" && gitSub(args) == r.gitStep {
+		<-ctx.Done()
+		return "", errors.New("signal: killed")
+	}
+	if name == "git" && gitSub(args) == "rev-parse" {
+		return fakeSha, nil
+	}
+	return "", nil
+}
+
+func TestBuildAndPushGitStepTimesOut(t *testing.T) {
+	for _, step := range []string{"clone", "switch"} {
+		r := &blockingRunner{gitStep: step}
+		b := Builder{R: r, Name: "cp-builder", Memory: "2g", CPUs: 2, Log: slog.New(slog.DiscardHandler), gitStepTimeout: 50 * time.Millisecond}
+		s := gitSpec("abc1234")
+		s.WorkDir = t.TempDir() + "/w"
+		done := make(chan error, 1)
+		go func() { done <- b.BuildAndPush(context.Background(), s) }()
+		select {
+		case err := <-done:
+			if err == nil || !strings.Contains(err.Error(), "git "+step) || !strings.Contains(err.Error(), "timed out") {
+				t.Fatalf("%s: err = %v", step, err)
+			}
+			if errors.Is(err, context.Canceled) {
+				t.Fatalf("%s: step timeout must not look like caller cancellation", step)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s: step did not time out", step)
+		}
+		for _, c := range r.calls {
+			if c == "docker" {
+				t.Fatalf("%s: docker ran after timeout", step)
+			}
+		}
+	}
+}
+
+func TestStepTimeoutDefaults(t *testing.T) {
+	if (Builder{}).stepTimeout() != 5*time.Minute || pushTimeout != 10*time.Minute {
+		t.Fatal("default git step timeout is 5 min, push 10 min")
 	}
 }

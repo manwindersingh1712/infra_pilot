@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"infrapilot/internal/gitsrc"
 	"infrapilot/internal/runtime"
@@ -34,10 +35,25 @@ type Builder struct {
 	Memory string // BuildKit container memory limit, e.g. "2g"
 	CPUs   int    // BuildKit container CPU limit
 	Log    *slog.Logger
+
+	gitStepTimeout time.Duration // per git step; zero means defaultGitStepTimeout
+}
+
+const (
+	defaultGitStepTimeout = 5 * time.Minute
+	pushTimeout           = 10 * time.Minute
+)
+
+func (b Builder) stepTimeout() time.Duration {
+	if b.gitStepTimeout > 0 {
+		return b.gitStepTimeout
+	}
+	return defaultGitStepTimeout
 }
 
 // gitSafe restricts git to https and disables credential helpers.
-var gitSafe = []string{"-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", "credential.helper="}
+var gitSafe = []string{"-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", "credential.helper=",
+	"-c", "core.hooksPath=/dev/null", "-c", "submodule.recurse=false"}
 
 func gitArgs(a ...string) []string { return append(slices.Clone(gitSafe), a...) }
 
@@ -95,6 +111,21 @@ func (b Builder) fail(ctx context.Context, op string, err error, repoURL string)
 	return fmt.Errorf("%s: %s", op, gitsrc.Scrub(err.Error(), repoURL))
 }
 
+// git runs one git step under its own timeout. A caller cancellation returns
+// the caller's ctx error; a step timeout returns an error naming the step.
+func (b Builder) git(ctx context.Context, dir, op, repoURL string, args ...string) (string, error) {
+	sctx, cancel := context.WithTimeout(ctx, b.stepTimeout())
+	defer cancel()
+	out, err := b.R.Run(sctx, dir, "git", gitArgs(args...)...)
+	if err == nil {
+		return out, nil
+	}
+	if ctx.Err() == nil && sctx.Err() != nil {
+		return out, fmt.Errorf("%s: timed out after %s", op, b.stepTimeout())
+	}
+	return out, b.fail(ctx, op, err, repoURL)
+}
+
 var hexRefRe = regexp.MustCompile(`^[0-9a-fA-F]{7,40}$`)
 
 // checkoutRef moves the clone to s.CommitSha. The branch tip and HEAD need no
@@ -106,21 +137,21 @@ func (b Builder) checkoutRef(ctx context.Context, repo string, s Spec) error {
 	if ref == s.Branch || ref == "HEAD" {
 		return nil
 	}
-	if _, err := b.R.Run(ctx, repo, "git", gitArgs("fetch", "--depth", "50", "--no-tags", "--end-of-options", "origin", ref)...); err != nil {
+	if _, err := b.git(ctx, repo, "git fetch", s.RepoURL, "fetch", "--depth", "50", "--no-tags", "--end-of-options", "origin", ref); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		b.Log.Warn("git fetch failed, continuing", "error", gitsrc.Scrub(err.Error(), s.RepoURL))
+		b.Log.Warn("git fetch failed, continuing", "error", err.Error())
 	}
-	if _, err := b.R.Run(ctx, repo, "git", gitArgs("switch", "--detach", "--end-of-options", ref)...); err != nil {
-		return b.fail(ctx, "git switch", err, s.RepoURL)
+	if _, err := b.git(ctx, repo, "git switch", s.RepoURL, "switch", "--detach", "--end-of-options", ref); err != nil {
+		return err
 	}
 	if !hexRefRe.MatchString(ref) {
 		return nil
 	}
-	out, err := b.R.Run(ctx, repo, "git", gitArgs("rev-parse", "HEAD")...)
+	out, err := b.git(ctx, repo, "git rev-parse", s.RepoURL, "rev-parse", "HEAD")
 	if err != nil {
-		return b.fail(ctx, "git rev-parse", err, s.RepoURL)
+		return err
 	}
 	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(out)), strings.ToLower(ref)) {
 		return errors.New("git rev-parse: checked-out commit does not match the requested commit")
@@ -144,8 +175,8 @@ func (b Builder) BuildAndPush(ctx context.Context, s Spec) error {
 	repo := filepath.Join(s.WorkDir, "repo")
 
 	b.Log.Info("cloning", "repo", gitsrc.RedactURL(s.RepoURL), "branch", s.Branch)
-	if _, err := b.R.Run(ctx, "", "git", gitArgs("clone", "--depth", "1", "--branch", s.Branch, "--", s.RepoURL, repo)...); err != nil {
-		return b.fail(ctx, "git clone", err, s.RepoURL)
+	if _, err := b.git(ctx, "", "git clone", s.RepoURL, "clone", "--depth", "1", "--single-branch", "--no-tags", "--branch", s.Branch, "--", s.RepoURL, repo); err != nil {
+		return err
 	}
 	if err := b.checkoutRef(ctx, repo, s); err != nil {
 		return err
@@ -165,6 +196,8 @@ func (b Builder) BuildAndPush(ctx context.Context, s Spec) error {
 		return err
 	}
 	b.Log.Info("pushing image", "image", s.ImageTag)
-	_, err := b.R.Run(ctx, "", "docker", "push", s.ImageTag)
+	pctx, cancel := context.WithTimeout(ctx, pushTimeout)
+	defer cancel()
+	_, err := b.R.Run(pctx, "", "docker", "push", s.ImageTag)
 	return err
 }

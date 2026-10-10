@@ -429,12 +429,16 @@ func TestBaseImageFallback(t *testing.T) {
 		{"   ", "node:20-alpine"},
 		{"latest", "node:20-alpine"},
 		{"22-alpine3.19", "node:22-alpine3.19"},
+		{strings.Repeat("1", 63), "node:" + strings.Repeat("1", 63) + "-alpine"},
+		{strings.Repeat("1", 64), "node:" + strings.Repeat("1", 64) + "-alpine"},
+		{strings.Repeat("1", 65), "node:20-alpine"},
+		{strings.Repeat("1", 5000), "node:20-alpine"},
 	}
 	for _, c := range cases {
 		pkg := PackageJSON{}
 		pkg.Engines.Node = c.in
 		if got := baseImage(pkg); got != c.want {
-			t.Errorf("baseImage(%q) = %q, want %q", c.in, got, c.want)
+			t.Errorf("baseImage(len %d) = %q, want %q", len(c.in), got, c.want)
 		}
 	}
 }

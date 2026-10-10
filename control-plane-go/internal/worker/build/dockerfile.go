@@ -57,6 +57,10 @@ func ReadPackageJSON(dir string) PackageJSON {
 // version.
 const defaultNodeTag = "20-alpine"
 
+// maxNodeTagLen caps the engines.node-derived tag; longer values fall back to
+// defaultNodeTag (Docker rejects tags over 128 characters).
+const maxNodeTagLen = 64
+
 // firstVersion matches the first run of version characters that starts with a
 // digit, so only [0-9a-zA-Z.-] can ever reach the image reference.
 var firstVersion = regexp.MustCompile(`[0-9][0-9a-zA-Z.-]*`)
@@ -68,7 +72,7 @@ var firstVersion = regexp.MustCompile(`[0-9][0-9a-zA-Z.-]*`)
 // "lts/*", "latest", empty).
 func baseImage(pkg PackageJSON) string {
 	v := strings.TrimRight(firstVersion.FindString(pkg.Engines.Node), ".-")
-	if v == "" {
+	if v == "" || len(v) > maxNodeTagLen {
 		v = defaultNodeTag
 	}
 	if strings.Contains(v, "alpine") {

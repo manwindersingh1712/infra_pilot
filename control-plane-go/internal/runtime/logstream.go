@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -113,7 +114,7 @@ func (s *Streamer) IsStreaming(deploymentID string) bool {
 
 func (s *Streamer) run(ctx context.Context, deploymentID string, st *stream, cmd *exec.Cmd) {
 	defer s.release(deploymentID, st)
-	emitCtx := context.WithoutCancel(ctx)
+	w := &lineWriter{s: s, deploymentID: deploymentID}
 	cmd.WaitDelay = waitDelay
 
 	stdout, err := cmd.StdoutPipe()
@@ -123,37 +124,40 @@ func (s *Streamer) run(ctx context.Context, deploymentID string, st *stream, cmd
 			if err = cmd.Start(); err == nil {
 				var wg sync.WaitGroup
 				wg.Add(2)
-				go func() { defer wg.Done(); s.pump(emitCtx, deploymentID, "stdout", stdout) }()
-				go func() { defer wg.Done(); s.pump(emitCtx, deploymentID, "stderr", stderr) }()
+				go func() { defer wg.Done(); s.pump(ctx, w, "stdout", stdout) }()
+				go func() { defer wg.Done(); s.pump(ctx, w, "stderr", stderr) }()
 				wg.Wait()
 				_ = cmd.Wait()
 				msg := "Log stream stopped"
 				if ctx.Err() == nil {
 					msg = fmt.Sprintf("Log stream ended (exit code: %d)", cmd.ProcessState.ExitCode())
 				}
-				s.end(emitCtx, deploymentID, msg)
+				s.end(ctx, w, msg)
 				return
 			}
 		}
 	}
-	s.end(emitCtx, deploymentID, "Log stream error: "+err.Error())
+	s.end(ctx, w, "Log stream error: "+err.Error())
 }
 
 // end writes the stream's final system entry, except on worker shutdown:
 // then the container keeps running and the stream resumes on the next start,
 // so telling the UI it ended would be false (STAFF-4(a), VER-4 T19).
-func (s *Streamer) end(ctx context.Context, deploymentID, msg string) {
+// The entry is written even after Stop (WithoutCancel, bounded by
+// sinkTimeout) and even after earlier lines failed.
+func (s *Streamer) end(ctx context.Context, w *lineWriter, msg string) {
 	if s.ctx.Err() != nil {
-		s.log.Info("log stream closed for shutdown", "deploymentId", deploymentID)
+		s.log.Info("log stream closed for shutdown", "deploymentId", w.deploymentID)
 		return
 	}
-	s.emit(ctx, deploymentID, "system", msg)
+	w.failed.Store(false)
+	w.write(context.WithoutCancel(ctx), "system", msg)
 }
 
 // pump reads r line by line until EOF. A line longer than maxLogLine is cut
 // to that size plus truncMarker and the rest of it is discarded, so memory
 // stays bounded and the pipe is always drained (SEC-1, SEC-2 T19).
-func (s *Streamer) pump(ctx context.Context, deploymentID, source string, r io.Reader) {
+func (s *Streamer) pump(ctx context.Context, w *lineWriter, source string, r io.Reader) {
 	br := bufio.NewReaderSize(r, maxLogLine)
 	line := make([]byte, 0, maxLogLine)
 	cut := false
@@ -173,12 +177,12 @@ func (s *Streamer) pump(ctx context.Context, deploymentID, source string, r io.R
 			continue
 		}
 		if msg := logLine(line, cut); msg != "" {
-			s.emit(ctx, deploymentID, source, msg)
+			w.write(ctx, source, msg)
 		}
 		line, cut = line[:0], false
 		if err != nil {
 			if err != io.EOF {
-				s.log.Warn("log stream read failed", "deploymentId", deploymentID, "source", source, "err", err)
+				s.log.Warn("log stream read failed", "deploymentId", w.deploymentID, "source", source, "err", err)
 			}
 			return
 		}
@@ -202,11 +206,32 @@ func logLine(line []byte, cut bool) string {
 	return string(line) + truncMarker
 }
 
-func (s *Streamer) emit(ctx context.Context, deploymentID, source, msg string) {
-	e := logs.Entry{DeploymentID: deploymentID, Source: source, Message: msg, Timestamp: logs.FormatTime(s.now())}
-	ctx, cancel := context.WithTimeout(ctx, sinkTimeout)
+// lineWriter writes one stream's entries. After the first failed write it
+// warns once and drops the stream's remaining lines, so a Redis outage costs
+// one Warn and at most one sinkTimeout per stream; pump keeps draining the
+// pipe either way (STAFF-5, SEC-6 T19).
+type lineWriter struct {
+	s            *Streamer
+	deploymentID string
+	failed       atomic.Bool
+	warned       atomic.Bool
+}
+
+// write sends one entry. A write cut short because ctx ended (Stop or
+// shutdown) is dropped silently: that is not a sink failure.
+func (w *lineWriter) write(ctx context.Context, source, msg string) {
+	if w.failed.Load() || ctx.Err() != nil {
+		return
+	}
+	e := logs.Entry{DeploymentID: w.deploymentID, Source: source, Message: msg, Timestamp: logs.FormatTime(w.s.now())}
+	wctx, cancel := context.WithTimeout(ctx, sinkTimeout)
 	defer cancel()
-	if err := s.sink.Write(ctx, e); err != nil {
-		s.log.Warn("log write failed", "deploymentId", deploymentID, "err", err)
+	err := w.s.sink.Write(wctx, e)
+	if err == nil || ctx.Err() != nil {
+		return
+	}
+	w.failed.Store(true)
+	if w.warned.CompareAndSwap(false, true) {
+		w.s.log.Warn("log write failed; dropping the rest of this stream", "deploymentId", w.deploymentID, "err", err)
 	}
 }

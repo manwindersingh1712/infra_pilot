@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os/exec"
 	"slices"
@@ -163,7 +164,7 @@ func TestStreamerPumpCutsOnRuneBoundary(t *testing.T) {
 	sink := &memorySink{}
 	s := NewStreamer(context.Background(), sink, slog.New(slog.DiscardHandler))
 	in := strings.Repeat("a", maxLogLine-1) + "é" + strings.Repeat("b", 10) + "\nshort\r\n\nlast"
-	s.pump(context.Background(), "dep1", "stdout", strings.NewReader(in))
+	s.pump(context.Background(), &lineWriter{s: s, deploymentID: "dep1"}, "stdout", strings.NewReader(in))
 
 	got := sink.all()
 	if len(got) != 3 {
@@ -196,10 +197,17 @@ func TestStreamerRejectsBadIDs(t *testing.T) {
 
 // hangingSink blocks the first stdout write until its context ends, like a
 // hung Redis; every write is recorded.
-type hangingSink struct{ memorySink }
+type hangingSink struct {
+	memorySink
+	onBlock func() // called once, when the first write starts blocking
+}
 
 func (h *hangingSink) Write(ctx context.Context, e logs.Entry) error {
 	if e.Source == "stdout" {
+		if h.onBlock != nil {
+			h.onBlock()
+			h.onBlock = nil
+		}
 		<-ctx.Done()
 	}
 	return h.memorySink.Write(ctx, e)
@@ -248,5 +256,71 @@ func TestStreamerStopThenStartKeepsNewStream(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)              // let its deferred cleanup run
 	if !s.IsStreaming("dep1") || ended() != 1 {
 		t.Fatalf("streaming=%v ended=%d entries=%+v", s.IsStreaming("dep1"), ended(), sink.all())
+	}
+}
+
+// failingSink fails every write, like Redis being down; attempts are counted.
+type failingSink struct{ lines, system atomic.Int32 }
+
+func (f *failingSink) Write(_ context.Context, e logs.Entry) error {
+	if e.Source == "system" {
+		f.system.Add(1)
+	} else {
+		f.lines.Add(1)
+	}
+	return errors.New("redis down")
+}
+
+// warnCounter is a slog handler that counts Warn records.
+type warnCounter struct{ n atomic.Int32 }
+
+func (w *warnCounter) Enabled(context.Context, slog.Level) bool { return true }
+func (w *warnCounter) Handle(_ context.Context, r slog.Record) error {
+	if r.Level == slog.LevelWarn {
+		w.n.Add(1)
+	}
+	return nil
+}
+func (w *warnCounter) WithAttrs([]slog.Attr) slog.Handler { return w }
+func (w *warnCounter) WithGroup(string) slog.Handler      { return w }
+
+// STAFF-5 / SEC-6 T19: after the first failed write the stream warns once
+// and drops the rest, but still drains the pipe and ends.
+func TestStreamerStopsWritingAfterSinkFailure(t *testing.T) {
+	sink := &failingSink{}
+	warns := &warnCounter{}
+	s := NewStreamer(context.Background(), sink, slog.New(warns))
+	s.newCmd = func(ctx context.Context, _ string) *exec.Cmd {
+		return exec.CommandContext(ctx, "sh", "-c", "for i in $(seq 1 200); do echo line$i; echo err$i 1>&2; done")
+	}
+
+	s.Start("dep1", "ctr1")
+	waitFor(t, func() bool { return !s.IsStreaming("dep1") })
+	if l, sys, w := sink.lines.Load(), sink.system.Load(), warns.n.Load(); l != 1 || sys > 1 || w != 1 {
+		t.Fatalf("line writes=%d system writes=%d warns=%d, want 1, <=1, 1", l, sys, w)
+	}
+}
+
+// SEC-6 T19: Stop cancels an in-flight line write instead of waiting out
+// the sink timeout.
+func TestStreamerStopCancelsHungWrite(t *testing.T) {
+	sink := &hangingSink{}
+	s := NewStreamer(context.Background(), sink, slog.New(slog.DiscardHandler))
+	s.newCmd = func(ctx context.Context, _ string) *exec.Cmd {
+		return exec.CommandContext(ctx, "sh", "-c", "echo out1; exec sleep 30")
+	}
+	started := make(chan struct{})
+	sink.onBlock = func() { close(started) }
+
+	s.Start("dep1", "ctr1")
+	<-started
+	t0 := time.Now()
+	s.Stop("dep1")
+	waitFor(t, func() bool { // the goroutine wrote its final entry
+		got := sink.all()
+		return len(got) > 0 && got[len(got)-1].Message == "Log stream stopped"
+	})
+	if d := time.Since(t0); d >= sinkTimeout {
+		t.Fatalf("stream took %v to end after Stop", d)
 	}
 }

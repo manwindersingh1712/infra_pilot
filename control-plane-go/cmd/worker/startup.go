@@ -135,3 +135,15 @@ func resumeList(running []store.Deployment) []runtime.Running {
 	}
 	return out
 }
+
+// resumeLoop adapts a log-stream resume to a supervised loop. resume may be
+// slow (one docker inspect per container), so it runs under the supervisor and
+// does not delay the other loops. A normal finish is not "unexpected": the
+// loop then waits for ctx so the supervisor does not cancel the process (T26 STAFF-1).
+func resumeLoop(ctx context.Context, log *slog.Logger, resume func() int) func() error {
+	return func() error {
+		log.Info("resumed log streams", "count", resume())
+		<-ctx.Done()
+		return nil
+	}
+}

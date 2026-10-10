@@ -170,14 +170,16 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	}
 	defer w.Stop()
 
+	publisher := outbox.New(st, workflows.Starter{Client: tc}, logger)
+	sup := newSupervisor(logger, cancel)
+	// Resume runs under the supervisor: a hung Docker daemon must not delay the
+	// outbox starter or "worker up" (T26 STAFF-1).
 	if running, err := st.ListRunningDeployments(ctx); err != nil {
 		logger.Warn("resume: cannot list running deployments", "err", err)
 	} else {
-		logger.Info("resumed log streams", "count", streamer.Resume(ctx, resumeList(running), docker.IsRunning))
+		list := resumeList(running)
+		sup.Start(ctx, "resume", resumeLoop(ctx, logger, func() int { return streamer.Resume(ctx, list, docker.IsRunning) }))
 	}
-
-	publisher := outbox.New(st, workflows.Starter{Client: tc}, logger)
-	sup := newSupervisor(logger, cancel)
 	sup.Start(ctx, "outbox starter", func() error { publisher.Run(ctx); return nil })
 	sup.Start(ctx, "log flush", func() error { every(ctx, flushInterval, func() { flush(ctx, agg, logger) }); return nil })
 	sup.Start(ctx, "outbox metrics", func() error {

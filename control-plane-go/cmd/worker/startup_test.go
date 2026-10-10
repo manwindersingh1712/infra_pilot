@@ -168,3 +168,34 @@ type nopBuilder struct{ workflows.ImageBuilder }
 type nopLogs struct{}
 
 func (nopLogs) Start(string, string) {}
+
+func TestResumeLoopDoesNotBlockOthersOrCancel(t *testing.T) {
+	var buf bytes.Buffer
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sup := newSupervisor(slog.New(slog.NewTextHandler(&buf, nil)), cancel)
+
+	release := make(chan struct{})
+	sup.Start(ctx, "resume", resumeLoop(ctx, slog.New(slog.NewTextHandler(&buf, nil)), func() int {
+		<-release // a hung Docker daemon
+		return 3
+	}))
+	other := make(chan struct{})
+	sup.Start(ctx, "other", func() error { close(other); <-ctx.Done(); return nil })
+	select {
+	case <-other:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a slow resume delayed the other loops")
+	}
+	close(release)
+	time.Sleep(100 * time.Millisecond)
+	if ctx.Err() != nil {
+		t.Fatal("a finished resume must not cancel the root context")
+	}
+	cancel()
+	sup.Wait()
+	out := buf.String()
+	if !strings.Contains(out, "count=3") || strings.Contains(out, "exited unexpectedly") {
+		t.Fatalf("log = %s", out)
+	}
+}

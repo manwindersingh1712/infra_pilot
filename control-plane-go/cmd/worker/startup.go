@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -146,4 +147,18 @@ func resumeLoop(ctx context.Context, log *slog.Logger, resume func() int) func()
 		<-ctx.Done()
 		return nil
 	}
+}
+
+// resolveRoutesDir returns NGINX_ROUTES_DIR as an absolute path (relative
+// values depend on the working directory) and warns when it was relative.
+func resolveRoutesDir(dir string, log *slog.Logger) string {
+	if filepath.IsAbs(dir) {
+		return dir
+	}
+	log.Warn("NGINX_ROUTES_DIR is relative; set an absolute path", "value", dir)
+	abs, err := filepath.Abs(dir)
+	if err != nil { // only fails if the working directory is unreadable
+		return dir
+	}
+	return abs
 }

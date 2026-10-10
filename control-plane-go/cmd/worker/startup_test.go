@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -197,5 +198,24 @@ func TestResumeLoopDoesNotBlockOthersOrCancel(t *testing.T) {
 	out := buf.String()
 	if !strings.Contains(out, "count=3") || strings.Contains(out, "exited unexpectedly") {
 		t.Fatalf("log = %s", out)
+	}
+}
+
+func TestResolveRoutesDirWarnsWhenRelative(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+
+	got := resolveRoutesDir("infra/nginx/conf.d/routes", log)
+	if !filepath.IsAbs(got) || !strings.HasSuffix(got, filepath.FromSlash("infra/nginx/conf.d/routes")) {
+		t.Fatalf("relative dir must resolve to an absolute path, got %q", got)
+	}
+	if !strings.Contains(buf.String(), "level=WARN") || !strings.Contains(buf.String(), "NGINX_ROUTES_DIR is relative; set an absolute path") {
+		t.Fatalf("expected a relative-path warning, got %q", buf.String())
+	}
+
+	buf.Reset()
+	abs := t.TempDir()
+	if got := resolveRoutesDir(abs, log); got != abs || buf.Len() != 0 {
+		t.Fatalf("absolute dir must pass through silently, got %q log=%q", got, buf.String())
 	}
 }

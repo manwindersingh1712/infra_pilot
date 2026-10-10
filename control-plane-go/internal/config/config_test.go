@@ -42,7 +42,7 @@ func TestLoadAppliesDefaults(t *testing.T) {
 		{"RedisURL", c.RedisURL, "redis://localhost:6379"},
 		{"ClickHouseURL", c.ClickHouseURL, "http://localhost:8123"},
 		{"ClickHouseUser", c.ClickHouseUser, "default"},
-		{"RegistryHost", c.RegistryHost, "localhost:5000"},
+		{"RegistryHost", c.RegistryHost, "localhost:5001"},
 		{"BuildWorkdir", c.BuildWorkdir, "/tmp/cp-builds"},
 		{"BuilderName", c.BuilderName, "cp-builder"},
 		{"BuilderMemory", c.BuilderMemory, "2g"},

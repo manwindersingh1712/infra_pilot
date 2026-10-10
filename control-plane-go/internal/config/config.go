@@ -147,7 +147,7 @@ func Load(getenv func(string) string) (Config, error) {
 		ClickHouseUser:     str("CLICKHOUSE_USER", "default"),
 		ClickHousePassword: getenv("CLICKHOUSE_PASSWORD"), // not trimmed: spaces may be part of it
 
-		RegistryHost:  str("REGISTRY_HOST", "localhost:5000"),
+		RegistryHost:  str("REGISTRY_HOST", "localhost:5001"),
 		BuildWorkdir:  str("BUILD_WORKDIR", "/tmp/cp-builds"),
 		BuilderName:   str("BUILDER_NAME", "cp-builder"),
 		BuilderMemory: size("BUILDER_MEMORY", "2g"),

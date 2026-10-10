@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
@@ -139,12 +138,14 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	}
 	pullCancel()
 
+	routesDir := resolveRoutesDir(cfg.NginxRoutesDir, logger)
+
 	streamer := runtime.NewStreamer(ctx, rdb, logger)
 	acts, err := newActivities(activityDeps{
 		Store:   st,
 		Secrets: box,
 		Docker:  docker,
-		Router: runtime.Nginx{R: runner, RoutesDir: cfg.NginxRoutesDir, Container: cfg.NginxContainer,
+		Router: runtime.Nginx{R: runner, RoutesDir: routesDir, Container: cfg.NginxContainer,
 			BaseDomain: cfg.ServiceBaseDomain, Port: cfg.NginxPort},
 		Builder: build.Builder{R: runner, Name: cfg.BuilderName, Memory: cfg.BuilderMemory, CPUs: cfg.BuilderCPUs, Log: logger},
 		Logs:    streamer,
@@ -199,11 +200,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	})
 	sup.Start(ctx, "metrics server", func() error { return metrics.Serve(ctx, cfg.WorkerMetricsAddr, m.Handler(), logger) })
 
-	routesAbs, err := filepath.Abs(cfg.NginxRoutesDir)
-	if err != nil { // only fails if the working directory is unreadable
-		routesAbs = cfg.NginxRoutesDir
-	}
-	logger.Info("worker up", "taskQueue", workflows.TaskQueue, "temporal", cfg.TemporalHostPort, "routesDir", routesAbs, "config", cfg)
+	logger.Info("worker up", "taskQueue", workflows.TaskQueue, "temporal", cfg.TemporalHostPort, "routesDir", routesDir, "config", cfg)
 	<-ctx.Done()
 	logger.Info("worker shutting down")
 	sup.Wait()

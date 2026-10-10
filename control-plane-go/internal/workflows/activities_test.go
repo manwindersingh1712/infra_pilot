@@ -344,8 +344,10 @@ func TestLegacyDir(t *testing.T) {
 	}
 	used := filepath.Join(root, "s1")
 	mustT(t, os.MkdirAll(used, 0o755))
-	if got := e.acts.legacyDir(store.Job{ServiceID: "svc1", VolumePath: &used}); got != used {
-		t.Errorf("inside root: legacyDir = %q, want %q", got, used)
+	usedResolved, err := filepath.EvalSymlinks(used)
+	mustT(t, err)
+	if got := e.acts.legacyDir(store.Job{ServiceID: "svc1", VolumePath: &used}); got != usedResolved {
+		t.Errorf("inside root: legacyDir = %q, want %q", got, usedResolved)
 	}
 	if log := e.logBuf.String(); !strings.Contains(log, "d1") || strings.Contains(log, "/etc") {
 		t.Errorf("warning must name the deployment and not the path: %s", log)
@@ -373,8 +375,12 @@ func TestLegacyDirRejectsSymlinkEscape(t *testing.T) {
 	mustT(t, os.MkdirAll(inner, 0o755))
 	ok := filepath.Join(root, "alias")
 	mustT(t, os.Symlink(inner, ok))
-	if got := e.acts.legacyDir(store.Job{ServiceID: "svc1", VolumePath: &ok}); got != ok {
-		t.Errorf("inside symlink: legacyDir = %q, want %q", got, ok)
+	innerResolved, err := filepath.EvalSymlinks(inner)
+	mustT(t, err)
+	// SEC-7 (T23r2): the resolved path is returned, so a later swap of the
+	// symlink cannot redirect the bind mount.
+	if got := e.acts.legacyDir(store.Job{ServiceID: "svc1", VolumePath: &ok}); got != innerResolved {
+		t.Errorf("inside symlink: legacyDir = %q, want resolved %q", got, innerResolved)
 	}
 	// A path that does not exist counts as absent: the default is returned.
 	missing := filepath.Join(root, "nope")

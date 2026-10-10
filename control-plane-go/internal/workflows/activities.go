@@ -266,37 +266,49 @@ func (a *Activities) EnsureVolume(ctx context.Context, job store.Job) (string, e
 // volumePath is used only when it is an absolute path strictly inside
 // LegacyVolumeRoot after symlinks are resolved; anything else (including a
 // path that does not exist) falls back to <root>/<serviceId>. If that default
-// is itself a symlink leaving the root, "" is returned (no legacy data).
+// is itself a symlink leaving the root, "" is returned (no legacy data). The
+// symlink-resolved path is returned, so swapping a link after the check cannot
+// redirect the bind mount.
 func (a *Activities) legacyDir(job store.Job) string {
 	root := filepath.Clean(a.Cfg.LegacyVolumeRoot)
 	def := filepath.Join(a.Cfg.LegacyVolumeRoot, job.ServiceID)
 	if job.VolumePath != nil {
 		p := *job.VolumePath
-		if filepath.IsAbs(p) && insideRoot(root, filepath.Clean(p)) {
-			return p
+		if filepath.IsAbs(p) {
+			if resolved, ok := insideRoot(root, filepath.Clean(p)); ok {
+				return resolved
+			}
 		}
 		a.Log.Warn("ignoring stored volume path outside the legacy volume root", "deploymentId", job.DeploymentID)
 	}
-	if _, err := os.Lstat(def); err == nil && !insideRoot(root, def) {
-		a.Log.Warn("ignoring legacy volume directory that leaves the legacy volume root", "deploymentId", job.DeploymentID)
-		return ""
+	if _, err := os.Lstat(def); err == nil {
+		resolved, ok := insideRoot(root, def)
+		if !ok {
+			a.Log.Warn("ignoring legacy volume directory that leaves the legacy volume root", "deploymentId", job.DeploymentID)
+			return ""
+		}
+		return resolved
 	}
 	return def
 }
 
 // insideRoot reports whether p exists and, with symlinks resolved on both
-// sides, lies strictly inside root. A missing path is not inside.
-func insideRoot(root, p string) bool {
+// sides, lies strictly inside root. It returns the resolved p. A missing path
+// is not inside.
+func insideRoot(root, p string) (string, bool) {
 	rr, err := filepath.EvalSymlinks(root)
 	if err != nil {
-		return false
+		return "", false
 	}
 	rp, err := filepath.EvalSymlinks(p)
 	if err != nil {
-		return false
+		return "", false
 	}
 	rel, err := filepath.Rel(rr, rp)
-	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return rp, true
 }
 
 func dirExists(p string) bool {

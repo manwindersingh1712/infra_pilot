@@ -378,6 +378,76 @@ func TestConcurrentPublishersStartEachEventOnce(t *testing.T) {
 	}
 }
 
+// SKIP LOCKED is what lets a second publisher make progress while the first
+// still holds its batch: without it the second claim queues behind the
+// first's row locks until the first commits.
+func TestSecondPublisherClaimsOtherRowsWhileFirstHoldsItsBatch(t *testing.T) {
+	st, _, _ := setup(t)
+	ctx := context.Background()
+	extra := 5
+	for i := range outbox.BatchSize + extra {
+		create(t, st, store.EventBuildRequested, map[string]int{"n": i})
+	}
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	t.Cleanup(func() { once.Do(func() { close(release) }) })
+	var mu sync.Mutex
+	first := true
+	var started int
+	starter := starterFunc(func(ctx context.Context, typ string, payload []byte) error {
+		mu.Lock()
+		isFirst := first
+		first = false
+		mu.Unlock()
+		if isFirst {
+			close(entered)
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		mu.Lock()
+		started++
+		mu.Unlock()
+		return nil
+	})
+	log := slog.New(slog.DiscardHandler)
+	a, b := outbox.New(st, starter, log), outbox.New(st, starter, log)
+
+	aDone := make(chan error, 1)
+	go func() { _, err := a.Tick(ctx); aDone <- err }()
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("first publisher never reached Start")
+	}
+
+	type result struct {
+		n   int
+		err error
+	}
+	bDone := make(chan result, 1)
+	go func() { n, err := b.Tick(ctx); bDone <- result{n, err} }()
+	select {
+	case r := <-bDone:
+		if r.err != nil || r.n != extra {
+			t.Fatalf("second publisher: n=%d err=%v, want the %d unlocked rows", r.n, r.err, extra)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("second publisher blocked behind the first one's row locks (SKIP LOCKED missing?)")
+	}
+	once.Do(func() { close(release) })
+	if err := <-aDone; err != nil {
+		t.Fatal(err)
+	}
+	if started != outbox.BatchSize+extra {
+		t.Fatalf("started %d, want %d", started, outbox.BatchSize+extra)
+	}
+}
+
 func TestOutboxMetricsFollowTicks(t *testing.T) {
 	st, fs, p := setup(t)
 	ctx := context.Background()

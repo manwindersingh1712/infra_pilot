@@ -402,3 +402,20 @@ func sortedKeys(m map[string]string) []string {
 	slices.Sort(keys)
 	return keys
 }
+
+// NewLimits builds Limits and rejects values docker would read as "no limit"
+// or fail on late: an empty memory or CPU setting, or Pids below 1
+// (--pids-limit 0 means unlimited). A zero-value Limits struct has the same
+// problem, so production code constructs it here.
+func NewLimits(memory, cpus string, pids int) (Limits, error) {
+	if strings.TrimSpace(memory) == "" {
+		return Limits{}, errors.New("runtime: container memory limit is empty")
+	}
+	if strings.TrimSpace(cpus) == "" {
+		return Limits{}, errors.New("runtime: container CPU limit is empty")
+	}
+	if pids < 1 {
+		return Limits{}, fmt.Errorf("runtime: container pids limit must be at least 1, got %d", pids)
+	}
+	return Limits{Memory: memory, CPUs: cpus, Pids: pids}, nil
+}

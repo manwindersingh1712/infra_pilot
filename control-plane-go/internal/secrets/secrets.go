@@ -16,7 +16,8 @@ const prefix = "enc:v1:"
 // Box encrypts and decrypts values with one key.
 type Box struct{ aead cipher.AEAD }
 
-// New takes the 32-byte key from ENV_ENCRYPTION_KEY.
+// New takes the 32-byte AES-256 key. The caller passes the base64-decoded
+// ENV_ENCRYPTION_KEY (config.Load decodes and length-checks it at startup).
 func New(key []byte) (*Box, error) {
 	if len(key) != 32 {
 		return nil, fmt.Errorf("secrets: key must be 32 bytes, got %d", len(key))

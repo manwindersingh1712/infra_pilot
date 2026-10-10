@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -93,6 +94,39 @@ func TestBackoffSeconds(t *testing.T) {
 	if got := outbox.BackoffSeconds(1, func(n int) int { return n - 1 }); got != 6 {
 		t.Errorf("jitter must add 0-4s, got %d", got)
 	}
+}
+
+func TestBackoffSecondsClampsNegativeAttempts(t *testing.T) {
+	for _, attempt := range []int{-1, -100, -1 << 62} {
+		if got := outbox.BackoffSeconds(attempt, zero); got != 1 {
+			t.Errorf("BackoffSeconds(%d) = %d, want 1", attempt, got)
+		}
+	}
+}
+
+func TestLastErrorIsTruncatedOnUTF8Boundary(t *testing.T) {
+	st, fs, p := setup(t)
+	ctx := context.Background()
+	retry := create(t, st, store.EventBuildRequested, map[string]string{"deploymentId": "d1"})
+	fs.fail = errors.New(strings.Repeat("é", 2000)) // 2 bytes per rune
+	p.Tick(ctx)
+	check := func(id, what string) {
+		var lastErr string
+		if err := pool.QueryRow(ctx, `SELECT "lastError" FROM "OutboxEvent" WHERE "id" = $1`, id).Scan(&lastErr); err != nil {
+			t.Fatal(err)
+		}
+		if n := utf8.RuneCountInString(lastErr); n == 0 || n > 500 || !utf8.ValidString(lastErr) {
+			t.Fatalf("%s: lastError has %d runes, valid=%v", what, n, utf8.ValidString(lastErr))
+		}
+	}
+	check(retry, "retry")
+
+	pool.Exec(ctx, `UPDATE "OutboxEvent" SET "attempts" = $2, "nextAttemptAt" = now() - interval '1 second' WHERE "id" = $1`, retry, outbox.MaxAttempts-1)
+	p.Tick(ctx)
+	if s, _ := status(t, retry); s != "dead" {
+		t.Fatalf("status = %s", s)
+	}
+	check(retry, "dead")
 }
 
 func status(t *testing.T, id string) (string, int) {

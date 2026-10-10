@@ -30,9 +30,10 @@ type Starter interface {
 	Start(ctx context.Context, eventType string, payload []byte) error
 }
 
-// BackoffSeconds is 2^attempt capped at 60, plus 0–4s of jitter.
+// BackoffSeconds is 2^attempt capped at 60, plus 0–4s of jitter. A negative
+// attempt (corrupt row) counts as 0.
 func BackoffSeconds(attempt int, jitter func(n int) int) int {
-	return min(60, 1<<min(attempt, 6)) + jitter(5)
+	return min(60, 1<<min(max(attempt, 0), 6)) + jitter(5)
 }
 
 type Publisher struct {

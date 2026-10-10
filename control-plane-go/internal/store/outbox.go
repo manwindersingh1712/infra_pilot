@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/lucsky/cuid"
@@ -64,19 +65,30 @@ func (s *Store) MarkOutboxPublished(ctx context.Context, id string) error {
 	return err
 }
 
+// MaxLastErrorRunes caps the stored "lastError" so a hostile or verbose
+// error cannot bloat the row.
+const MaxLastErrorRunes = 500
+
+func truncateRunes(s string, n int) string {
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	return string([]rune(s)[:n])
+}
+
 func (s *Store) MarkOutboxRetry(ctx context.Context, id string, attempts int, lastErr string, delaySeconds int) error {
 	_, err := s.db.Exec(ctx,
 		`UPDATE "OutboxEvent"
 		 SET "status" = 'pending', "attempts" = $2, "lastError" = $3,
 		     "nextAttemptAt" = now() + $4::int * interval '1 second'
-		 WHERE "id" = $1`, id, attempts, lastErr, delaySeconds)
+		 WHERE "id" = $1`, id, attempts, truncateRunes(lastErr, MaxLastErrorRunes), delaySeconds)
 	return err
 }
 
 func (s *Store) MarkOutboxDead(ctx context.Context, id string, attempts int, lastErr string) error {
 	_, err := s.db.Exec(ctx,
 		`UPDATE "OutboxEvent" SET "status" = 'dead', "attempts" = $2, "lastError" = $3 WHERE "id" = $1`,
-		id, attempts, lastErr)
+		id, attempts, truncateRunes(lastErr, MaxLastErrorRunes))
 	return err
 }
 

@@ -8,8 +8,10 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 
 	"infrapilot/internal/gitsrc"
 	"infrapilot/internal/runtime"
@@ -84,6 +86,48 @@ func (b Builder) writeDockerfile(repo, content, serviceType string) error {
 	return nil
 }
 
+// fail wraps err for the caller with credentials scrubbed. A cancelled or
+// expired ctx wins so callers can match context.Canceled.
+func (b Builder) fail(ctx context.Context, op string, err error, repoURL string) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return fmt.Errorf("%s: %s", op, gitsrc.Scrub(err.Error(), repoURL))
+}
+
+var hexRefRe = regexp.MustCompile(`^[0-9a-fA-F]{7,40}$`)
+
+// checkoutRef moves the clone to s.CommitSha. The branch tip and HEAD need no
+// work. Any other ref is fetched (best effort, the object may already be
+// present) and then switched to; a failing switch fails the build, because the
+// image is pushed under that ref's tag.
+func (b Builder) checkoutRef(ctx context.Context, repo string, s Spec) error {
+	ref := s.CommitSha
+	if ref == s.Branch || ref == "HEAD" {
+		return nil
+	}
+	if _, err := b.R.Run(ctx, repo, "git", gitArgs("fetch", "--depth", "50", "--no-tags", "--end-of-options", "origin", ref)...); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		b.Log.Warn("git fetch failed, continuing", "error", gitsrc.Scrub(err.Error(), s.RepoURL))
+	}
+	if _, err := b.R.Run(ctx, repo, "git", gitArgs("switch", "--detach", "--end-of-options", ref)...); err != nil {
+		return b.fail(ctx, "git switch", err, s.RepoURL)
+	}
+	if !hexRefRe.MatchString(ref) {
+		return nil
+	}
+	out, err := b.R.Run(ctx, repo, "git", gitArgs("rev-parse", "HEAD")...)
+	if err != nil {
+		return b.fail(ctx, "git rev-parse", err, s.RepoURL)
+	}
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(out)), strings.ToLower(ref)) {
+		return errors.New("git rev-parse: checked-out commit does not match the requested commit")
+	}
+	return nil
+}
+
 // BuildAndPush clones the repo, writes a Dockerfile if the type needs one and
 // the repo has none, builds in the isolated builder and pushes the image.
 func (b Builder) BuildAndPush(ctx context.Context, s Spec) error {
@@ -101,14 +145,11 @@ func (b Builder) BuildAndPush(ctx context.Context, s Spec) error {
 
 	b.Log.Info("cloning", "repo", gitsrc.RedactURL(s.RepoURL), "branch", s.Branch)
 	if _, err := b.R.Run(ctx, "", "git", gitArgs("clone", "--depth", "1", "--branch", s.Branch, "--", s.RepoURL, repo)...); err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		return fmt.Errorf("git clone: %s", gitsrc.Scrub(err.Error(), s.RepoURL))
+		return b.fail(ctx, "git clone", err, s.RepoURL)
 	}
-	// Best effort: check out the exact commit when it is not the branch tip.
-	_, _ = b.R.Run(ctx, repo, "git", gitArgs("fetch", "--depth", "50", "--end-of-options", "origin", s.CommitSha)...)
-	_, _ = b.R.Run(ctx, repo, "git", "checkout", "--end-of-options", s.CommitSha)
+	if err := b.checkoutRef(ctx, repo, s); err != nil {
+		return err
+	}
 
 	if content := GenerateDockerfile(s.ServiceType, repo); content != "" {
 		if err := b.writeDockerfile(repo, content, s.ServiceType); err != nil {

@@ -189,15 +189,20 @@ func (b Builder) BuildAndPush(ctx context.Context, s Spec) error {
 	}
 
 	if err := b.EnsureBuilder(ctx); err != nil {
-		return err
+		return b.fail(ctx, "docker buildx create", err, s.RepoURL)
 	}
 	b.Log.Info("building image", "image", s.ImageTag)
 	if _, err := b.R.Run(ctx, repo, "docker", "buildx", "build", "--builder", b.Name, "--load", "-t", s.ImageTag, "."); err != nil {
-		return err
+		return b.fail(ctx, "docker buildx build", err, s.RepoURL)
 	}
 	b.Log.Info("pushing image", "image", s.ImageTag)
 	pctx, cancel := context.WithTimeout(ctx, pushTimeout)
 	defer cancel()
-	_, err := b.R.Run(pctx, "", "docker", "push", s.ImageTag)
-	return err
+	if _, err := b.R.Run(pctx, "", "docker", "push", s.ImageTag); err != nil {
+		if ctx.Err() == nil && pctx.Err() != nil {
+			return fmt.Errorf("docker push: timed out after %s", pushTimeout)
+		}
+		return b.fail(ctx, "docker push", err, s.RepoURL)
+	}
+	return nil
 }

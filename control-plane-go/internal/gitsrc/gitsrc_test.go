@@ -91,3 +91,38 @@ func TestScrub(t *testing.T) {
 		t.Errorf("got %q", out)
 	}
 }
+
+func TestRedactURLQueryAndFragment(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://h/x?token=ghp_Q":          "https://h/x?token=****",
+		"https://h/x?a=1&token=ghp_Q":      "https://h/x?a=****&token=****",
+		"https://h/x?ghp_Q":                "https://h/x?****",
+		"https://h/x#frag-secret":          "https://h/x",
+		"https://u:pw@h/x?token=ghp_Q#sec": "https://****@h/x?token=****",
+		"https://h/x":                      "https://h/x",
+	} {
+		if got := RedactURL(in); got != want {
+			t.Errorf("RedactURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestScrubFullURLAndQuery(t *testing.T) {
+	raw := "https://h/x?token=ghp_Q&b=v%2F1"
+	for _, msg := range []string{
+		"fatal: unable to access '" + raw + "': 403",
+		"bad token ghp_Q",
+		"bad value v/1",
+		"bad value v%2F1",
+	} {
+		out := Scrub(msg, raw)
+		for _, leak := range []string{"ghp_Q", "v/1", "v%2F1", "token="} {
+			if strings.Contains(out, leak) {
+				t.Errorf("Scrub(%q) = %q leaks %q", msg, out, leak)
+			}
+		}
+	}
+	if out := Scrub("plain", raw); out != "plain" {
+		t.Errorf("got %q", out)
+	}
+}

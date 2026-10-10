@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -74,11 +75,24 @@ func Validate(repoURL, branch, ref string) error {
 	return ValidRef(ref)
 }
 
-// RedactURL masks userinfo, including a token used as the username.
+// RedactURL masks userinfo (including a token used as the username) and
+// query values, and drops the fragment.
 func RedactURL(s string) string {
 	u, err := url.Parse(s)
 	if err != nil {
 		return "[unparseable]"
+	}
+	u.Fragment, u.RawFragment = "", ""
+	if u.RawQuery != "" {
+		parts := strings.Split(u.RawQuery, "&")
+		for i, p := range parts {
+			if k, _, ok := strings.Cut(p, "="); ok {
+				parts[i] = k + "=****"
+			} else {
+				parts[i] = "****"
+			}
+		}
+		u.RawQuery = strings.Join(parts, "&")
 	}
 	if u.User != nil {
 		// url.User("****") would be percent-encoded, so mask via a placeholder.
@@ -88,21 +102,54 @@ func RedactURL(s string) string {
 	return u.String()
 }
 
-// Scrub removes the URL's credentials from msg (for example git stderr).
+// minQuerySecret is the shortest query value Scrub masks; shorter ones would
+// mangle unrelated text.
+const minQuerySecret = 3
+
+// Scrub removes the URL's credentials and query values from msg (for example
+// git stderr): the full URL text first, then each secret on its own, in
+// escaped and unescaped forms.
 func Scrub(msg, rawURL string) string {
 	u, err := url.Parse(rawURL)
-	if err != nil || u.User == nil {
+	if err != nil || (u.User == nil && u.RawQuery == "") {
 		return msg
 	}
-	secrets := []string{u.User.String()}
-	if pw, ok := u.User.Password(); ok {
-		// The escaped form is also masked in case git echoes it on its own.
-		secrets = append(secrets, url.PathEscape(pw), pw)
+	secrets := []string{rawURL}
+	if u.User != nil {
+		secrets = append(secrets, u.User.String(), u.User.Username())
+		if pw, ok := u.User.Password(); ok {
+			secrets = append(secrets, url.PathEscape(pw), url.QueryEscape(pw), pw)
+		}
+		// The raw userinfo text, as the caller wrote it.
+		if rest, ok := strings.CutPrefix(rawURL, "https://"); ok {
+			auth, _, _ := strings.Cut(rest, "/")
+			auth, _, _ = strings.Cut(auth, "?")
+			if i := strings.LastIndex(auth, "@"); i >= 0 {
+				user, pw, hasPw := strings.Cut(auth[:i], ":")
+				secrets = append(secrets, auth[:i], user)
+				if hasPw {
+					secrets = append(secrets, pw)
+				}
+			}
+		}
 	}
-	secrets = append(secrets, u.User.Username())
-	for _, s := range secrets {
-		if s != "" {
-			msg = strings.ReplaceAll(msg, s, "****")
+	for _, p := range strings.Split(u.RawQuery, "&") {
+		_, v, ok := strings.Cut(p, "=")
+		if !ok {
+			v = p
+		}
+		if dec, err := url.QueryUnescape(v); err == nil && len(dec) >= minQuerySecret {
+			secrets = append(secrets, dec)
+		}
+		if len(v) >= minQuerySecret {
+			secrets = append(secrets, v)
+		}
+	}
+	// Longest first, so a secret that contains another is masked whole.
+	sort.SliceStable(secrets, func(i, j int) bool { return len(secrets[i]) > len(secrets[j]) })
+	for _, sec := range secrets {
+		if sec != "" {
+			msg = strings.ReplaceAll(msg, sec, "****")
 		}
 	}
 	return msg

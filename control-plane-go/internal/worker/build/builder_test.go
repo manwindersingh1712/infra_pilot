@@ -374,3 +374,62 @@ func TestStepTimeoutDefaults(t *testing.T) {
 		t.Fatal("default git step timeout is 5 min, push 10 min")
 	}
 }
+
+// SEC-6: every error BuildAndPush returns is scrubbed, not just clone.
+func TestBuildAndPushScrubsEveryReturnedError(t *testing.T) {
+	url := "https://user:ghp_SECRET1@example.com/r.git?token=ghp_QTOK"
+	for _, failing := range []string{"fetch-ignored", "buildx-inspect-create", "build", "push"} {
+		r := &testutil.FakeRunner{Handle: func(c testutil.Call) (string, error) {
+			leak := errors.New("boom " + url + " ghp_SECRET1 ghp_QTOK")
+			switch {
+			case c.Name == "git" && gitSub(c.Args) == "rev-parse":
+				return fakeSha, nil
+			case failing == "buildx-inspect-create" && c.Name == "docker" && c.Args[1] == "inspect":
+				return "", errors.New("no builder")
+			case failing == "buildx-inspect-create" && c.Name == "docker" && c.Args[1] == "create":
+				return "", leak
+			case failing == "build" && c.Name == "docker" && c.Args[1] == "build":
+				return "", leak
+			case failing == "push" && c.Name == "docker" && c.Args[0] == "push":
+				return "", leak
+			}
+			return "", nil
+		}}
+		s := gitSpec("abc1234")
+		s.RepoURL, s.WorkDir = url, t.TempDir()+"/w"
+		err := newBuilder(r).BuildAndPush(context.Background(), s)
+		if failing == "fetch-ignored" {
+			if err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		if err == nil || strings.Contains(err.Error(), "ghp_") || !strings.Contains(err.Error(), "boom") {
+			t.Fatalf("%s: err = %v", failing, err)
+		}
+	}
+}
+
+func TestBuildAndPushScrubsFetchWarning(t *testing.T) {
+	var logs bytes.Buffer
+	url := "https://user:ghp_SECRET1@example.com/r.git"
+	r := &testutil.FakeRunner{Handle: func(c testutil.Call) (string, error) {
+		switch gitSub(c.Args) {
+		case "fetch":
+			return "", errors.New("fatal: unable to access '" + url + "/': 403")
+		case "rev-parse":
+			return fakeSha, nil
+		}
+		return "", nil
+	}}
+	b := newBuilder(r)
+	b.Log = slog.New(slog.NewJSONHandler(&logs, nil))
+	s := gitSpec("abc1234")
+	s.RepoURL, s.WorkDir = url, t.TempDir()+"/w"
+	if err := b.BuildAndPush(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(logs.String(), "ghp_") || !strings.Contains(logs.String(), "git fetch failed") {
+		t.Fatalf("logs: %s", logs.String())
+	}
+}

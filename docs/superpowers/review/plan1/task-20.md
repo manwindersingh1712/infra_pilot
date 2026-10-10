@@ -10,3 +10,11 @@
 
 ## Orchestrator decision
 All findings are low, so the gate is not blocked, but restarts write a user-visible false "ended" line. One cleanup fix round takes: STAFF-1, STAFF-2 + SEC-2 (ctx check, per-inspect timeout), STAFF-4(a)+VER-4/VER-2, STAFF-5 + SEC-6 (warn once, stop writing after the first sink timeout), VER-3 doc comment, STAFF-4(b) comment, STAFF-6/7/8. Deferred: STAFF-4(c) `Wait()` + STAFF-3 → Task 26; SEC-1 stream cap → Plan 3; `--since` dedupe → Plan 3.
+
+## Fix round 1 (cleanup)
+- `f95df5a` STAFF-1: Resume counts only newly started streams. `Start` keeps no return value (Task 24's `LogStarter` interface is `Start(id, ctr)`); logic moved into unexported `start(...) bool`.
+- `86fac20` STAFF-2 + SEC-2: ctx check in the loop; per-inspect `inspectTimeout` (var, 5 s). Only effective if `isRunning` honours ctx (`Docker.IsRunning` goes through the runner with ctx; Task 24/26 must keep passing it).
+- `83d9fe0` STAFF-4(a)/VER-4 (T19), VER-2 (T20): no system entry on root-ctx shutdown (Info log); "Log stream stopped" on `Stop`; natural exit/start errors unchanged. The T19 Stop test now expects "Log stream stopped".
+- `53d3170` STAFF-5 + SEC-6 (T19): per-stream `lineWriter` warns once and drops later lines after a sink failure (pipe still drained); lines use the stream ctx; final system entry tried once with WithoutCancel + timeout (≤ 2 sink timeouts per stream).
+- `c2496b7` VER-3 + STAFF-4(b): doc comments. `871ed00` STAFF-8. `35fb60e` STAFF-7 (release hook, mutation-checked). `75b97de` STAFF-6 (WaitDelay removed, comment).
+- Engineer CI dry run green; Resume/Streamer tests 5/5 under -race.

@@ -419,3 +419,8 @@ func NewLimits(memory, cpus string, pids int) (Limits, error) {
 	}
 	return Limits{Memory: memory, CPUs: cpus, Pids: pids}, nil
 }
+
+// Validate runs the same checks Run performs before any docker call, so callers
+// can fail fast before slow steps such as an image pull. Errors wrap
+// ErrInvalidSpec and name keys, never values.
+func (s RunSpec) Validate() error { return s.validate() }

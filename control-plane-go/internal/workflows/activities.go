@@ -385,6 +385,11 @@ func (a *Activities) RunContainer(ctx context.Context, in RunInput) (RunResult, 
 			return RunResult{}, temporal.NewNonRetryableApplicationError("image_not_built_yet", "ImageMissing", nil)
 		}
 		spec.Image = *job.Image
+		spec.Env = merge(map[string]string{"NODE_ENV": "production"}, env)
+		// Node-era env rows were never validated: fail before the slow pull.
+		if err := spec.Validate(); err != nil {
+			return RunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidSpec", nil)
+		}
 		if err := a.Docker.Pull(ctx, spec.Image); err != nil {
 			return RunResult{}, err
 		}
@@ -396,7 +401,6 @@ func (a *Activities) RunContainer(ctx context.Context, in RunInput) (RunResult, 
 		if job.ServiceType == store.TypeReact {
 			spec.CapAdd = StaticSiteCaps
 		}
-		spec.Env = merge(map[string]string{"NODE_ENV": "production"}, env)
 	}
 
 	id, err := a.Docker.Run(ctx, spec)

@@ -59,6 +59,9 @@ func (f *fakeDocker) DetectContainerPort(context.Context, string) (int, error) {
 	return f.port, f.portErr
 }
 func (f *fakeDocker) Run(_ context.Context, s runtime.RunSpec) (string, error) {
+	if err := s.Validate(); err != nil { // the real Docker.Run validates first
+		return "", err
+	}
 	f.mu.Lock()
 	f.specs = append(f.specs, s)
 	f.mu.Unlock()
@@ -765,7 +768,7 @@ func TestRunContainerInvalidSpecIsNonRetryableAndHidesValues(t *testing.T) {
 	j := e.job(t, store.TypeNodejs)
 	image := "reg:5001/" + j.ServiceID + ":main"
 	j.Image = &image
-	enc, err := e.acts.Secrets.Encrypt("-----BEGIN KEY-----\nSECRETBODY")
+	enc, err := e.acts.Secrets.Encrypt("SECRETBODY") // valid, so the early check passes and Run's own error is mapped
 	mustT(t, err)
 	mustT(t, upsertErr(e.st.UpsertEnvVar(ctx, j.ServiceID, "PEM", enc)))
 	e.docker.runErr = fmt.Errorf("%w: env var %q: value must be valid UTF-8 without line breaks", runtime.ErrInvalidSpec, "PEM")
@@ -1099,5 +1102,55 @@ func TestMarkBuiltAndMarkDeployedMissingRowAreNonRetryable(t *testing.T) {
 	_, err := e.run(t, e.acts.MarkDeployed, DeployedInput{DeploymentID: "missing", ContainerID: "c", ContainerPort: 1})
 	if !isNonRetryableType(err, "NotFound") {
 		t.Fatalf("MarkDeployed: %v", err)
+	}
+}
+
+// Node-era EnvVar rows were never validated. A key or value the runtime would
+// refuse must fail the deployment fast (non-retryable), name the key, never
+// echo the value, and make no docker call at all (not even a pull).
+func TestRunContainerNodeEraInvalidEnvFailsFastNamingKey(t *testing.T) {
+	cases := []struct{ name, key, val, secret string }{
+		{"bad key", "BAD-KEY", "hunter2-secret", "hunter2-secret"},
+		{"dotted key", "my.key", "dot-secret", "dot-secret"},
+		{"newline value", "PEM", "-----BEGIN-----\nSECRETBODY", "SECRETBODY"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			ctx := context.Background()
+			j := e.job(t, store.TypeNodejs)
+			image := "reg:5001/" + j.ServiceID + ":main"
+			j.Image = &image
+			enc, err := e.acts.Secrets.Encrypt(tc.val)
+			mustT(t, err)
+			mustT(t, upsertErr(e.st.UpsertEnvVar(ctx, j.ServiceID, tc.key, enc)))
+
+			_, err = e.run(t, e.acts.RunContainer, RunInput{Job: j, Network: "n"})
+			if !isNonRetryableType(err, "InvalidSpec") {
+				t.Fatalf("want non-retryable InvalidSpec, got %v", err)
+			}
+			if !strings.Contains(err.Error(), tc.key) || strings.Contains(err.Error(), tc.secret) {
+				t.Fatalf("message must name the key and hide the value: %v", err)
+			}
+			if len(e.docker.calls) != 0 || len(e.docker.specs) != 0 {
+				t.Fatalf("no docker call may happen: calls=%v", e.docker.calls)
+			}
+		})
+	}
+}
+
+func TestRunContainerAcceptsLowerCaseAndDigitKeys(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	j := e.job(t, store.TypeNodejs)
+	image := "reg:5001/" + j.ServiceID + ":main"
+	j.Image = &image
+	for _, k := range []string{"api_key2", "_x9", "Mixed_Case_1"} {
+		enc, err := e.acts.Secrets.Encrypt("v")
+		mustT(t, err)
+		mustT(t, upsertErr(e.st.UpsertEnvVar(ctx, j.ServiceID, k, enc)))
+	}
+	if _, err := e.run(t, e.acts.RunContainer, RunInput{Job: j, Network: "n"}); err != nil {
+		t.Fatal(err)
 	}
 }

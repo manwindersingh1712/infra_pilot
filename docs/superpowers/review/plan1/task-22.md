@@ -13,3 +13,14 @@
 
 ## Status
 Gate blocked. Open question for the CTO: scope of fix round 1 (the git checkout form is a spec §4/§5 change, so the CTO rules).
+
+## CTO ruling and fix round 1
+- CTO decision `decisions.md` 2026-10-10 "Plan 1 Task 22 fix round 1" (commit `6ff689b`): `git switch --detach --end-of-options` (failure fails the build; branch/HEAD refs skip fetch+switch; hex refs verified with `rev-parse`), git >= 2.30 (spec §14, Task 26 startup check), clone `--single-branch --no-tags`, `core.hooksPath=/dev/null` + `submodule.recurse=false`, 5 min per git step / 10 min push, ASCII-only repo URLs, `gitsrc.ValidImageTag`, `b.fail` scrubbing + RedactURL/Scrub extensions, `firstArg` skips `-c` pairs. Deferred: clone size cap (Plan 3), builder residuals (Plan 3 / Phase 6), `#nosec` trim (first CI run), path tokens (Phase 3), IDN hosts (Plan 3).
+- Engineer commits: `8dca4d2` (revision step), `fb6fbd4` (clone flags + timeouts), `4109c23` (scrubbing), `e2a53ad` (ASCII URLs), `6ac929a` (ValidImageTag), `af7856f` (firstArg), `42c44d0` (tests + hermetic real-git probe). Deviations: `fail(ctx, op, err, repoURL)` takes ctx; private `b.git` helper; two existing fakes return a matching `rev-parse`; test tags now `img:<ref>`. CI dry run green.
+
+## Round 1 re-check
+- **Staff + Security (combined): CLEAN.** All seven CTO items implemented as ruled; no secret leak found through userinfo/percent-encoded/query/fragment forms; tests would catch removal of each hardening flag. New lows → backlog: STAFF-6 (tags/branches other than `Branch` fail closed because of `--single-branch --no-tags`; API must send hex shas or the branch), SEC-7 (4-6 hex-char refs skip the rev-parse check), SEC-8 info (no process group: a timeout may leave `git-remote-https` orphaned), STAFF-7 info (Scrub masks any ≥3-char query value/username everywhere; error text doubled "git clone: git clone: …").
+- **Verifier: PASS.** Full suite without -short (real-git probe ran) green. Real Docker + registry: (a) full v1 sha with tip v2 → image prints "hello v1" (VER-1 fixed); (b) 7-char sha → v1; (c) nonexistent sha → `git switch: exit status 128`, nothing pushed, workdir removed; (d) `main`/`HEAD` → tip, no fetch/switch/rev-parse; (e) tag not ending in the ref → rejected, zero commands. Builder limits Mem=1073741824 Quota/Period=100000. 1 s step timeout → `git switch: timed out after 1s` in 2.05 s, workdir removed. VER-3 low: no operator-facing "commit not found" text.
+
+## Result
+**PASSED 2026-10-10** after one CTO-ruled fix round. Open (backlog): SEC-7, STAFF-6, SEC-8, STAFF-7, VER-3 plus the CTO's deferrals.

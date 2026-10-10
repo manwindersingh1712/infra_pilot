@@ -11,3 +11,13 @@
 
 ## Status
 Gate blocked. Open for the CTO: SEC-1/SEC-2 failure-path fixes, STAFF-2 concurrency fix (Task 24 vs Task 25 placement), the health-timeout design, the determinism evidence, and the Engineer's open questions.
+
+## CTO ruling and fix round 1 (ruling `ba25065`; commits f8d9418, 016867f, ba59ed9, 1fd1850, 85a6641, 400c1a4, fd3c854)
+- `f8d9418` fixed 11 min health timeout (`SetHealthTimeout` removed), config cap 600 s, build ScheduleToClose 90 min; `016867f` service-scoped `ClaimDeploy` (Service row lock + NOT EXISTS `deploying`, ServiceBusy retry 5 s/30 min); `ba59ed9` `RevertRoute`, `RemoveRoute`, `WaitForCancellation`, `routeAttempted`; `1fd1850` MarkDeployed commit point (disconnected ctx, `commitOptions`); `85a6641` renamed `TestDeployTraceIsStableAcrossRuns`, cleanup warns carry ids + err; `400c1a4` pinned workflowcheck v0.6.0 CI step; `fd3c854` lint fix.
+
+## Round 1 re-check
+- **Verifier: PASS.** Full suite without -short green; 96 tests x 10 runs, 0 FAIL / 0 SKIP; the six ClaimDeploy store tests ran on testcontainers Postgres; workflowcheck clean. Mutations: cleanup removing after a failed revert, revert not called, connected ctx for MarkDeployed, ClaimDeploy without the row lock, broken NOT EXISTS, busy treated as lost: all killed; dropping WaitForCancellation killed only by the options test (VER-2 info). Real nginx: Upsert a → b → back to a (RevertRoute path) served the right pages; RemoveRoute removed the route, tolerated a missing file, rejected `../x`.
+- **Staff + Security (combined): CHANGES REQUESTED (2 medium, 2 low).** All nine CTO items implemented. STAFF-7 medium: path-2 cleanup runs MarkFailed before RevertRoute, releasing the ClaimDeploy lock (row `deploying`→`failed`) so a queued successor can switch the route before our revert, which then clobbers it. STAFF-8 medium: after the commit, RetirePrevious/StartLogStream use the cancellable ctx; a cancel after the commit orphans the previous container and skips log streaming. SEC-7 low: RevertRoute may repoint at a dead previous container (502, same as before the deploy; Plan 3 reconciler). STAFF-9 low: `FOR UPDATE` on Service blocks FK key-share locks from Deployment inserts; `FOR NO KEY UPDATE` serialises claims equally.
+
+## CTO ruling, fix round 2 (`decisions.md` "2026-10-10 Plan 1 Task 24 fix round 2")
+Reverses "MarkFailed first" for path 2 only: revert → remove (only if the revert succeeded) → MarkFailed last (always). STAFF-8 and STAFF-9 fixed now; SEC-7 deferred (Plan 3 reconciler); VER-2 covered by the Task 27 e2e. Spec §4 step 12 edited; amendment pasted under Task 24.

@@ -6032,6 +6032,15 @@ git commit -m "feat(go): Dockerfile generation for node, next and react apps"
 
 ### Task 22: Build in an isolated BuildKit builder
 
+> **CTO amendment (fix round 1, `review/decisions.md` 2026-10-10 "Task 22 fix round 1"; supersedes the `git checkout --end-of-options` and "both still best effort" text of the FWD-A1 amendment below):**
+> Git steps in `BuildAndPush`, each under its own `context.WithTimeout(ctx, gitStepTimeout)` (const 5 min; a deadline hit returns an error that names the step): `clone --depth 1 --single-branch --no-tags --branch <branch> -- <url> <repo>`; then, only if `s.CommitSha` is neither `s.Branch` nor `HEAD`: `fetch --depth 50 --no-tags --end-of-options origin <sha>` (failure is logged at warn and ignored, the object may already be present), then `git switch --detach --end-of-options <sha>` (FAILURE FAILS THE BUILD, error scrubbed), then if the ref matches `^[0-9a-fA-F]{7,40}$` run `git rev-parse HEAD` and fail unless the output, lower-cased, has the lower-cased ref as prefix. A non-hex, non-branch ref (tag) just has to switch. Clone, fetch, switch and rev-parse ALL use `gitArgs(...)`, so every step carries `gitSafe`; add to `gitSafe`: `-c core.hooksPath=/dev/null -c submodule.recurse=false`. Do NOT add `core.symlinks=false` (rejected: it rewrites symlinks in tenant build contexts; SEC-1 OpenRoot already handles symlinks). Docker push gets a 10 min timeout; `buildx build` keeps the caller's ctx (Task 26's 30 min).
+> Every error returned from `BuildAndPush` (clone, fetch, switch, rev-parse, buildx, push) goes through one helper `b.fail(op, err, repoURL)` = `fmt.Errorf("%s: %s", op, gitsrc.Scrub(err.Error(), repoURL))`, ctx error first.
+> `gitsrc` changes (the API reuses them): `ValidRepoURL` rejects any rune outside 0x21..0x7e; `RedactURL` also replaces a non-empty query with `****` and drops the fragment; `Scrub` also replaces the full `rawURL` text and its raw query value with `****`; new `ValidImageTag(tag, ref string) error`: `len <= 255`, matches `^[a-z0-9][A-Za-z0-9._:/-]*$`, ends in `":"+ref`. `BuildAndPush` calls it right after `Validate` (error `ErrInvalid`, field `image tag`). Task 23 keeps building `registry/serviceId:commitSha` and needs no change beyond a test that an over-long or `-`-prefixed registry value gives `InvalidSource`.
+> `internal/runtime/exec.go` `firstArg`: skip leading `-c <k=v>` pairs so errors read `git clone: exit status 128` (VER-2); extend `TestFirstArg`.
+> Tests (STAFF-4): `RedactURL`/`Scrub` with a password-only userinfo escaped (`https://:p%40ss@h/x`), special characters in token, query token (`?token=ghp_Q`), fragment; `Scrub` applied to a fake fetch, switch and buildx error; `TestBuildAndPushSwitchFailureFails` (switch fake returns an error, build errors, no `docker` call); `TestBuildAndPushVerifiesSha` (rev-parse returns another sha -> error; matching prefix -> ok; ref `main`/`HEAD` -> no fetch, switch or rev-parse); non-ASCII URL rows (U+2028, U+00A0, fullwidth, bidi) in the reject table; `ValidImageTag` table; step timeout test with a fake runner that blocks until ctx is done (tiny `gitStepTimeout` via a Builder field). Step 5 real-git probe: with the real git, `git switch --detach --end-of-options <sha>` on a throwaway repo, and record `git --version`.
+> `#nosec G302 G304 G306`: leave as is for this round; the first CI gosec run decides (backlog line).
+
+
 > **CTO amendment (SEC-1, `review/decisions.md` 2026-10-07):** in `BuildAndPush`, use `root.Lstat("Dockerfile")` on `os.OpenRoot(repo)`. Only on not-found, create it with `root.OpenFile("Dockerfile", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)` and `// #nosec G306 -- BuildKit must read it; generated, not secret`. Any existing entry, including a dangling symlink, means the repo has its own Dockerfile: write nothing. Add a test: a dangling `Dockerfile` symlink pointing into a second temp dir; the target must not exist after the build.
 
 > **CTO amendment (FWD-A1, FWD-A2, `review/decisions.md` 2026-10-08):**
@@ -7973,6 +7982,8 @@ git commit -m "feat(go): outbox starts Temporal workflows idempotently"
 ---
 
 ### Task 26: Temporal in docker-compose and the worker binary
+
+> **CTO amendment (T22 fix round 1, `review/decisions.md` 2026-10-10):** at startup run `git --version`, log it, and refuse to start (`log.Fatal`) when the parsed version is below 2.30 (spec §14); a test for the parser with `git version 2.39.5 (Apple Git-154)`, `2.43.0` and `2.29.9`.
 
 > **CTO amendment (STAFF-5 of Task 2, `review/decisions.md` 2026-10-07):** the startup log line includes the absolute nginx routes dir and the redacted config, see the `worker up` line below.
 

@@ -263,3 +263,21 @@ Follow-ups:
   - Spec §5 (Mongo row), §6 item 3 and §9/§12 (managed-volume risk row) are edited as stated in the CTO report.
   - The Task 16 fix-round instructions and the Task 23 and Task 27 amendments are pasted under their headings.
   - Backlog: two lines (dangling-volume prune; refuse deleting a managed password env var).
+
+## 2026-10-10 Plan 1 Task 22 fix round 1: git revision switch, clone limits, redaction gaps (SEC-1..6, STAFF-1..5, VER-1/2)
+Context: Task 22 (`4f904c7`, `ffd8e42`) is blocked. `git checkout --end-of-options <sha>` is not supported by git 2.39 (Apple 2.39.5 here; Debian bookworm 2.39 in the worker image): it treats the option as a pathspec and fails, the code ignores the error, and the build uses the branch tip but is pushed under the `:<sha>` tag (SEC-1, STAFF-1, VER-1). Probed here: `git switch --detach --end-of-options <sha>` and `git checkout --detach <sha> --` both work on 2.39.5; `git checkout --detach --end-of-options` does not. The API passes `commitSha` defaulting to `main` (CLAUDE.md), so the ref is `HEAD`, the branch name or a hex sha.
+Options considered: switch vs `checkout --detach <sha> --`; keep best effort vs fail; verify by `rev-parse`; enforce a git minimum; `core.symlinks=false`; size cap vs timeouts; `--driver-opt` network/pids for the builder.
+Decision: fix now for the checkout, clone flags (except symlinks), timeouts, Unicode, image tag, redaction, tests and VER-2; defer size cap, builder residuals, `#nosec` trimming and path tokens. Spec edited (§5 git row: switch form, ASCII-only URL, step timeouts, git >= 2.30; §14: git row).
+Why: A wrong image under a sha tag is a correctness and integrity bug, so a failing switch must fail the build. `git switch --detach --end-of-options` is unambiguous (no pathspec), works on 2.39 and errors on a non-commit. Refs equal to the branch or `HEAD` are already at the tip (no fetch needed, and they are mutable tags as in Node); a hex ref is verified with `rev-parse` because the tag claims it. A minimum of 2.30 is recorded and checked once at startup (Task 26) instead of at every build. `core.symlinks=false` is rejected: it would silently alter symlinks in tenant build contexts (a user-flow break), and SEC-1 (T1) OpenRoot already covers the risk. Timeouts bound clone time cheaply; a disk quota needs a volume, which belongs to hardening. `buildx` docker-container driver has no pids option, and `network=` does not block the metadata address, so SEC-5 needs a host firewall (Plan 3) and rootless is Phase 6. `gitsrc` changes flow to the API by import; Plan 2 Task 8 gets only test rows. None of this blocks SAAS_ROADMAP.
+Follow-ups:
+- Amendments pasted under Plan 1 Task 22 (full list), Task 26 (git version check), Plan 2 Task 8 (test rows).
+- Backlog: five lines added (SEC-2b, SEC-5, STAFF-5, SEC-6b, SEC-3b).
+- Fix round 1 instructions for the Engineer:
+  1. (SEC-1, STAFF-1, VER-1, STAFF-2) Replace the revision step: `gitArgs("switch","--detach","--end-of-options",sha)`, error fails the build; skip fetch/switch when ref is `Branch` or `HEAD`; fetch best effort, `--no-tags`; for hex refs verify with `rev-parse HEAD` prefix match. All git calls via `gitArgs`.
+  2. (SEC-2) `clone --depth 1 --single-branch --no-tags`, add `core.hooksPath=/dev/null`, `submodule.recurse=false` to `gitSafe` (no `core.symlinks`); `gitStepTimeout` 5 min per git step (Builder field for tests), push 10 min.
+  3. (SEC-6) `b.fail` helper scrubs every returned error; `RedactURL` masks the query and drops the fragment; `Scrub` also masks the full URL and the query value.
+  4. (SEC-3) `ValidRepoURL` allows only 0x21..0x7e.
+  5. (SEC-4, STAFF-3) `gitsrc.ValidImageTag(tag, ref)`, called in `BuildAndPush` after `Validate`.
+  6. (VER-2) `firstArg` skips `-c k=v` pairs.
+  7. (STAFF-4) Add the tests listed in the Task 22 amendment; run a real-git probe of the switch form and record `git --version`.
+- Deferred: SEC-2b size cap (Plan 3), SEC-5 residuals (Plan 3 / Phase 6), STAFF-5 `#nosec` (first CI run), SEC-6b path tokens (Phase 3), SEC-3b IDN (Plan 3).

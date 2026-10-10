@@ -74,12 +74,6 @@ func (w *fakeWorld) addHook(key string, once bool) *hook {
 	return h
 }
 
-func (w *fakeWorld) rec(step string) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.steps = append(w.steps, step)
-}
-
 func (w *fakeWorld) trace() []string {
 	w.mu.Lock()
 	defer w.mu.Unlock()

@@ -197,7 +197,7 @@ func TestE2ECancelDuringSwitchRoute(t *testing.T) {
 	tr := w.trace()
 	rt, rv, rm, mf := indexOf(t, tr, "route:"+workflows.ContainerName(id)), indexOf(t, tr, "revert:"+id),
 		indexOf(t, tr, "remove:"+workflows.ContainerName(id)), indexOf(t, tr, "failed:"+id)
-	if !(rt < rv && rv < rm && rm < mf) || mf != len(tr)-1 {
+	if rt >= rv || rv >= rm || rm >= mf || mf != len(tr)-1 {
 		t.Fatalf("want route < revert < remove < failed(last), got %v", tr)
 	}
 	if slices.Contains(tr, "remove:"+workflows.ContainerName(old)) || slices.Contains(tr, "retire:"+old) {

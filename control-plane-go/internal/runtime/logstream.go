@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"os/exec"
 	"sync"
-	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -163,7 +162,7 @@ func (s *Streamer) end(ctx context.Context, w *lineWriter, msg string) {
 		s.log.Info("log stream closed for shutdown", "deploymentId", w.deploymentID)
 		return
 	}
-	w.failed.Store(false)
+	w.resetFailed()
 	w.write(context.WithoutCancel(ctx), "system", msg)
 }
 
@@ -223,19 +222,37 @@ func logLine(line []byte, cut bool) string {
 
 // lineWriter writes one stream's entries. After the first failed write it
 // warns once and drops the stream's remaining lines, so a Redis outage costs
-// one Warn and at most one sinkTimeout per stream; pump keeps draining the
-// pipe either way (STAFF-5, SEC-6 T19).
+// one Warn; pump keeps draining the pipe either way (STAFF-5, SEC-6 T19).
+//
+// mu is held across the failed check, the sink write and the failure mark
+// (STAFF-4 T20): stdout and stderr pump concurrently, and without it both
+// could pass the check before either marks the failure. A hung sink makes the
+// other pump wait behind the first write, which ends after at most one
+// sinkTimeout and marks the failure; the waiting pump then drops its line at
+// once. So line writes cost at most one sinkTimeout in total, not one per
+// pump, and docker is blocked for no more than that.
 type lineWriter struct {
 	s            *Streamer
 	deploymentID string
-	failed       atomic.Bool
-	warned       atomic.Bool
+
+	mu     sync.Mutex
+	failed bool
+	warned bool
+}
+
+// resetFailed lets the final system entry be tried after earlier failures.
+func (w *lineWriter) resetFailed() {
+	w.mu.Lock()
+	w.failed = false
+	w.mu.Unlock()
 }
 
 // write sends one entry. A write cut short because ctx ended (Stop or
 // shutdown) is dropped silently: that is not a sink failure.
 func (w *lineWriter) write(ctx context.Context, source, msg string) {
-	if w.failed.Load() || ctx.Err() != nil {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.failed || ctx.Err() != nil {
 		return
 	}
 	e := logs.Entry{DeploymentID: w.deploymentID, Source: source, Message: msg, Timestamp: logs.FormatTime(w.s.now())}
@@ -245,8 +262,9 @@ func (w *lineWriter) write(ctx context.Context, source, msg string) {
 	if err == nil || ctx.Err() != nil {
 		return
 	}
-	w.failed.Store(true)
-	if w.warned.CompareAndSwap(false, true) {
+	w.failed = true
+	if !w.warned {
+		w.warned = true
 		w.s.log.Warn("log write failed; dropping the rest of this stream", "deploymentId", w.deploymentID, "err", err)
 	}
 }

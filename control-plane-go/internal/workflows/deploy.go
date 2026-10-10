@@ -119,28 +119,36 @@ func DeployWorkflow(ctx workflow.Context, deploymentID string) error {
 		warn("post-deploy step failed; deployment kept", err)
 		return err
 	}
-	// Record the failure even if the workflow is being cancelled. MarkFailed
-	// never overwrites a deployed row.
 	cleanup, _ := workflow.NewDisconnectedContext(ctx)
 	cleanup = workflow.WithActivityOptions(cleanup, shortOptions())
-	if cerr := workflow.ExecuteActivity(cleanup, a.MarkFailed, deploymentID).Get(cleanup, nil); cerr != nil {
-		warn("MarkFailed failed", cerr)
+	// markFailed records the failure even if the workflow is being cancelled.
+	// It never overwrites a deployed row.
+	markFailed := func() {
+		if cerr := workflow.ExecuteActivity(cleanup, a.MarkFailed, deploymentID).Get(cleanup, nil); cerr != nil {
+			warn("MarkFailed failed", cerr)
+		}
 	}
 	switch {
 	case st.routeSwitched || st.committing:
 		// The new container is serving, or MarkDeployed may have recorded it
 		// (failure path 3): keep it. The Plan 3 reconciler cleans up.
+		markFailed()
 	case st.routeAttempted:
-		// Route state unknown. Remove the container only once the route is known
-		// not to point at it; if the revert fails, keep it (it may be serving)
-		// and leave it to the Plan 3 reconciler.
+		// Route state unknown. The row stays deploying (it holds the
+		// ClaimDeploy lock) until the route is settled, so a queued deployment
+		// of the service cannot switch it and have our revert clobber it.
+		// Remove the container only once the revert succeeded; if it failed,
+		// keep it (it may be serving) for the Plan 3 reconciler. MarkFailed
+		// runs last whatever happened above.
 		rev := RevertInput{ServiceID: job.ServiceID, DeploymentID: deploymentID}
 		if cerr := workflow.ExecuteActivity(cleanup, a.RevertRoute, rev).Get(cleanup, nil); cerr != nil {
 			warn("RevertRoute failed; container kept", cerr)
 		} else if cerr := workflow.ExecuteActivity(cleanup, a.RemoveContainer, ContainerName(deploymentID)).Get(cleanup, nil); cerr != nil {
 			warn("RemoveContainer failed", cerr)
 		}
+		markFailed()
 	default:
+		markFailed()
 		if cerr := workflow.ExecuteActivity(cleanup, a.RemoveContainer, ContainerName(deploymentID)).Get(cleanup, nil); cerr != nil {
 			warn("RemoveContainer failed", cerr)
 		}

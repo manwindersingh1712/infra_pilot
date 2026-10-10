@@ -205,9 +205,9 @@ func TestHealthFailureRemovesContainer(t *testing.T) {
 	env.AssertExpectations(t)
 }
 
-// Failure path 2: SwitchRoute errored, so the route state is unknown. The row
-// is marked failed, the route is reverted, and the container is removed only
-// after the revert succeeded.
+// Failure path 2: SwitchRoute errored, so the route state is unknown. The route
+// is reverted, the container is removed only after the revert succeeded, and
+// the row is marked failed last (it holds the ClaimDeploy lock until then).
 func TestSwitchRouteErrorRevertsRouteThenRemoves(t *testing.T) {
 	env, tr := newWorkflowEnv(), &trace{}
 	var a *Activities
@@ -219,7 +219,7 @@ func TestSwitchRouteErrorRevertsRouteThenRemoves(t *testing.T) {
 		t.Fatal("want error")
 	}
 	got := tr.get()
-	if want := []string{"run", "healthy", "failed", "revert", "remove:cp-d1"}; !slices.Equal(got[len(got)-len(want):], want) || tr.has("deployed") {
+	if want := []string{"run", "healthy", "revert", "remove:cp-d1", "failed"}; !slices.Equal(got[len(got)-len(want):], want) || tr.has("deployed") {
 		t.Fatalf("steps: %v", got)
 	}
 	if in := tr.in(); !slices.Contains(in, `revert {"ServiceID":"s1","DeploymentID":"d1"}`) {
@@ -232,15 +232,19 @@ func TestSwitchRouteErrorRevertFailsKeepsContainer(t *testing.T) {
 	env, tr := newWorkflowEnv(), &trace{}
 	var a *Activities
 	env.OnActivity(a.SwitchRoute, mock.Anything, mock.Anything).Return("", nonRetryable("nginx reload failed", "Route")).Once()
-	env.OnActivity(a.RevertRoute, mock.Anything, mock.Anything).Return(nonRetryable("nginx still down", "Route")).Once()
+	env.OnActivity(a.RevertRoute, mock.Anything, mock.Anything).Return(func(_ context.Context, in RevertInput) error {
+		tr.rec("revert", in)
+		return nonRetryable("nginx still down", "Route")
+	}).Once()
 	mockAll(env, tr, appJob())
 	env.ExecuteWorkflow(DeployWorkflow, "d1")
 
 	if env.GetWorkflowError() == nil {
 		t.Fatal("want error")
 	}
-	if !tr.has("failed") || tr.hasPrefix("remove:") || tr.has("deployed") || tr.has("retire") {
-		t.Fatalf("steps: %v", tr.get())
+	got := tr.get()
+	if want := []string{"revert", "failed"}; !slices.Equal(got[len(got)-2:], want) || tr.hasPrefix("remove:") || tr.has("deployed") || tr.has("retire") {
+		t.Fatalf("steps: %v", got)
 	}
 	env.AssertExpectations(t)
 }
@@ -264,7 +268,7 @@ func TestCancelDuringSwitchRouteReverts(t *testing.T) {
 
 	got := tr.get()
 	if env.GetWorkflowError() == nil || tr.has("deployed") ||
-		!slices.Equal(got[len(got)-3:], []string{"failed", "revert", "remove:cp-d1"}) {
+		!slices.Equal(got[len(got)-3:], []string{"revert", "remove:cp-d1", "failed"}) {
 		t.Fatalf("err=%v steps=%v", env.GetWorkflowError(), got)
 	}
 }
@@ -356,6 +360,38 @@ func TestMarkDeployedSurvivesCancellation(t *testing.T) {
 
 	if !tr.has("deployed") || tr.has("failed") || tr.hasPrefix("remove:") {
 		t.Fatalf("err=%v steps=%v", env.GetWorkflowError(), tr.get())
+	}
+}
+
+// STAFF-7: on path 2 MarkFailed is the last step, even when the revert and the
+// remove fail (cleanup failures are warnings), so the row keeps the
+// ClaimDeploy lock until the route is settled.
+func TestPath2MarkFailedIsLast(t *testing.T) {
+	cases := map[string]func(env *testsuite.TestWorkflowEnvironment, a *Activities, tr *trace){
+		"clean": func(*testsuite.TestWorkflowEnvironment, *Activities, *trace) {},
+		"revert fails": func(env *testsuite.TestWorkflowEnvironment, a *Activities, tr *trace) {
+			env.OnActivity(a.RevertRoute, mock.Anything, mock.Anything).Return(func(_ context.Context, in RevertInput) error {
+				tr.rec("revert", in)
+				return nonRetryable("x", "Route")
+			}).Once()
+		},
+		"remove fails": func(env *testsuite.TestWorkflowEnvironment, a *Activities, _ *trace) {
+			env.OnActivity(a.RemoveContainer, mock.Anything, mock.Anything).Return(nonRetryable("x", "Docker")).Once()
+		},
+	}
+	for name, setup := range cases {
+		t.Run(name, func(t *testing.T) {
+			env, tr := newWorkflowEnv(), &trace{}
+			var a *Activities
+			env.OnActivity(a.SwitchRoute, mock.Anything, mock.Anything).Return("", nonRetryable("reload", "Route")).Once()
+			setup(env, a, tr)
+			mockAll(env, tr, appJob())
+			env.ExecuteWorkflow(DeployWorkflow, "d1")
+			got := tr.get()
+			if env.GetWorkflowError() == nil || len(got) == 0 || got[len(got)-1] != "failed" {
+				t.Fatalf("err=%v steps=%v", env.GetWorkflowError(), got)
+			}
+		})
 	}
 }
 

@@ -75,8 +75,10 @@ const (
 const deployingStaleAfter = "1 hour"
 
 // ClaimDeploy is the service-scoped queued -> deploying claim. One transaction
-// locks the service row, which serialises the claims of one service (other
-// services are unaffected). A row already deploying is this deployment's own
+// locks the service row with FOR NO KEY UPDATE, which serialises the claims of
+// one service (other services are unaffected) but, unlike FOR UPDATE, does not
+// block the FOR KEY SHARE that Deployment inserts take on the Service foreign
+// key. A row already deploying is this deployment's own
 // retry or resumed run and wins again. Otherwise a queued row wins unless
 // another deployment of the service is deploying and was updated within the
 // last hour.
@@ -90,7 +92,7 @@ func (s *Store) ClaimDeploy(ctx context.Context, id string) (ClaimResult, error)
 			}
 			return err
 		}
-		if _, err := tx.db.Exec(ctx, `SELECT 1 FROM "Service" WHERE "id" = $1 FOR UPDATE`, serviceID); err != nil {
+		if _, err := tx.db.Exec(ctx, `SELECT 1 FROM "Service" WHERE "id" = $1 FOR NO KEY UPDATE`, serviceID); err != nil {
 			return err
 		}
 		var status string

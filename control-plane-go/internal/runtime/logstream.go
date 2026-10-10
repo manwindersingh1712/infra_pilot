@@ -156,7 +156,8 @@ func (s *Streamer) run(ctx context.Context, deploymentID string, st *stream, cmd
 // then the container keeps running and the stream resumes on the next start,
 // so telling the UI it ended would be false (STAFF-4(a), VER-4 T19).
 // The entry is written even after Stop (WithoutCancel, bounded by
-// sinkTimeout) and even after earlier lines failed.
+// sinkTimeout) and even after earlier lines failed: failed is reset, so it is
+// one more attempt on top of the line-write bound (STAFF-5 T20).
 func (s *Streamer) end(ctx context.Context, w *lineWriter, msg string) {
 	if s.ctx.Err() != nil {
 		s.log.Info("log stream closed for shutdown", "deploymentId", w.deploymentID)
@@ -230,7 +231,9 @@ func logLine(line []byte, cut bool) string {
 // other pump wait behind the first write, which ends after at most one
 // sinkTimeout and marks the failure; the waiting pump then drops its line at
 // once. So line writes cost at most one sinkTimeout in total, not one per
-// pump, and docker is blocked for no more than that.
+// pump, and docker is blocked for no more than that. end() resets failed, so
+// the final system entry is one more attempt, bounded by one more
+// sinkTimeout: the worst case for a stream is two sinkTimeouts.
 type lineWriter struct {
 	s            *Streamer
 	deploymentID string

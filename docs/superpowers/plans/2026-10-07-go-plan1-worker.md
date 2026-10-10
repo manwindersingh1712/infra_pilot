@@ -8344,7 +8344,7 @@ Report the gate results, `docs/superpowers/release-note-plan1.md`, the checklist
 
 **3.3 Step 1 SQL** (read-only, never print full URLs or values), run against the dev DB:
 - the two queries from the Step 1 amendment above;
-- affected env rows (keys Go rejects, or values with line breaks): `SELECT "serviceId", "key" FROM "EnvVar" WHERE "key" !~ '^[A-Za-z_][A-Za-z0-9_]*$' OR position(E'\n' in "value") > 0 OR position(E'\r' in "value") > 0;`
+- affected env rows (keys Go rejects, or values with line breaks): `SELECT "serviceId", "key" FROM "EnvVar" WHERE "key" !~ '^[A-Za-z0-9_][A-Za-z0-9_.-]*$' OR length("key") > 256 OR position(E'\n' in "value") > 0 OR position(E'\r' in "value") > 0;` (CTO 2026-10-10 "Relax env-var KEY validation": dashed, dotted and digit-led keys are accepted; the regex above matches the Go worker's `envKeyRE`)
 Write the affected service ids into the release note. Those services fail with `invalid_build_source` or `InvalidSpec` until fixed. Decide with the user whether to fix them first.
 
 **3.4 Infrastructure.** `cd /Users/manwindersingh/Desktop/infra-pilot/control-plane && docker compose up -d && docker compose ps`. This brings up postgres, rabbitmq, registry, nginx, redis, minio (not used by Go), clickhouse and temporal. All must be `running`/`healthy`. Failure: fix compose first; do not continue.

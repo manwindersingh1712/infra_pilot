@@ -187,6 +187,11 @@ func (s *Streamer) pump(ctx context.Context, w *lineWriter, source string, r io.
 		if err == nil {
 			chunk = bytes.TrimSuffix(chunk[:len(chunk)-1], []byte("\r"))
 		}
+		if err == io.EOF {
+			// An unterminated final line: a lone "\r" at EOF is a line
+			// ending too (STAFF-7 T20).
+			chunk = bytes.TrimSuffix(chunk, []byte("\r"))
+		}
 		if !cut {
 			if room := maxLogLine - len(line); len(chunk) > room {
 				line, cut = append(line, chunk[:room]...), true

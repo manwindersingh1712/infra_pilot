@@ -362,3 +362,17 @@ func TestStreamerStopDuringStartFailureSaysStopped(t *testing.T) {
 		t.Fatalf("entries = %+v", got)
 	}
 }
+
+// STAFF-7 T20: an unterminated final line of exactly maxLogLine bytes plus a
+// lone "\r" at EOF is whole, so it gets no truncation marker.
+func TestStreamerPumpExactLineWithLoneCRAtEOF(t *testing.T) {
+	sink := &memorySink{}
+	s := NewStreamer(context.Background(), sink, slog.New(slog.DiscardHandler))
+	exact := strings.Repeat("a", maxLogLine)
+	s.pump(context.Background(), &lineWriter{s: s, deploymentID: "dep1"}, "stdout", strings.NewReader(exact+"\r"))
+
+	got := sink.all()
+	if len(got) != 1 || got[0].Message != exact {
+		t.Fatalf("entries = %d, len=%d marker=%v", len(got), len(got[0].Message), strings.HasSuffix(got[0].Message, truncMarker))
+	}
+}

@@ -61,6 +61,74 @@ func (s *Store) ClaimDeployment(ctx context.Context, id, from, to string) (bool,
 	return tag.RowsAffected() == 1, nil
 }
 
+// ClaimResult is the outcome of ClaimDeploy.
+type ClaimResult int
+
+const (
+	ClaimLost ClaimResult = iota // the row is gone or not queued: nothing to do
+	ClaimWon                     // the row is now (or already was) deploying
+	ClaimBusy                    // another deployment of the service is deploying: retry later
+)
+
+// deployingStaleAfter bounds how long a deploying row can block its service
+// (a run killed without cleanup). It exceeds the longest legitimate deploy.
+const deployingStaleAfter = "1 hour"
+
+// ClaimDeploy is the service-scoped queued -> deploying claim. One transaction
+// locks the service row, which serialises the claims of one service (other
+// services are unaffected). A row already deploying is this deployment's own
+// retry or resumed run and wins again. Otherwise a queued row wins unless
+// another deployment of the service is deploying and was updated within the
+// last hour.
+func (s *Store) ClaimDeploy(ctx context.Context, id string) (ClaimResult, error) {
+	res := ClaimLost
+	err := s.InTx(ctx, func(tx *Store) error {
+		var serviceID string
+		if err := tx.db.QueryRow(ctx, `SELECT "serviceId" FROM "Deployment" WHERE "id" = $1`, id).Scan(&serviceID); err != nil {
+			if noRows(err) == ErrNotFound {
+				return nil
+			}
+			return err
+		}
+		if _, err := tx.db.Exec(ctx, `SELECT 1 FROM "Service" WHERE "id" = $1 FOR UPDATE`, serviceID); err != nil {
+			return err
+		}
+		var status string
+		if err := tx.db.QueryRow(ctx, `SELECT "status"::text FROM "Deployment" WHERE "id" = $1`, id).Scan(&status); err != nil {
+			return err
+		}
+		switch status {
+		case StatusDeploying:
+			res = ClaimWon
+			return nil
+		case StatusQueued:
+		default:
+			return nil
+		}
+		var busy bool
+		if err := tx.db.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM "Deployment" WHERE "serviceId" = $1 AND "id" <> $2
+			   AND "status" = 'deploying' AND "updatedAt" > now() - $3::interval)`,
+			serviceID, id, deployingStaleAfter).Scan(&busy); err != nil {
+			return err
+		}
+		if busy {
+			res = ClaimBusy
+			return nil
+		}
+		if _, err := tx.db.Exec(ctx,
+			`UPDATE "Deployment" SET "status" = 'deploying', "updatedAt" = now() WHERE "id" = $1`, id); err != nil {
+			return err
+		}
+		res = ClaimWon
+		return nil
+	})
+	if err != nil {
+		return ClaimLost, err
+	}
+	return res, nil
+}
+
 func (s *Store) SetDeploymentStatus(ctx context.Context, id, status string) error {
 	tag, err := s.db.Exec(ctx,
 		`UPDATE "Deployment" SET "status" = $2::"DeploymentStatus", "updatedAt" = now() WHERE "id" = $1`,

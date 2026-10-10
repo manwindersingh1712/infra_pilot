@@ -73,6 +73,10 @@ func mockAll(env *testsuite.TestWorkflowEnvironment, tr *trace, job store.Job) {
 		tr.rec("claim:"+in.To, in)
 		return true, nil
 	}).Maybe()
+	env.OnActivity(a.ClaimDeploy, mock.Anything, mock.Anything).Return(func(_ context.Context, id string) (bool, error) {
+		tr.rec("claim:deploying", id)
+		return true, nil
+	}).Maybe()
 	env.OnActivity(a.BuildImage, mock.Anything, mock.Anything).Return(func(_ context.Context, in BuildInput) (string, error) {
 		tr.rec("build", in)
 		return "reg/s1:main", nil
@@ -360,12 +364,56 @@ func TestDeployLostDeployClaimEndsWithoutCleanup(t *testing.T) {
 	env, tr := newWorkflowEnv(), &trace{}
 	var a *Activities
 	env.OnActivity(a.Claim, mock.Anything, ClaimInput{DeploymentID: "d1", From: store.StatusQueued, To: store.StatusBuilding}).Return(true, nil).Once()
-	env.OnActivity(a.Claim, mock.Anything, ClaimInput{DeploymentID: "d1", From: store.StatusQueued, To: store.StatusDeploying}).Return(false, nil).Once()
+	env.OnActivity(a.ClaimDeploy, mock.Anything, "d1").Return(false, nil).Once()
 	mockAll(env, tr, appJob())
 	env.ExecuteWorkflow(DeployWorkflow, "d1")
 
 	if env.GetWorkflowError() != nil || tr.has("failed") || tr.hasPrefix("remove:") || tr.has("run") {
 		t.Fatalf("err=%v steps=%v", env.GetWorkflowError(), tr.get())
+	}
+}
+
+func busyErr() error { return temporal.NewApplicationError("service busy", "ServiceBusy") }
+
+// STAFF-2: a deploy of the same service is running. The claim retries every 5 s
+// (the row stays queued) and the deploy goes ahead once the claim wins.
+func TestServiceBusyRetriesThenDeploys(t *testing.T) {
+	env, tr := newWorkflowEnv(), &trace{}
+	var a *Activities
+	calls := 0
+	env.OnActivity(a.ClaimDeploy, mock.Anything, mock.Anything).Return(func(_ context.Context, id string) (bool, error) {
+		calls++
+		if calls <= 3 {
+			return false, busyErr()
+		}
+		tr.rec("claim:deploying", id)
+		return true, nil
+	})
+	mockAll(env, tr, appJob())
+	env.ExecuteWorkflow(DeployWorkflow, "d1")
+
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 4 || !tr.has("deployed") || tr.has("failed") {
+		t.Fatalf("calls=%d steps=%v", calls, tr.get())
+	}
+}
+
+// STAFF-2: after ScheduleToClose (30 min of busy) the run takes failure path 1.
+func TestServiceBusyExpiredMarksFailed(t *testing.T) {
+	env, tr := newWorkflowEnv(), &trace{}
+	var a *Activities
+	env.OnActivity(a.ClaimDeploy, mock.Anything, mock.Anything).Return(false, busyErr())
+	mockAll(env, tr, appJob())
+	env.ExecuteWorkflow(DeployWorkflow, "d1")
+
+	if env.GetWorkflowError() == nil {
+		t.Fatal("want error")
+	}
+	got := tr.get()
+	if tr.has("run") || tr.has("route") || !slices.Equal(got[len(got)-2:], []string{"failed", "remove:cp-d1"}) {
+		t.Fatalf("steps = %v", got)
 	}
 }
 
@@ -489,6 +537,11 @@ func TestActivityOptions(t *testing.T) {
 	}
 	if r.RetryPolicy == shortOptions().RetryPolicy {
 		t.Fatal("RunContainer must not share the short retry policy")
+	}
+	c := claimDeployOptions()
+	if c.StartToCloseTimeout != 30*time.Second || c.ScheduleToCloseTimeout != 30*time.Minute ||
+		c.RetryPolicy.InitialInterval != 5*time.Second || c.RetryPolicy.BackoffCoefficient != 1 || c.RetryPolicy.MaximumAttempts != 0 {
+		t.Fatalf("claimDeploy = %+v", c)
 	}
 	if b := buildOptions(); b.ScheduleToCloseTimeout != 90*time.Minute {
 		t.Fatalf("build ScheduleToClose = %s", b.ScheduleToCloseTimeout)

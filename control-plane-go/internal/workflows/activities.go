@@ -148,6 +148,21 @@ func (a *Activities) Claim(ctx context.Context, in ClaimInput) (bool, error) {
 	return d.Status == in.To, nil
 }
 
+// ClaimDeploy is the service-scoped queued -> deploying claim. While another
+// deployment of the service is deploying it returns a retryable ServiceBusy
+// error, so the workflow waits (the row stays queued) instead of two deploys of
+// one service replacing each other's container and route at the same time.
+func (a *Activities) ClaimDeploy(ctx context.Context, deploymentID string) (bool, error) {
+	res, err := a.Store.ClaimDeploy(ctx, deploymentID)
+	if err != nil {
+		return false, err
+	}
+	if res == store.ClaimBusy {
+		return false, temporal.NewApplicationError("service busy", "ServiceBusy")
+	}
+	return res == store.ClaimWon, nil
+}
+
 func (a *Activities) BuildImage(ctx context.Context, in BuildInput) (string, error) {
 	job, err := a.Store.GetJob(ctx, in.DeploymentID)
 	if errors.Is(err, store.ErrNotFound) {

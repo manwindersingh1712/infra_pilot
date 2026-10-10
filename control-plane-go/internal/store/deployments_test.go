@@ -269,3 +269,115 @@ func TestDeploymentQueryFiltersAndNotFound(t *testing.T) {
 		t.Fatalf("ports = %v", ports)
 	}
 }
+
+func TestClaimDeployOneWinnerPerServiceThenBusyUntilItLeavesDeploying(t *testing.T) {
+	st, ctx := newStore(t), context.Background()
+	f := testutil.Seed(t, st, store.TypeNodejs)
+	var ids []string
+	for range 6 {
+		d, _ := st.CreateDeployment(ctx, f.ServiceID, "main")
+		ids = append(ids, d.ID)
+	}
+	var mu sync.Mutex
+	results := map[store.ClaimResult]int{}
+	var wg sync.WaitGroup
+	for _, id := range ids {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r, err := st.ClaimDeploy(ctx, id)
+			if err != nil {
+				t.Error(err)
+			}
+			mu.Lock()
+			results[r]++
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	if results[store.ClaimWon] != 1 || results[store.ClaimBusy] != 5 {
+		t.Fatalf("results = %v, want 1 won and 5 busy", results)
+	}
+	var winner string
+	if err := pool.QueryRow(ctx, `SELECT "id" FROM "Deployment" WHERE "serviceId" = $1 AND "status" = 'deploying'`, f.ServiceID).Scan(&winner); err != nil {
+		t.Fatal(err)
+	}
+	// Busy rows stay queued and win once the first leaves deploying.
+	if _, err := st.MarkFailed(ctx, winner); err != nil {
+		t.Fatal(err)
+	}
+	won := 0
+	for _, id := range ids {
+		if id == winner {
+			continue
+		}
+		r, err := st.ClaimDeploy(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r == store.ClaimWon {
+			won++
+		}
+	}
+	if won != 1 {
+		t.Fatalf("%d winners after the first left deploying, want 1", won)
+	}
+}
+
+func TestClaimDeployDifferentServicesDoNotBlockEachOther(t *testing.T) {
+	st, ctx := newStore(t), context.Background()
+	a := testutil.Seed(t, st, store.TypeNodejs)
+	b := testutil.Seed(t, st, store.TypeNodejs)
+	da, _ := st.CreateDeployment(ctx, a.ServiceID, "main")
+	db, _ := st.CreateDeployment(ctx, b.ServiceID, "main")
+	for _, id := range []string{da.ID, db.ID} {
+		if r, err := st.ClaimDeploy(ctx, id); err != nil || r != store.ClaimWon {
+			t.Fatalf("claim %s = %v, %v", id, r, err)
+		}
+	}
+}
+
+func TestClaimDeployStaleDeployingRowDoesNotBlock(t *testing.T) {
+	st, ctx := newStore(t), context.Background()
+	f := testutil.Seed(t, st, store.TypeNodejs)
+	stale, _ := st.CreateDeployment(ctx, f.ServiceID, "v1")
+	next, _ := st.CreateDeployment(ctx, f.ServiceID, "v2")
+	if r, _ := st.ClaimDeploy(ctx, stale.ID); r != store.ClaimWon {
+		t.Fatal("first claim should win")
+	}
+	if r, _ := st.ClaimDeploy(ctx, next.ID); r != store.ClaimBusy {
+		t.Fatalf("fresh deploying row must block, got %v", r)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE "Deployment" SET "updatedAt" = now() - interval '61 minutes' WHERE "id" = $1`, stale.ID); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := st.ClaimDeploy(ctx, next.ID); err != nil || r != store.ClaimWon {
+		t.Fatalf("a row older than 1 h must not block: %v, %v", r, err)
+	}
+}
+
+func TestClaimDeployOwnDeployingRowWinsAgain(t *testing.T) {
+	st, ctx := newStore(t), context.Background()
+	f := testutil.Seed(t, st, store.TypeNodejs)
+	d, _ := st.CreateDeployment(ctx, f.ServiceID, "main")
+	for i := range 2 {
+		if r, err := st.ClaimDeploy(ctx, d.ID); err != nil || r != store.ClaimWon {
+			t.Fatalf("claim %d = %v, %v", i, r, err)
+		}
+	}
+}
+
+func TestClaimDeployNonQueuedRowIsLost(t *testing.T) {
+	st, ctx := newStore(t), context.Background()
+	f := testutil.Seed(t, st, store.TypeNodejs)
+	d, _ := st.CreateDeployment(ctx, f.ServiceID, "main")
+	if _, err := st.MarkFailed(ctx, d.ID); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := st.ClaimDeploy(ctx, d.ID); err != nil || r != store.ClaimLost {
+		t.Fatalf("failed row = %v, %v", r, err)
+	}
+	if r, err := st.ClaimDeploy(ctx, "missing"); err != nil || r != store.ClaimLost {
+		t.Fatalf("missing row = %v, %v", r, err)
+	}
+}

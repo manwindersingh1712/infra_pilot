@@ -905,6 +905,48 @@ func TestClaimIsIdempotentForOwnRetryOnly(t *testing.T) {
 	}
 }
 
+// STAFF-2 (T24r1): the deploying claim is service-scoped. A second deployment
+// of the service gets a retryable ServiceBusy until the first leaves deploying.
+func TestClaimDeployActivity(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	j := e.job(t, store.TypeNodejs)
+	other, err := e.st.CreateDeployment(ctx, j.ServiceID, "v2")
+	mustT(t, err)
+	claim := func(id string) (bool, error) {
+		t.Helper()
+		val, err := e.run(t, e.acts.ClaimDeploy, id)
+		if err != nil {
+			return false, err
+		}
+		var won bool
+		mustT(t, val.Get(&won))
+		return won, nil
+	}
+	if won, err := claim(j.DeploymentID); err != nil || !won {
+		t.Fatalf("first = %v, %v", won, err)
+	}
+	if won, err := claim(j.DeploymentID); err != nil || !won {
+		t.Fatalf("own retry = %v, %v", won, err)
+	}
+	_, err = claim(other.ID)
+	var appErr *temporal.ApplicationError
+	if !errors.As(err, &appErr) || appErr.Type() != "ServiceBusy" || appErr.NonRetryable() {
+		t.Fatalf("busy must be a retryable ServiceBusy, got %v", err)
+	}
+	_, err = e.st.MarkFailed(ctx, j.DeploymentID)
+	mustT(t, err)
+	if won, err := claim(other.ID); err != nil || !won {
+		t.Fatalf("after the first left deploying = %v, %v", won, err)
+	}
+	if won, err := claim(j.DeploymentID); err != nil || won {
+		t.Fatalf("a failed row must lose: %v, %v", won, err)
+	}
+	if won, err := claim("missing"); err != nil || won {
+		t.Fatalf("a missing row must lose: %v, %v", won, err)
+	}
+}
+
 func TestStatusActivities(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()

@@ -27,6 +27,16 @@ func buildOptions() workflow.ActivityOptions {
 		HeartbeatTimeout: time.Minute, RetryPolicy: retry}
 }
 
+// claimDeployOptions: a busy service is a retryable ServiceBusy error, retried
+// every 5 s (retries add no history events) for up to 30 minutes. If that
+// expires the run fails and the row becomes failed, which is accurate: it never ran.
+func claimDeployOptions() workflow.ActivityOptions {
+	return workflow.ActivityOptions{
+		StartToCloseTimeout: 30 * time.Second, ScheduleToCloseTimeout: 30 * time.Minute,
+		RetryPolicy: &temporal.RetryPolicy{InitialInterval: 5 * time.Second, BackoffCoefficient: 1},
+	}
+}
+
 // runOptions: RunContainer pulls an image and starts a container, and
 // heartbeats through keepAlive, so it gets its own timeouts and 3 attempts.
 func runOptions() workflow.ActivityOptions {
@@ -122,7 +132,9 @@ func deploy(ctx workflow.Context, job store.Job) (stage, error) {
 		}
 		job.Image = &image
 	}
-	if won, err := claim(store.StatusQueued, store.StatusDeploying); err != nil || !won {
+	var deployWon bool
+	claimCtx := workflow.WithActivityOptions(ctx, claimDeployOptions())
+	if err := workflow.ExecuteActivity(claimCtx, a.ClaimDeploy, job.DeploymentID).Get(ctx, &deployWon); err != nil || !deployWon {
 		return st, err
 	}
 

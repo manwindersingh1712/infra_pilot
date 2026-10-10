@@ -101,6 +101,13 @@ func TestFirstArgAndTail(t *testing.T) {
 	if firstArg(nil) != "" || firstArg([]string{"build", "-t"}) != "build" {
 		t.Fatal("firstArg")
 	}
+	git := []string{"-c", "protocol.allow=never", "-c", "credential.helper=", "clone", "--depth", "1"}
+	if firstArg(git) != "clone" {
+		t.Fatalf("firstArg skips -c pairs, got %q", firstArg(git))
+	}
+	if firstArg([]string{"-c", "a=b"}) != "" || firstArg([]string{"-c"}) != "-c" {
+		t.Fatal("firstArg on dangling -c")
+	}
 	if tail("abcdef", 3) != "def" || tail("ab", 3) != "ab" {
 		t.Fatal("tail")
 	}

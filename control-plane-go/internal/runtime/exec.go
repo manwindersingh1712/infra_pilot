@@ -44,11 +44,19 @@ func (ExecRunner) Run(ctx context.Context, dir, name string, args ...string) (st
 
 // firstArg names the subcommand in errors without echoing every argument
 // (arguments can contain paths and other details we don't want in logs).
+// Leading "-c k=v" pairs (git config) are skipped.
 func firstArg(args []string) string {
-	if len(args) == 0 {
-		return ""
+	i := 0
+	for i+1 < len(args) && args[i] == "-c" { // git -c k=v pairs
+		i += 2
 	}
-	return args[0]
+	if i < len(args) {
+		return args[i]
+	}
+	if len(args) == 1 {
+		return args[0]
+	}
+	return ""
 }
 
 func tail(s string, n int) string {

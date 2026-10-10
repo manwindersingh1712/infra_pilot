@@ -10,7 +10,7 @@ type Running struct {
 
 // Resume re-attaches log streams for deployments whose containers are still
 // running (streams live in worker memory and are lost on restart). It
-// returns how many streams were started. Check errors are logged and skipped.
+// returns how many new streams were started. Check errors are logged and skipped.
 func (s *Streamer) Resume(ctx context.Context, deps []Running, isRunning func(context.Context, string) (bool, error)) int {
 	n := 0
 	for _, d := range deps {
@@ -22,8 +22,9 @@ func (s *Streamer) Resume(ctx context.Context, deps []Running, isRunning func(co
 		if !ok {
 			continue
 		}
-		s.Start(d.DeploymentID, d.ContainerID)
-		n++
+		if s.start(d.DeploymentID, d.ContainerID) {
+			n++
+		}
 	}
 	return n
 }

@@ -61,15 +61,19 @@ func NewStreamer(ctx context.Context, sink LogSink, log *slog.Logger) *Streamer 
 
 // Start begins streaming unless this deployment is already streaming. An
 // empty deployment ID or an invalid container name is logged and ignored.
-func (s *Streamer) Start(deploymentID, containerID string) {
+func (s *Streamer) Start(deploymentID, containerID string) { s.start(deploymentID, containerID) }
+
+// start is Start reporting whether a new stream was started (STAFF-1 T20).
+// Start keeps no result so *Streamer still satisfies the plan's LogStarter.
+func (s *Streamer) start(deploymentID, containerID string) bool {
 	if err := checkName("container", containerID); err != nil || deploymentID == "" {
 		s.log.Warn("log stream not started", "deploymentId", deploymentID, "containerId", containerID, "err", err)
-		return
+		return false
 	}
 	s.mu.Lock()
 	if _, ok := s.active[deploymentID]; ok {
 		s.mu.Unlock()
-		return
+		return false
 	}
 	ctx, cancel := context.WithCancel(s.ctx)
 	st := &stream{cancel: cancel}
@@ -78,6 +82,7 @@ func (s *Streamer) Start(deploymentID, containerID string) {
 
 	s.log.Info("log stream starting", "deploymentId", deploymentID, "containerId", containerID)
 	go s.run(ctx, deploymentID, st, s.newCmd(ctx, containerID))
+	return true
 }
 
 func (s *Streamer) Stop(deploymentID string) {

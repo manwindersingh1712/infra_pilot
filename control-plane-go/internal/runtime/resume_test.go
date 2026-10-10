@@ -43,3 +43,20 @@ func TestResumeStartsOnlyRunningContainers(t *testing.T) {
 		t.Fatalf("started = %v", started)
 	}
 }
+
+// STAFF-1 T20: a deployment listed twice starts one stream and counts once.
+func TestResumeCountsDuplicateOnce(t *testing.T) {
+	s := NewStreamer(context.Background(), &memorySink{}, slog.New(slog.DiscardHandler))
+	s.newCmd = func(ctx context.Context, _ string) *exec.Cmd {
+		return exec.CommandContext(ctx, "sleep", "30")
+	}
+	defer s.Stop("d1")
+
+	n := s.Resume(context.Background(), []Running{
+		{DeploymentID: "d1", ContainerID: "c1"},
+		{DeploymentID: "d1", ContainerID: "c1"},
+	}, func(context.Context, string) (bool, error) { return true, nil })
+	if n != 1 {
+		t.Fatalf("n = %d, want 1", n)
+	}
+}

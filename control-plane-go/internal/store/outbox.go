@@ -3,12 +3,17 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/lucsky/cuid"
 )
+
+// ErrOutboxPermanent marks a Start failure that retrying cannot fix (a
+// poison payload). The publisher sends such rows straight to dead.
+var ErrOutboxPermanent = errors.New("outbox: permanent failure")
 
 // CreateOutboxEvent queues an event for the outbox publisher. Call it inside
 // InTx together with the state change it announces.

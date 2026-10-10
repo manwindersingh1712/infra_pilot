@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
@@ -30,6 +31,18 @@ type Starter struct {
 	Client client.Client
 }
 
+// deploymentIDPattern matches the cuids the API generates. The id goes into a
+// workflow id and a container name, so nothing else may through.
+var deploymentIDPattern = regexp.MustCompile(`^[a-z0-9]{20,32}$`)
+
+// clip shortens s to at most n runes for error text.
+func clip(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n]) + "..."
+	}
+	return s
+}
+
 func (s Starter) Start(ctx context.Context, eventType string, payload []byte) error {
 	switch eventType {
 	case store.EventBuildRequested, store.EventDeployRequested:
@@ -38,6 +51,9 @@ func (s Starter) Start(ctx context.Context, eventType string, payload []byte) er
 		}
 		if err := json.Unmarshal(payload, &msg); err != nil || msg.DeploymentID == "" {
 			return fmt.Errorf("outbox %s: payload has no deploymentId", eventType)
+		}
+		if !deploymentIDPattern.MatchString(msg.DeploymentID) {
+			return fmt.Errorf("outbox %s: deploymentId %q is not a cuid: %w", eventType, clip(msg.DeploymentID, 40), store.ErrOutboxPermanent)
 		}
 		_, err := s.Client.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
 			ID:                    DeployWorkflowID(msg.DeploymentID),

@@ -95,7 +95,7 @@ func (p *Publisher) Tick(ctx context.Context) (int, error) {
 			attempts := e.Attempts + 1
 			// The error text names the deployment but never the payload.
 			p.log.Warn("outbox start failed", "type", e.Type, "eventId", e.ID, "attempts", attempts, "err", startErr)
-			if attempts >= MaxAttempts {
+			if attempts >= MaxAttempts || errors.Is(startErr, store.ErrOutboxPermanent) {
 				err = tx.MarkOutboxDead(ctx, e.ID, attempts, startErr.Error())
 			} else {
 				err = tx.MarkOutboxRetry(ctx, e.ID, attempts, startErr.Error(), BackoffSeconds(attempts, p.jitter))

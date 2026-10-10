@@ -2,16 +2,24 @@ package workflows
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/lucsky/cuid"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
 
 	"infrapilot/internal/store"
+)
+
+// Fixture ids shaped like real cuids (lowercase alphanumeric, 25 chars).
+const (
+	depID = "cm0a1b2c3d4e5f6g7h8i9j0k1"
+	dep9  = "cm9a1b2c3d4e5f6g7h8i9j0k9"
 )
 
 // fakeClient records ExecuteWorkflow calls. The embedded nil interface makes
@@ -36,18 +44,18 @@ func TestStarterStartsDeployWorkflowForBothEventTypes(t *testing.T) {
 	for _, typ := range []string{store.EventBuildRequested, store.EventDeployRequested} {
 		fc := &fakeClient{}
 		s := Starter{Client: fc}
-		if err := s.Start(context.Background(), typ, []byte(`{"deploymentId":"dep-1"}`)); err != nil {
+		if err := s.Start(context.Background(), typ, []byte(`{"deploymentId":"`+depID+`"}`)); err != nil {
 			t.Fatalf("%s: %v", typ, err)
 		}
 		if len(fc.opts) != 1 {
 			t.Fatalf("%s: %d starts", typ, len(fc.opts))
 		}
 		o := fc.opts[0]
-		if o.ID != DeployWorkflowID("dep-1") || o.ID != "deploy-dep-1" || o.TaskQueue != TaskQueue ||
+		if o.ID != DeployWorkflowID(depID) || o.ID != "deploy-"+depID || o.TaskQueue != TaskQueue ||
 			o.WorkflowIDReusePolicy != enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE {
 			t.Fatalf("%s: options %+v", typ, o)
 		}
-		if len(fc.args[0]) != 1 || fc.args[0][0] != "dep-1" {
+		if len(fc.args[0]) != 1 || fc.args[0][0] != depID {
 			t.Fatalf("%s: args %v", typ, fc.args[0])
 		}
 	}
@@ -56,12 +64,12 @@ func TestStarterStartsDeployWorkflowForBothEventTypes(t *testing.T) {
 func TestStarterTreatsAlreadyStartedAsSuccess(t *testing.T) {
 	already := serviceerror.NewWorkflowExecutionAlreadyStarted("exists", "req", "run")
 	s := Starter{Client: &fakeClient{err: already}}
-	if err := s.Start(context.Background(), store.EventDeployRequested, []byte(`{"deploymentId":"dep-1"}`)); err != nil {
+	if err := s.Start(context.Background(), store.EventDeployRequested, []byte(`{"deploymentId":"`+depID+`"}`)); err != nil {
 		t.Fatalf("already started must be success, got %v", err)
 	}
 	// Wrapped errors count too.
 	s = Starter{Client: &fakeClient{err: errors.Join(errors.New("ctx"), already)}}
-	if err := s.Start(context.Background(), store.EventBuildRequested, []byte(`{"deploymentId":"dep-1"}`)); err != nil {
+	if err := s.Start(context.Background(), store.EventBuildRequested, []byte(`{"deploymentId":"`+depID+`"}`)); err != nil {
 		t.Fatalf("wrapped already started must be success, got %v", err)
 	}
 }
@@ -69,8 +77,8 @@ func TestStarterTreatsAlreadyStartedAsSuccess(t *testing.T) {
 func TestStarterReturnsOtherErrorsWithDeploymentID(t *testing.T) {
 	boom := errors.New("frontend unavailable")
 	s := Starter{Client: &fakeClient{err: boom}}
-	err := s.Start(context.Background(), store.EventBuildRequested, []byte(`{"deploymentId":"dep-9"}`))
-	if !errors.Is(err, boom) || !strings.Contains(err.Error(), "dep-9") {
+	err := s.Start(context.Background(), store.EventBuildRequested, []byte(`{"deploymentId":"`+dep9+`"}`))
+	if !errors.Is(err, boom) || !strings.Contains(err.Error(), dep9) {
 		t.Fatalf("err = %v", err)
 	}
 }
@@ -79,7 +87,7 @@ func TestStarterRejectsPoisonEvents(t *testing.T) {
 	fc := &fakeClient{}
 	s := Starter{Client: fc}
 	cases := map[string][2]string{
-		"unknown type":  {"teardown.requested", `{"deploymentId":"dep-1"}`},
+		"unknown type":  {"teardown.requested", `{"deploymentId":"` + depID + `"}`},
 		"empty object":  {store.EventBuildRequested, `{}`},
 		"not an object": {store.EventBuildRequested, `"dep-1"`},
 		"array":         {store.EventBuildRequested, `[]`},
@@ -94,5 +102,48 @@ func TestStarterRejectsPoisonEvents(t *testing.T) {
 	}
 	if len(fc.opts) != 0 {
 		t.Fatalf("poison events started %d workflows", len(fc.opts))
+	}
+}
+
+func TestStarterRejectsMalformedDeploymentIDsPermanently(t *testing.T) {
+	long := strings.Repeat("a", 5000)
+	for name, id := range map[string]string{
+		"short legacy":  "dep-1",
+		"uppercase":     strings.ToUpper(depID),
+		"path":          "../../etc/passwd" + depID,
+		"control chars": "abc\u001b[31m\ndef" + depID,
+		"too long":      long,
+		"space":         depID + " x",
+		"unicode":       "cm0a1b2c3d4e5f6g7h8i9jé1",
+	} {
+		fc := &fakeClient{}
+		payload, _ := json.Marshal(map[string]string{"deploymentId": id})
+		err := Starter{Client: fc}.Start(context.Background(), store.EventBuildRequested, payload)
+		if !errors.Is(err, store.ErrOutboxPermanent) {
+			t.Errorf("%s: err = %v, want ErrOutboxPermanent", name, err)
+			continue
+		}
+		if len(fc.opts) != 0 {
+			t.Errorf("%s: Start reached Temporal", name)
+		}
+		msg := err.Error()
+		if len(msg) > 200 {
+			t.Errorf("%s: error text is %d bytes, must cap the echoed id", name, len(msg))
+		}
+		for _, r := range msg {
+			if r < 0x20 || r == 0x7f {
+				t.Errorf("%s: error text has control char %q", name, r)
+			}
+		}
+	}
+}
+
+func TestRealCuidsPassTheIDCheck(t *testing.T) {
+	for range 50 {
+		fc := &fakeClient{}
+		id := cuid.New()
+		if err := (Starter{Client: fc}).Start(context.Background(), store.EventBuildRequested, []byte(`{"deploymentId":"`+id+`"}`)); err != nil {
+			t.Fatalf("cuid %q rejected: %v", id, err)
+		}
 	}
 }

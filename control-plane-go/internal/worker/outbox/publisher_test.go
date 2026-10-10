@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -479,6 +480,21 @@ func TestSecondPublisherClaimsOtherRowsWhileFirstHoldsItsBatch(t *testing.T) {
 	}
 	if started != outbox.BatchSize+extra {
 		t.Fatalf("started %d, want %d", started, outbox.BatchSize+extra)
+	}
+}
+
+func TestPermanentStartErrorKillsTheRowImmediately(t *testing.T) {
+	st, _, _ := setup(t)
+	ctx := context.Background()
+	id := create(t, st, store.EventBuildRequested, map[string]string{"deploymentId": "bad"})
+	p := outbox.New(st, starterFunc(func(context.Context, string, []byte) error {
+		return fmt.Errorf("bad id: %w", store.ErrOutboxPermanent)
+	}), slog.New(slog.DiscardHandler))
+	if _, err := p.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if s, attempts := status(t, id); s != "dead" || attempts != 1 {
+		t.Fatalf("status=%s attempts=%d, want dead after the first try", s, attempts)
 	}
 }
 

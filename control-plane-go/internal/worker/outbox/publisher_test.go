@@ -35,6 +35,11 @@ type fakeStarter struct {
 	// block, if set, makes Start wait for ctx cancellation and return its error.
 	block bool
 	calls int
+	// entered receives one value each time a blocking Start begins waiting.
+	entered chan struct{}
+	// stop unblocks every blocked Start (closed by t.Cleanup), so a test whose
+	// timeout is broken fails fast instead of hanging the package.
+	stop chan struct{}
 }
 
 func (f *fakeStarter) Start(ctx context.Context, eventType string, payload []byte) error {
@@ -43,8 +48,16 @@ func (f *fakeStarter) Start(ctx context.Context, eventType string, payload []byt
 	block := f.block
 	f.mu.Unlock()
 	if block {
-		<-ctx.Done()
-		return ctx.Err()
+		select {
+		case f.entered <- struct{}{}:
+		default:
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-f.stop:
+			return errors.New("fake starter stopped")
+		}
 	}
 	if f.delay > 0 {
 		time.Sleep(f.delay)
@@ -143,7 +156,8 @@ func status(t *testing.T, id string) (string, int) {
 
 func setup(t *testing.T) (*store.Store, *fakeStarter, *outbox.Publisher) {
 	st := store.New(testutil.NeedDB(t, pool))
-	fs := &fakeStarter{}
+	fs := &fakeStarter{entered: make(chan struct{}, 1000), stop: make(chan struct{})}
+	t.Cleanup(func() { close(fs.stop) })
 	return st, fs, outbox.New(st, fs, slog.New(slog.DiscardHandler))
 }
 
@@ -323,9 +337,14 @@ func TestCancelMidBatchLeavesRowsClaimable(t *testing.T) {
 		ids = append(ids, id)
 	}
 	ctx, cancel := context.WithCancel(bg)
+	t.Cleanup(cancel)
 	done := make(chan error, 1)
 	go func() { _, err := p.Tick(ctx); done <- err }()
-	time.Sleep(300 * time.Millisecond) // the batch is claimed and Start is blocked
+	select {
+	case <-fs.entered: // the batch is claimed and Start is blocked
+	case <-time.After(10 * time.Second):
+		t.Fatal("Start never reached")
+	}
 	cancel()
 	select {
 	case err := <-done:
@@ -366,10 +385,17 @@ func TestRunStartsEventsUntilCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	id := create(t, st, store.EventBuildRequested, map[string]string{"deploymentId": "d1"})
-	go p.Run(ctx)
+	runDone := make(chan struct{})
+	go func() { p.Run(ctx); close(runDone) }()
 	deadline := time.Now().Add(15 * time.Second)
 	for len(fs.all()) == 0 && time.Now().Before(deadline) {
 		time.Sleep(50 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not stop")
 	}
 	if s, _ := status(t, id); s != "published" {
 		t.Fatalf("status = %s", s)

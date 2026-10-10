@@ -162,3 +162,42 @@ func TestValidImageTag(t *testing.T) {
 		}
 	}
 }
+
+func TestScrubEscapedAndSpecialSecrets(t *testing.T) {
+	cases := []struct{ raw, msg string }{
+		// password-only userinfo, escaped
+		{"https://:p%40ss@h/x", "fatal: 'https://:p%40ss@h/x/' denied"},
+		{"https://:p%40ss@h/x", "password p%40ss and p@ss"},
+		// special characters in a token username
+		{"https://gh%2Fp_T%3AK@h/x", "token gh%2Fp_T%3AK and gh/p_T:K"},
+		{"https://us%20er:p%2Fw%3Fd@h/x", "echo p%2Fw%3Fd p/w?d us%20er"},
+		// query token
+		{"https://h/x?token=ghp_Q", "bad ghp_Q in https://h/x?token=ghp_Q"},
+	}
+	for _, c := range cases {
+		out := Scrub(c.msg, c.raw)
+		for _, leak := range []string{"p%40ss", "p@ss", "gh%2Fp_T%3AK", "gh/p_T:K", "p%2Fw%3Fd", "p/w?d", "us%20er", "ghp_Q"} {
+			if strings.Contains(out, leak) {
+				t.Errorf("Scrub(%q, %q) = %q leaks %q", c.msg, c.raw, out, leak)
+			}
+		}
+	}
+}
+
+func TestRedactURLSpecialChars(t *testing.T) {
+	for _, in := range []string{
+		"https://:p%40ss@h/x",
+		"https://gh%2Fp_T%3AK@h/x",
+		"https://us%20er:p%2Fw%3Fd@h/x?token=ghp_Q#frag",
+	} {
+		out := RedactURL(in)
+		for _, leak := range []string{"p%40ss", "p@ss", "gh%2Fp", "us%20er", "p%2Fw", "ghp_Q", "frag"} {
+			if strings.Contains(out, leak) {
+				t.Errorf("RedactURL(%q) = %q leaks %q", in, out, leak)
+			}
+		}
+		if !strings.Contains(out, "****@h") {
+			t.Errorf("RedactURL(%q) = %q, want ****@h", in, out)
+		}
+	}
+}

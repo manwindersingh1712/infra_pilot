@@ -1,6 +1,10 @@
 package metrics
 
 import (
+	"bytes"
+	"context"
+	"log/slog"
+	"net"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -61,5 +65,50 @@ func TestUnknownOutcomeIsIgnored(t *testing.T) {
 	body := rec.Body.String()
 	if strings.Contains(body, "whatever") || !strings.Contains(body, `cp_deployments_total{outcome="failed"} 1`) {
 		t.Fatalf("body:\n%s", body)
+	}
+}
+
+func TestIsLoopbackAddr(t *testing.T) {
+	for addr, want := range map[string]bool{
+		"127.0.0.1:9091": true, "localhost:9091": true, "[::1]:9091": true,
+		"0.0.0.0:9091": false, "[::]:9091": false, ":9091": false, "10.0.0.5:9091": false,
+		"example.com:9091": false, "garbage": false,
+	} {
+		if got := isLoopbackAddr(addr); got != want {
+			t.Errorf("isLoopbackAddr(%q) = %v, want %v", addr, got, want)
+		}
+	}
+}
+
+func TestServeBindFailureReturnsErrorWithoutSuccessLine(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	if err := Serve(context.Background(), l.Addr().String(), NewWorker().Handler(), log); err == nil {
+		t.Fatal("Serve on a busy port must fail")
+	}
+	if strings.Contains(buf.String(), "metrics listening") {
+		t.Fatalf("success line printed on bind failure: %s", buf.String())
+	}
+}
+
+func TestServeWarnsOnNonLoopback(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Serve(ctx, "0.0.0.0:0", NewWorker().Handler(), log) }()
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "level=WARN") || !strings.Contains(out, "metrics listening") {
+		t.Fatalf("log = %s", out)
 	}
 }

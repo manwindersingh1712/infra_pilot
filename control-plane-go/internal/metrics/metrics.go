@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 
@@ -96,20 +97,53 @@ func (m *Worker) Handler() http.Handler {
 	return promhttp.HandlerFor(m.reg, promhttp.HandlerOpts{})
 }
 
+// Server limits (T26 SEC-2): the endpoint is tiny and private, so keep them tight.
+const (
+	readHeaderTimeout = 5 * time.Second
+	readTimeout       = 10 * time.Second
+	writeTimeout      = 30 * time.Second
+	idleTimeout       = 60 * time.Second
+	maxHeaderBytes    = 8 << 10
+)
+
+// isLoopbackAddr reports whether addr (host:port) binds only the loopback
+// interface. An empty host, 0.0.0.0 and :: are all-interfaces binds.
+func isLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil || host == "" {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 // Serve exposes /metrics on addr until ctx ends. addr should be a private
-// address such as 127.0.0.1:9091.
+// address such as 127.0.0.1:9091; a non-loopback address logs a warning.
 func Serve(ctx context.Context, addr string, h http.Handler, log *slog.Logger) error {
 	mux := http.NewServeMux()
 	mux.Handle("GET /metrics", h)
-	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	srv := &http.Server{
+		Handler: mux, ReadHeaderTimeout: readHeaderTimeout, ReadTimeout: readTimeout,
+		WriteTimeout: writeTimeout, IdleTimeout: idleTimeout, MaxHeaderBytes: maxHeaderBytes,
+	}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	if !isLoopbackAddr(addr) {
+		log.Warn("metrics endpoint is not bound to loopback; it has no authentication", "addr", addr)
+	}
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shutdownCtx)
 	}()
-	log.Info("metrics listening", "addr", addr)
-	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+	log.Info("metrics listening", "addr", ln.Addr().String())
+	if err := srv.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil

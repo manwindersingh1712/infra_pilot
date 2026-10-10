@@ -19,3 +19,10 @@ SEC-1 (size cap), STAFF-1 (GenerateDockerfile table test), STAFF-2 (tolerant fie
 
 ## Fix round 2 plan
 SEC-3, STAFF-5. Check the same blocking-open pattern anywhere else a clone file is opened (Task 22 BuildAndPush uses `Lstat`+`OpenFile(O_EXCL)` for writing: fine).
+
+## Fix round 2
+- `bfabd03` SEC-3: `root.OpenFile(..., O_RDONLY|O_NONBLOCK)` + f.Stat regular-file check; tests (FIFO, in-repo symlink to FIFO, FIFO vite config) run under a 3 s timeout; red run showed both package.json tests hanging 3.00 s on the old code. `396e9c5` STAFF-5: tags longer than 64 chars fall back to `20-alpine` (rows at 63/64/65/5000).
+- **Orchestrator check (diff is ~12 lines):** read the diff; `go vet`, gofmt, `go test -race -count=5` of the package green; Engineer's CI dry run green (govulncheck exit 0, gosec clean).
+
+## Result
+**PASSED 2026-10-10** after two fix rounds. Forward requirement for Task 22 (backlog): every read of a clone file must be non-blocking and regular-file-only (FIFO hang class).

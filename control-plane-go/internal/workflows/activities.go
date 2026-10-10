@@ -285,6 +285,8 @@ func (a *Activities) RetirePrevious(ctx context.Context, in RetireInput) error {
 
 func (a *Activities) RunContainer(ctx context.Context, in RunInput) (RunResult, error) {
 	job := in.Job
+	stop := keepAlive(ctx, 20*time.Second, "running") // image pulls can outlast the heartbeat timeout
+	defer stop()
 	env, err := a.decryptedEnv(ctx, job.ServiceID) // plaintext stays in this activity: never a result, input or heartbeat
 	if err != nil {
 		return RunResult{}, err

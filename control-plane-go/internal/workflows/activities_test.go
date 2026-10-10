@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
@@ -516,6 +517,25 @@ func TestRunContainerStaticSiteCapsOnlyForReact(t *testing.T) {
 	}
 	if !slices.Equal(StaticSiteCaps, []string{"CHOWN", "SETUID", "SETGID"}) {
 		t.Fatalf("StaticSiteCaps %v", StaticSiteCaps)
+	}
+}
+
+// FWD-2 (T23r1): pulling and starting can be slow, so RunContainer heartbeats.
+func TestRunContainerHeartbeats(t *testing.T) {
+	e := newEnv(t)
+	j := e.job(t, store.TypeNodejs)
+	image := "reg:5001/" + j.ServiceID + ":main"
+	j.Image = &image
+	var s testsuite.WorkflowTestSuite
+	ae := s.NewTestActivityEnvironment()
+	ae.RegisterActivity(e.acts)
+	beats := 0
+	ae.SetOnActivityHeartbeatListener(func(*activity.Info, converter.EncodedValues) { beats++ })
+	if _, err := ae.ExecuteActivity(e.acts.RunContainer, RunInput{Job: j, Network: "n"}); err != nil {
+		t.Fatal(err)
+	}
+	if beats == 0 {
+		t.Fatal("RunContainer never heartbeated")
 	}
 }
 

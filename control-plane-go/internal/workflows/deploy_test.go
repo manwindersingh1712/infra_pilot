@@ -358,8 +358,30 @@ func TestMarkDeployedSurvivesCancellation(t *testing.T) {
 	env.RegisterDelayedCallback(env.CancelWorkflow, time.Second)
 	env.ExecuteWorkflow(DeployWorkflow, "d1")
 
-	if !tr.has("deployed") || tr.has("failed") || tr.hasPrefix("remove:") {
+	if !tr.has("deployed") || !tr.has("retire") || !tr.has("logs") || tr.has("failed") || tr.hasPrefix("remove:") {
 		t.Fatalf("err=%v steps=%v", env.GetWorkflowError(), tr.get())
+	}
+}
+
+// STAFF-8: a cancel that arrives right after MarkDeployed committed must not
+// skip RetirePrevious or StartLogStream: they run on a disconnected context.
+func TestPostCommitStepsSurviveCancellation(t *testing.T) {
+	env, tr := newWorkflowEnv(), &trace{}
+	var a *Activities
+	env.OnActivity(a.MarkDeployed, mock.Anything, mock.Anything).Return(func(_ context.Context, in DeployedInput) error {
+		tr.rec("deployed", in)
+		env.CancelWorkflow() // lands once the commit is done
+		return nil
+	})
+	mockAll(env, tr, appJob())
+	env.ExecuteWorkflow(DeployWorkflow, "d1")
+
+	got := tr.get()
+	if want := []string{"deployed", "retire", "logs"}; !slices.Equal(got[len(got)-3:], want) || tr.has("failed") || tr.hasPrefix("remove:") {
+		t.Fatalf("err=%v steps=%v", env.GetWorkflowError(), got)
+	}
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("want a clean finish, got %v", err)
 	}
 }
 

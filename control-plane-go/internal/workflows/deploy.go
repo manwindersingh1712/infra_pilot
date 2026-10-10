@@ -244,14 +244,19 @@ func deploy(ctx workflow.Context, job store.Job) (stage, error) {
 	}
 	st.deployed = true
 
+	// The row is deployed and the route is live: a cancel must not orphan the
+	// previous container or skip the log stream. Same disconnected context as
+	// the commit; both steps are idempotent.
+	post, _ := workflow.NewDisconnectedContext(ctx)
+	post = workflow.WithActivityOptions(post, shortOptions())
 	if !managed {
 		retire := RetireInput{ServiceID: job.ServiceID, KeepDeploymentID: job.DeploymentID}
-		if err := workflow.ExecuteActivity(short, a.RetirePrevious, retire).Get(ctx, nil); err != nil {
+		if err := workflow.ExecuteActivity(post, a.RetirePrevious, retire).Get(post, nil); err != nil {
 			return st, fmt.Errorf("post-deploy %s: %w", "retire", err)
 		}
 	}
 	stream := StreamInput{DeploymentID: job.DeploymentID, ContainerID: run.ContainerID}
-	if err := workflow.ExecuteActivity(short, a.StartLogStream, stream).Get(ctx, nil); err != nil {
+	if err := workflow.ExecuteActivity(post, a.StartLogStream, stream).Get(post, nil); err != nil {
 		return st, fmt.Errorf("post-deploy %s: %w", "logs", err)
 	}
 	return st, nil

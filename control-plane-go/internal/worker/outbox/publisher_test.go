@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.temporal.io/api/serviceerror"
 
 	"infrapilot/internal/store"
 	"infrapilot/internal/testutil"
@@ -324,6 +325,73 @@ func TestHungStartStopsTheBatchAndRequeuesTheRest(t *testing.T) {
 	n, err = p.Tick(ctx)
 	if err != nil || n != outbox.BatchSize-1 || len(fs.all()) != outbox.BatchSize-1 {
 		t.Fatalf("recovery tick: n=%d err=%v started=%d", n, err, len(fs.all()))
+	}
+}
+
+// The real Temporal client never returns ctx.Err() or gRPC status errors: its
+// interceptor converts them to serviceerror types (no GRPCStatus, no Unwrap).
+func TestServiceErrorsFromTheRealClientStopTheBatch(t *testing.T) {
+	cases := map[string]error{
+		"unavailable":       serviceerror.NewUnavailable("frontend down"),
+		"deadline exceeded": serviceerror.NewDeadlineExceeded("timed out"),
+		"unavailable wrapped": fmt.Errorf("outbox build.requested: start workflow for deployment %q: %w",
+			"x", serviceerror.NewUnavailable("frontend down")),
+		"deadline wrapped": fmt.Errorf("outbox build.requested: start workflow for deployment %q: %w",
+			"x", serviceerror.NewDeadlineExceeded("timed out")),
+	}
+	for name, startErr := range cases {
+		t.Run(name, func(t *testing.T) {
+			st, _, _ := setup(t)
+			ctx := context.Background()
+			var ids []string
+			for i := range outbox.BatchSize {
+				ids = append(ids, create(t, st, store.EventBuildRequested, map[string]int{"n": i}))
+			}
+			var mu sync.Mutex
+			calls := 0
+			p := outbox.New(st, starterFunc(func(context.Context, string, []byte) error {
+				mu.Lock()
+				defer mu.Unlock()
+				calls++
+				return startErr
+			}), slog.New(slog.DiscardHandler))
+			if n, err := p.Tick(ctx); err != nil || n != outbox.BatchSize {
+				t.Fatalf("n=%d err=%v", n, err)
+			}
+			if calls != 1 {
+				t.Fatalf("Start called %d times, want 1", calls)
+			}
+			burned := 0
+			for _, id := range ids {
+				s, attempts := status(t, id)
+				if s != "pending" {
+					t.Fatalf("status = %s, want pending", s)
+				}
+				burned += attempts
+			}
+			if burned != 1 {
+				t.Fatalf("%d attempts burned, want 1", burned)
+			}
+		})
+	}
+}
+
+func TestNonTransientServiceErrorDoesNotStopTheBatch(t *testing.T) {
+	st, _, _ := setup(t)
+	ctx := context.Background()
+	for i := range 5 {
+		create(t, st, store.EventBuildRequested, map[string]int{"n": i})
+	}
+	calls := 0
+	p := outbox.New(st, starterFunc(func(context.Context, string, []byte) error {
+		calls++
+		return serviceerror.NewInvalidArgument("bad request")
+	}), slog.New(slog.DiscardHandler))
+	if _, err := p.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 5 {
+		t.Fatalf("Start called %d times, want 5 (a poison row must not stop the batch)", calls)
 	}
 }
 

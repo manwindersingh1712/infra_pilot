@@ -11,6 +11,7 @@ import (
 	"math/rand/v2"
 	"time"
 
+	"go.temporal.io/api/serviceerror"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -129,6 +130,13 @@ func (p *Publisher) Tick(ctx context.Context) (int, error) {
 // Temporal itself, not this one event, is the problem.
 func transient(err error) bool {
 	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	// The Temporal client's interceptor turns gRPC errors into serviceerror
+	// types, which have neither GRPCStatus nor Unwrap.
+	var unavailable *serviceerror.Unavailable
+	var deadline *serviceerror.DeadlineExceeded
+	if errors.As(err, &unavailable) || errors.As(err, &deadline) {
 		return true
 	}
 	switch status.Code(err) {

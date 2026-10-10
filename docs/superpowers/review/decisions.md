@@ -394,3 +394,15 @@ Rollback window: opens at the cutover date (the day the Go worker takes the firs
 Follow-ups:
 - Backlog lines added (SEC-3 bump, SEC-4, PROD-1, PROD-4, VER-3, dead `teardown.requested`, `.gitignore` for local DB files).
 - Engineer: conditions 1 and 2. Verifier: condition 3. Orchestrator: after the user approves, record the cutover date and the window end here.
+
+## 2026-10-10 Relax env-var KEY validation (Go worker)
+Context: `validateEnv` (control-plane-go/internal/runtime/docker.go) accepts only `^[A-Za-z_][A-Za-z0-9_]*$`. Node injected env as `-e KEY=VALUE` argv (docker-runner.ts:56,88) and the API accepts any key, so dashed/dotted/digit-led keys deploy under Node but fail under Go. Docker's `--env-file` accepts them (Engineer-tested); it rejects spaces. Dotted keys are legitimate (Spring `spring.datasource.url`, Java props, Helm-style).
+Options considered: (a) stay strict plus runbook SQL and release note; (b) widen to what docker accepts minus dangerous; (c) a per-key quoting scheme (rejected, env-file has no quoting).
+Decision: fix now, option (b). Not an injection risk: the file is built `KEY=VALUE\n`, values already cannot hold CR/LF, and the key charset excludes `=`, `#`, whitespace, NUL and newline, so a key cannot start a comment, split a line or smuggle a second variable. Keys never reach argv.
+Why: strictness breaks a working Node user flow for no security gain; the change is one regex and a test, and it removes a cutover-day failure mode. Task 16 ruling stands for values and for the injection classes (SEC-2/STAFF-5/6); only the charset widens. Pre-cutover: do it before cutover, as a Plan 1 gate item.
+Engineer instructions:
+1. In docker.go set `envKeyRE = ^[A-Za-z0-9_][A-Za-z0-9_.-]*$` and add `len(k) > 256` rejection in `validateEnv` (message names the key only, states the pattern and the length cap). Update its comment.
+2. Table test in the runtime package. Accept: `BAD-KEY`, `my.key`, `1ST`, `_X`, `spring.datasource.url`, a 256-char key. Reject: empty, `A B`, `A=B`, `#X`, `-X`, `.X`, `A\nB`, `A\x00B`, 257-char key, non-ASCII key. Keep the existing value tests. Assert an accepted dotted key is written as `my.key=v` in the env file.
+3. Re-run the full Go CI set; update the Task 27 Step 3.3 SQL and release note to list only rows violating the new pattern (spaces, `=`, `#`/`-`/`.` lead, >256, non-ASCII). Commit as `fix(go): accept docker-valid env keys (dash, dot, leading digit)`.
+Registry default `localhost:5001`: yes, acceptable (matches dev stack, documented; Node default 5000 was never used in practice).
+Follow-ups: Engineer implements; Verifier re-runs CI and smoke script. Plan 2: API-side key validation backlog line.

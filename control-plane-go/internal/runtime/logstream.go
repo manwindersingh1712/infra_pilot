@@ -54,6 +54,9 @@ func NewStreamer(ctx context.Context, sink LogSink, log *slog.Logger) *Streamer 
 	return &Streamer{
 		ctx: ctx, sink: sink, log: log, now: time.Now,
 		newCmd: func(ctx context.Context, containerID string) *exec.Cmd {
+			// --tail=100: a resumed stream (Resume after a worker restart)
+			// re-sends up to 100 lines the sink already has; dedupe via
+			// --since or timestamps is deferred to Plan 3 (STAFF-4(b) T19).
 			return exec.CommandContext(ctx, "docker", "logs", "-f", "--tail=100", containerID)
 		},
 		active: map[string]*stream{},
@@ -62,6 +65,9 @@ func NewStreamer(ctx context.Context, sink LogSink, log *slog.Logger) *Streamer 
 
 // Start begins streaming unless this deployment is already streaming. An
 // empty deployment ID or an invalid container name is logged and ignored.
+// Call it only once the container is running: `docker logs -f` on a
+// created-but-not-started container exits at once and the stream ends
+// (VER-3 T19).
 func (s *Streamer) Start(deploymentID, containerID string) { s.start(deploymentID, containerID) }
 
 // start is Start reporting whether a new stream was started (STAFF-1 T20).

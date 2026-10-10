@@ -246,7 +246,7 @@ func TestRunRejectsPublishWithoutContainerPort(t *testing.T) {
 // hold line breaks or invalid UTF-8; errors name the key, never the value.
 func TestRunValidatesEnv(t *testing.T) {
 	bad := []map[string]string{
-		{"1X": "v"}, {"A-B": "v"}, {"A=B": "v"}, {"": "v"}, {"A B": "v"}, {"X\n": "v"},
+		{"A=B": "v"}, {"": "v"}, {"A B": "v"}, {"X\n": "v"},
 		{"X": "a\nsecret"}, {"X": "a\rsecret"}, {"X": "secret\xff"},
 	}
 	for _, env := range bad {
@@ -475,7 +475,7 @@ func TestRunDropsCapabilitiesAndAddsOnlyRequested(t *testing.T) {
 func TestValidationErrorsWrapErrInvalidSpec(t *testing.T) {
 	ctx := context.Background()
 	for name, spec := range map[string]RunSpec{
-		"env key":    {Image: "img", Name: "cp-d8", Network: "n", Env: map[string]string{"my-key": "v"}},
+		"env key":    {Image: "img", Name: "cp-d8", Network: "n", Env: map[string]string{"A B": "v"}},
 		"env value":  {Image: "img", Name: "cp-d8", Network: "n", Env: map[string]string{"K": "a\nb"}},
 		"image":      {Image: "-x", Name: "cp-d8", Network: "n"},
 		"name":       {Image: "img", Name: "--x", Network: "n"},
@@ -488,5 +488,58 @@ func TestValidationErrorsWrapErrInvalidSpec(t *testing.T) {
 		if strings.Contains(fmt.Sprint(err), "a\nb") {
 			t.Errorf("%s: error leaks the value: %v", name, err)
 		}
+	}
+}
+
+// CTO ruling 2026-10-10: keys follow what docker --env-file accepts (Node passed
+// them as -e KEY=VALUE), minus anything that could break the KEY=VALUE\n file.
+func TestEnvKeyCharset(t *testing.T) {
+	accept := []string{"BAD-KEY", "my.key", "1ST", "_X", "spring.datasource.url", strings.Repeat("K", 256)}
+	reject := []string{"", "A B", "A=B", "#X", "-X", ".X", "A\nB", "A\x00B", strings.Repeat("K", 257), "Ключ"}
+	for _, k := range accept {
+		if err := validateEnv(map[string]string{k: "v"}); err != nil {
+			t.Errorf("key %q must be accepted: %v", k, err)
+		}
+	}
+	for _, k := range reject {
+		err := validateEnv(map[string]string{k: "secretvalue"})
+		if err == nil {
+			t.Errorf("key %q must be rejected", k)
+			continue
+		}
+		if strings.Contains(err.Error(), "secretvalue") {
+			t.Errorf("error leaks the value: %v", err)
+		}
+	}
+}
+
+func TestDottedEnvKeyIsWrittenToEnvFile(t *testing.T) {
+	var content string
+	var mode os.FileMode
+	r := &testutil.FakeRunner{Handle: func(c testutil.Call) (string, error) {
+		if c.Args[0] == "rm" {
+			return "", errors.New("Error: No such container: cp-d9")
+		}
+		for i, a := range c.Args {
+			if a == "--env-file" {
+				b, err := os.ReadFile(c.Args[i+1])
+				if err != nil {
+					return "", err
+				}
+				content = string(b)
+				info, err := os.Stat(c.Args[i+1])
+				if err != nil {
+					return "", err
+				}
+				mode = info.Mode().Perm()
+			}
+		}
+		return "id\n", nil
+	}}
+	if _, err := newDocker(r).Run(context.Background(), RunSpec{Image: "img", Name: "cp-d9", Network: "n", Env: map[string]string{"my.key": "v"}}); err != nil {
+		t.Fatal(err)
+	}
+	if content != "my.key=v\n" || mode != 0o600 {
+		t.Fatalf("env file %q mode %v", content, mode)
 	}
 }

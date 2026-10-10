@@ -1110,8 +1110,9 @@ func TestMarkBuiltAndMarkDeployedMissingRowAreNonRetryable(t *testing.T) {
 // echo the value, and make no docker call at all (not even a pull).
 func TestRunContainerNodeEraInvalidEnvFailsFastNamingKey(t *testing.T) {
 	cases := []struct{ name, key, val, secret string }{
-		{"bad key", "BAD-KEY", "hunter2-secret", "hunter2-secret"},
-		{"dotted key", "my.key", "dot-secret", "dot-secret"},
+		{"space key", "A B", "hunter2-secret", "hunter2-secret"},
+		{"equals key", "A=B", "eq-secret", "eq-secret"},
+		{"hash key", "#X", "dot-secret", "dot-secret"},
 		{"newline value", "PEM", "-----BEGIN-----\nSECRETBODY", "SECRETBODY"},
 	}
 	for _, tc := range cases {
@@ -1145,7 +1146,7 @@ func TestRunContainerAcceptsLowerCaseAndDigitKeys(t *testing.T) {
 	j := e.job(t, store.TypeNodejs)
 	image := "reg:5001/" + j.ServiceID + ":main"
 	j.Image = &image
-	for _, k := range []string{"api_key2", "_x9", "Mixed_Case_1"} {
+	for _, k := range []string{"api_key2", "_x9", "Mixed_Case_1", "BAD-KEY", "my.key", "1ST"} {
 		enc, err := e.acts.Secrets.Encrypt("v")
 		mustT(t, err)
 		mustT(t, upsertErr(e.st.UpsertEnvVar(ctx, j.ServiceID, k, enc)))

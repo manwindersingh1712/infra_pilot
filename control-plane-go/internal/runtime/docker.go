@@ -178,14 +178,21 @@ var allowedCaps = map[string]bool{
 	"DAC_OVERRIDE": true, "DAC_READ_SEARCH": true, "NET_BIND_SERVICE": true,
 }
 
-var envKeyRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+// envKeyRE and maxEnvKeyLen follow what `docker run --env-file` accepts (dash,
+// dot and a leading digit included); Node passed such keys as `-e KEY=VALUE`,
+// so existing services use them. The charset still excludes `=`, `#`,
+// whitespace, NUL and newlines, so a key cannot start a comment, split a line
+// or smuggle a second variable.
+var envKeyRE = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*$`)
+
+const maxEnvKeyLen = 256
 
 // validateEnv keeps the env file well-formed: one KEY=VALUE per line. Errors
 // name the key only; values can be secrets.
 func validateEnv(env map[string]string) error {
 	for _, k := range sortedKeys(env) {
-		if !envKeyRE.MatchString(k) {
-			return fmt.Errorf("env var %q: name must match %s", k, envKeyRE)
+		if len(k) > maxEnvKeyLen || !envKeyRE.MatchString(k) {
+			return fmt.Errorf("env var %q: name must match %s and be at most %d bytes", k, envKeyRE, maxEnvKeyLen)
 		}
 		v := env[k]
 		if strings.ContainsAny(v, "\n\r") || !utf8.ValidString(v) {

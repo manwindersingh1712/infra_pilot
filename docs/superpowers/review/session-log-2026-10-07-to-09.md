@@ -119,3 +119,12 @@ Parity checks against the running Node API, done read-only on the dev DB:
 - **New rule (user):** at ~90% context, save state into START-HERE + this log and commit (START-HERE §7 rule 0).
 - **User questions answered:** 34 tasks left (Plan 1: 11 incl. 17; Plan 2: 18; Plan 3: 5). Kubernetes is roadmap Phase 6, not in the migration plans; the `Runtime`/`Router` interfaces (spec D7) keep it possible.
 - **Next step:** the Task 17 fix landed as `5bc320f` (CI green). Run the Staff + Verifier re-check, close `task-17.md`, update the tracker, start Task 18 (nginx routes).
+
+---
+
+# Session 2026-10-10 (Tasks 17-27, Plan 1 gate)
+
+- Tasks 17-26 passed their gates (records `review/plan1/task-17.md` … `task-26.md`); Task 27's code half (e2e suite, replay history, `scripts/e2e-temporal.sh`) and the plan-end reviews are in `review/plan1/task-27.md`. CTO rulings this session (decisions.md): Task 22 (git switch form, clone limits, ValidImageTag), Task 23 (cap sets incl. Mongo DAC_READ_SEARCH and static-site caps, Redis RDB, credentials), Task 24 (RevertRoute, service-scoped ClaimDeploy, fixed health timeout, cleanup order revert → remove → MarkFailed last), Plan 1 gate (GO, conditional), env-var key relaxation.
+- Process lessons: subagents stall on the 10-minute watchdog when waiting on slow tests (run DB/Docker tests in the background with a log and poll; commit item by item; resume with SendMessage); fakes that return convenient errors hid SDK error wrapping (Task 25); small diffs were verified by the orchestrator instead of re-dispatching reviewers; `timeout` does not exist on macOS.
+- Scripts: `control-plane-go/scripts/smoke-worker.sh` (managed Redis, two queued deployments, isolation flags, metrics) and `control-plane-go/scripts/e2e-temporal.sh` (real Temporal in a throwaway container).
+- **Exact next step:** ask the user to approve the cutover; the Plan 1 runbook is Task 27 Steps 3-5; nothing has been run on the dev stack.

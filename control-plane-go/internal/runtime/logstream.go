@@ -127,13 +127,27 @@ func (s *Streamer) run(ctx context.Context, deploymentID string, st *stream, cmd
 				go func() { defer wg.Done(); s.pump(emitCtx, deploymentID, "stderr", stderr) }()
 				wg.Wait()
 				_ = cmd.Wait()
-				code := cmd.ProcessState.ExitCode()
-				s.emit(emitCtx, deploymentID, "system", fmt.Sprintf("Log stream ended (exit code: %d)", code))
+				msg := "Log stream stopped"
+				if ctx.Err() == nil {
+					msg = fmt.Sprintf("Log stream ended (exit code: %d)", cmd.ProcessState.ExitCode())
+				}
+				s.end(emitCtx, deploymentID, msg)
 				return
 			}
 		}
 	}
-	s.emit(emitCtx, deploymentID, "system", "Log stream error: "+err.Error())
+	s.end(emitCtx, deploymentID, "Log stream error: "+err.Error())
+}
+
+// end writes the stream's final system entry, except on worker shutdown:
+// then the container keeps running and the stream resumes on the next start,
+// so telling the UI it ended would be false (STAFF-4(a), VER-4 T19).
+func (s *Streamer) end(ctx context.Context, deploymentID, msg string) {
+	if s.ctx.Err() != nil {
+		s.log.Info("log stream closed for shutdown", "deploymentId", deploymentID)
+		return
+	}
+	s.emit(ctx, deploymentID, "system", msg)
 }
 
 // pump reads r line by line until EOF. A line longer than maxLogLine is cut

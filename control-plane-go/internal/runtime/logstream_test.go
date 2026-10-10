@@ -88,12 +88,34 @@ func TestStreamerStartsOncePerDeploymentAndStops(t *testing.T) {
 	waitFor(t, func() bool { return len(sink.all()) > 0 }) // the process is running
 	s.Stop("dep1")
 	waitFor(t, func() bool { return !s.IsStreaming("dep1") })
-	// STAFF-5 T19: the process was killed and the goroutine wrote its last entry.
+	// STAFF-5 T19: the process was killed and the goroutine wrote its last
+	// entry; VER-4 T19: a Stop reads "stopped", not "exit code: -1".
 	waitFor(t, func() bool {
 		got := sink.all()
 		last := got[len(got)-1]
-		return last.Source == "system" && strings.HasPrefix(last.Message, "Log stream ended (exit code: ")
+		return last.Source == "system" && last.Message == "Log stream stopped"
 	})
+}
+
+// STAFF-4(a) T19: on worker shutdown the container keeps running, so the
+// stream must not tell the UI it ended.
+func TestStreamerShutdownWritesNoEndEntry(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	sink := &memorySink{}
+	s := NewStreamer(ctx, sink, slog.New(slog.DiscardHandler))
+	s.newCmd = func(ctx context.Context, _ string) *exec.Cmd {
+		return exec.CommandContext(ctx, "sh", "-c", "echo ready; exec sleep 30")
+	}
+
+	s.Start("dep1", "ctr1")
+	waitFor(t, func() bool { return len(sink.all()) > 0 })
+	cancel()
+	waitFor(t, func() bool { return !s.IsStreaming("dep1") })
+	for _, e := range sink.all() {
+		if e.Source == "system" {
+			t.Fatalf("unexpected system entry %+v", e)
+		}
+	}
 }
 
 // SEC-1 / SEC-2 T19: an over-long line is cut to maxLogLine with a marker and

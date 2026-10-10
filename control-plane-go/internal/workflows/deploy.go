@@ -110,10 +110,13 @@ func DeployWorkflow(ctx workflow.Context, deploymentID string) error {
 	if err == nil {
 		return nil
 	}
-	log := workflow.GetLogger(ctx)
+	// Every warning names the deployment and service, and carries the error.
+	warn := func(msg string, err error) {
+		workflow.GetLogger(ctx).Warn(msg, "deploymentId", deploymentID, "serviceId", job.ServiceID, "err", err)
+	}
 	if st.deployed {
 		// The deployment is live. Keep it, fail the run so it shows in the UI.
-		log.Warn("post-deploy step failed; deployment kept", "deploymentId", deploymentID)
+		warn("post-deploy step failed; deployment kept", err)
 		return err
 	}
 	// Record the failure even if the workflow is being cancelled. MarkFailed
@@ -121,7 +124,7 @@ func DeployWorkflow(ctx workflow.Context, deploymentID string) error {
 	cleanup, _ := workflow.NewDisconnectedContext(ctx)
 	cleanup = workflow.WithActivityOptions(cleanup, shortOptions())
 	if cerr := workflow.ExecuteActivity(cleanup, a.MarkFailed, deploymentID).Get(cleanup, nil); cerr != nil {
-		log.Warn("MarkFailed failed", "deploymentId", deploymentID)
+		warn("MarkFailed failed", cerr)
 	}
 	switch {
 	case st.routeSwitched || st.committing:
@@ -133,13 +136,13 @@ func DeployWorkflow(ctx workflow.Context, deploymentID string) error {
 		// and leave it to the Plan 3 reconciler.
 		rev := RevertInput{ServiceID: job.ServiceID, DeploymentID: deploymentID}
 		if cerr := workflow.ExecuteActivity(cleanup, a.RevertRoute, rev).Get(cleanup, nil); cerr != nil {
-			log.Warn("RevertRoute failed; container kept", "deploymentId", deploymentID)
+			warn("RevertRoute failed; container kept", cerr)
 		} else if cerr := workflow.ExecuteActivity(cleanup, a.RemoveContainer, ContainerName(deploymentID)).Get(cleanup, nil); cerr != nil {
-			log.Warn("RemoveContainer failed", "deploymentId", deploymentID)
+			warn("RemoveContainer failed", cerr)
 		}
 	default:
 		if cerr := workflow.ExecuteActivity(cleanup, a.RemoveContainer, ContainerName(deploymentID)).Get(cleanup, nil); cerr != nil {
-			log.Warn("RemoveContainer failed", "deploymentId", deploymentID)
+			warn("RemoveContainer failed", cerr)
 		}
 	}
 	return err

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -610,7 +611,91 @@ func TestNoRepoURLInActivityInputsOrErrors(t *testing.T) {
 	}
 }
 
-func TestDeployIsDeterministicAcrossRuns(t *testing.T) {
+// capLog collects workflow log lines as "level msg k=v ...".
+type capLog struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (c *capLog) add(level, msg string, kv []any) {
+	var b strings.Builder
+	b.WriteString(level + " " + msg)
+	for i := 0; i+1 < len(kv); i += 2 {
+		b.WriteString(fmt.Sprintf(" %v=%v", kv[i], kv[i+1]))
+	}
+	c.mu.Lock()
+	c.lines = append(c.lines, b.String())
+	c.mu.Unlock()
+}
+func (c *capLog) Debug(m string, kv ...any) { c.add("DEBUG", m, kv) }
+func (c *capLog) Info(m string, kv ...any)  { c.add("INFO", m, kv) }
+func (c *capLog) Warn(m string, kv ...any)  { c.add("WARN", m, kv) }
+func (c *capLog) Error(m string, kv ...any) { c.add("ERROR", m, kv) }
+
+func (c *capLog) warns() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []string
+	for _, l := range c.lines {
+		if strings.HasPrefix(l, "WARN ") {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// STAFF-5: every cleanup warning names the deployment, the service and the error.
+func TestCleanupWarningsCarryIdsAndError(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(env *testsuite.TestWorkflowEnvironment, a *Activities)
+		want  []string // message fragments, one warning each
+	}{
+		{"markfailed and remove fail", func(env *testsuite.TestWorkflowEnvironment, a *Activities) {
+			env.OnActivity(a.WaitHealthy, mock.Anything, mock.Anything).Return(nonRetryable("probe", "Health")).Once()
+			env.OnActivity(a.MarkFailed, mock.Anything, mock.Anything).Return(nonRetryable("boom-markfailed", "DB")).Once()
+			env.OnActivity(a.RemoveContainer, mock.Anything, mock.Anything).Return(nonRetryable("boom-remove", "Docker")).Once()
+		}, []string{"MarkFailed failed", "boom-markfailed", "RemoveContainer failed", "boom-remove"}},
+		{"revert fails", func(env *testsuite.TestWorkflowEnvironment, a *Activities) {
+			env.OnActivity(a.SwitchRoute, mock.Anything, mock.Anything).Return("", nonRetryable("reload", "Route")).Once()
+			env.OnActivity(a.RevertRoute, mock.Anything, mock.Anything).Return(nonRetryable("boom-revert", "Route")).Once()
+		}, []string{"RevertRoute failed", "boom-revert"}},
+		{"post-deploy failure", func(env *testsuite.TestWorkflowEnvironment, a *Activities) {
+			env.OnActivity(a.RetirePrevious, mock.Anything, mock.Anything).Return(nonRetryable("boom-retire", "Docker")).Once()
+		}, []string{"post-deploy step failed", "boom-retire"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var s testsuite.WorkflowTestSuite
+			lg := &capLog{}
+			s.SetLogger(lg)
+			env := s.NewTestWorkflowEnvironment()
+			env.RegisterActivity(&Activities{})
+			tr := &trace{}
+			var a *Activities
+			tc.setup(env, a)
+			mockAll(env, tr, appJob())
+			env.ExecuteWorkflow(DeployWorkflow, "d1")
+
+			warns := lg.warns()
+			joined := strings.Join(warns, "\n")
+			for _, frag := range tc.want {
+				if !strings.Contains(joined, frag) {
+					t.Fatalf("no warning with %q in:\n%s", frag, joined)
+				}
+			}
+			for _, w := range warns {
+				if !strings.Contains(w, "deploymentId=d1") || !strings.Contains(w, "serviceId=s1") || !strings.Contains(w, "err=") {
+					t.Fatalf("warning lacks deploymentId, serviceId or err: %s", w)
+				}
+			}
+		})
+	}
+}
+
+// A trace test only: it shows the activity sequence repeats. Determinism itself
+// is checked statically by the workflowcheck CI step.
+func TestDeployTraceIsStableAcrossRuns(t *testing.T) {
 	var first []string
 	for i := range 3 {
 		env, tr := newWorkflowEnv(), &trace{}

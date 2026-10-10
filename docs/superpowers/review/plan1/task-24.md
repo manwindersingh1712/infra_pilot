@@ -21,3 +21,10 @@ Gate blocked. Open for the CTO: SEC-1/SEC-2 failure-path fixes, STAFF-2 concurre
 
 ## CTO ruling, fix round 2 (`decisions.md` "2026-10-10 Plan 1 Task 24 fix round 2")
 Reverses "MarkFailed first" for path 2 only: revert → remove (only if the revert succeeded) → MarkFailed last (always). STAFF-8 and STAFF-9 fixed now; SEC-7 deferred (Plan 3 reconciler); VER-2 covered by the Task 27 e2e. Spec §4 step 12 edited; amendment pasted under Task 24.
+
+## Fix round 2 (commits dcfb194, 4dc700e, bcf87c3)
+- `dcfb194` STAFF-7: path 2 is RevertRoute → RemoveContainer (only if the revert succeeded) → MarkFailed last (always); `TestPath2MarkFailedIsLast` covers clean / revert fails / remove fails. `4dc700e` STAFF-8: RetirePrevious and StartLogStream run on a disconnected context after the commit; `TestPostCommitStepsSurviveCancellation` and an extended `TestMarkDeployedSurvivesCancellation`. `bcf87c3` STAFF-9: `FOR NO KEY UPDATE` on the Service row (concurrent-claim tests pass on real Postgres, 30 runs).
+- **Orchestrator check:** read the full deploy.go/deployments.go diff against the CTO list (path 1 and 3 order irrelevant; path 2 per ruling); `go test ./internal/workflows ./internal/store -race -count=2` green; workflowcheck v0.6.0 exit 0. Engineer CI dry run green.
+
+## Result
+**PASSED 2026-10-10** after a CTO ruling and two fix rounds. Open (backlog): SEC-7 (RevertRoute may repoint at a dead container; Plan 3 reconciler), STAFF-6 (MarkFailed exhausted leaves the row `deploying`; Plan 3 reconciler), SEC-5 (docker stderr in failure messages; Plan 3), real-Temporal-server runs (worker kill/resume, cancel during RunContainer/SwitchRoute, two concurrent deployments of one service, history replay) required at the Task 26 smoke test and Task 27 e2e.

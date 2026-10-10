@@ -2,7 +2,6 @@ package workflows
 
 import (
 	"fmt"
-	"sync/atomic"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
@@ -24,7 +23,8 @@ func shortOptions() workflow.ActivityOptions {
 }
 
 func buildOptions() workflow.ActivityOptions {
-	return workflow.ActivityOptions{StartToCloseTimeout: 30 * time.Minute, HeartbeatTimeout: time.Minute, RetryPolicy: retry}
+	return workflow.ActivityOptions{StartToCloseTimeout: 30 * time.Minute, ScheduleToCloseTimeout: 90 * time.Minute,
+		HeartbeatTimeout: time.Minute, RetryPolicy: retry}
 }
 
 // runOptions: RunContainer pulls an image and starts a container, and
@@ -38,26 +38,16 @@ func runOptions() workflow.ActivityOptions {
 	}
 }
 
-// healthTimeout mirrors the worker's HEALTH_TIMEOUT_SECONDS. The worker sets it
-// once at startup (SetHealthTimeout) before it polls, so the WaitHealthy
-// activity timeout always exceeds the probe deadline.
-var healthTimeout atomic.Int64
-
-func init() { healthTimeout.Store(int64(60 * time.Second)) }
-
-// SetHealthTimeout must be called with Config.HealthTimeout before the worker starts.
-func SetHealthTimeout(d time.Duration) {
-	if d > 0 {
-		healthTimeout.Store(int64(d))
-	}
-}
+// healthStartToClose is fixed. The probe deadline (HEALTH_TIMEOUT_SECONDS) is
+// capped at 600 s in internal/config, so this always exceeds it, with room for
+// a first image pull. A constant keeps workflow code free of mutable state.
+const healthStartToClose = 11 * time.Minute
 
 // healthOptions allows one attempt: an unhealthy container fails the deploy
-// and the previous deployment keeps serving. StartToClose is the probe
-// deadline plus 60 s, so a first image pull cannot time the activity out.
+// and the previous deployment keeps serving.
 func healthOptions() workflow.ActivityOptions {
 	return workflow.ActivityOptions{
-		StartToCloseTimeout: time.Duration(healthTimeout.Load()) + time.Minute, HeartbeatTimeout: 30 * time.Second,
+		StartToCloseTimeout: healthStartToClose, HeartbeatTimeout: 30 * time.Second,
 		RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1},
 	}
 }

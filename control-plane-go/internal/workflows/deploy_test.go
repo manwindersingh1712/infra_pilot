@@ -490,12 +490,14 @@ func TestActivityOptions(t *testing.T) {
 	if r.RetryPolicy == shortOptions().RetryPolicy {
 		t.Fatal("RunContainer must not share the short retry policy")
 	}
-	defer SetHealthTimeout(60 * time.Second)
-	for _, d := range []time.Duration{time.Second, 60 * time.Second, 10 * time.Minute} {
-		SetHealthTimeout(d)
-		h := healthOptions()
-		if h.RetryPolicy.MaximumAttempts != 1 || h.StartToCloseTimeout < d+time.Minute || h.HeartbeatTimeout != 30*time.Second {
-			t.Fatalf("health(%s) = %+v", d, h)
-		}
+	if b := buildOptions(); b.ScheduleToCloseTimeout != 90*time.Minute {
+		t.Fatalf("build ScheduleToClose = %s", b.ScheduleToCloseTimeout)
+	}
+	if healthStartToClose != 11*time.Minute {
+		t.Fatalf("healthStartToClose = %s", healthStartToClose)
+	}
+	h := healthOptions()
+	if h.RetryPolicy.MaximumAttempts != 1 || h.StartToCloseTimeout != 11*time.Minute || h.HeartbeatTimeout != 30*time.Second {
+		t.Fatalf("health = %+v", h)
 	}
 }

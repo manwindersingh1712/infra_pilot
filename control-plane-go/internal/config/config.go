@@ -59,7 +59,7 @@ type Config struct {
 	ServiceBaseDomain string
 }
 
-const maxHealthTimeoutSeconds = 3600
+const maxHealthTimeoutSeconds = 600 // below the 11 minute WaitHealthy activity timeout in internal/workflows
 
 // Docker size: a positive integer with an optional b/k/m/g unit, e.g. 512m.
 var dockerSize = regexp.MustCompile(`^[1-9][0-9]*[bkmgBKMG]?$`)

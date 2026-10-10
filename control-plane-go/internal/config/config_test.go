@@ -71,6 +71,13 @@ func TestLoadAppliesDefaults(t *testing.T) {
 	}
 }
 
+// The activity timeout is a fixed 11 minutes, so the probe deadline is capped at 10.
+func TestLoadAcceptsHealthTimeoutAtTheCap(t *testing.T) {
+	if c := mustLoad(t, map[string]string{"DATABASE_URL": "postgres://x", "HEALTH_TIMEOUT_SECONDS": "600"}); c.HealthTimeout != 600*time.Second {
+		t.Fatalf("HealthTimeout = %s", c.HealthTimeout)
+	}
+}
+
 func TestLoadReadsOverrides(t *testing.T) {
 	c := mustLoad(t, map[string]string{
 		"DATABASE_URL": " postgres://x ", "NODE_ENV": "production", "LOG_FORMAT": "json",
@@ -150,9 +157,10 @@ func TestLoadErrors(t *testing.T) {
 		{"range start 0", map[string]string{"DATA_PLANE_PORT_RANGE_START": "0"}, "DATA_PLANE_PORT_RANGE_START must be an integer"},
 		{"range end 70000", map[string]string{"DATA_PLANE_PORT_RANGE_END": "70000"}, "DATA_PLANE_PORT_RANGE_END must be an integer"},
 		{"range start > end", map[string]string{"DATA_PLANE_PORT_RANGE_START": "30000", "DATA_PLANE_PORT_RANGE_END": "20000"}, "must not be greater than DATA_PLANE_PORT_RANGE_END"},
-		{"health timeout 0", map[string]string{"HEALTH_TIMEOUT_SECONDS": "0"}, "HEALTH_TIMEOUT_SECONDS must be an integer from 1 to 3600"},
-		{"health timeout -5", map[string]string{"HEALTH_TIMEOUT_SECONDS": "-5"}, "HEALTH_TIMEOUT_SECONDS must be an integer from 1 to 3600"},
-		{"health timeout too big", map[string]string{"HEALTH_TIMEOUT_SECONDS": "99999999999999"}, "HEALTH_TIMEOUT_SECONDS must be an integer from 1 to 3600"},
+		{"health timeout 0", map[string]string{"HEALTH_TIMEOUT_SECONDS": "0"}, "HEALTH_TIMEOUT_SECONDS must be an integer from 1 to 600"},
+		{"health timeout -5", map[string]string{"HEALTH_TIMEOUT_SECONDS": "-5"}, "HEALTH_TIMEOUT_SECONDS must be an integer from 1 to 600"},
+		{"health timeout too big", map[string]string{"HEALTH_TIMEOUT_SECONDS": "99999999999999"}, "HEALTH_TIMEOUT_SECONDS must be an integer from 1 to 600"},
+		{"health timeout 601", map[string]string{"HEALTH_TIMEOUT_SECONDS": "601"}, "HEALTH_TIMEOUT_SECONDS must be an integer from 1 to 600"},
 		{"pids 0 (unlimited)", map[string]string{"CONTAINER_PIDS": "0"}, "CONTAINER_PIDS must be an integer"},
 		{"pids -1 (unlimited)", map[string]string{"CONTAINER_PIDS": "-1"}, "CONTAINER_PIDS must be an integer"},
 		{"builder cpus 0", map[string]string{"BUILDER_CPUS": "0"}, "BUILDER_CPUS must be an integer"},

@@ -297,21 +297,70 @@ func TestManagedHealthFailureAfterRunRemovesContainer(t *testing.T) {
 	}
 }
 
-func TestManagedMarkDeployedFailureRemovesContainer(t *testing.T) {
+// Failure path 3 for managed services: once MarkDeployed has started the
+// container may be recorded as the live one, so it is kept.
+func TestManagedMarkDeployedExhaustedKeepsContainer(t *testing.T) {
 	env, tr := newWorkflowEnv(), &trace{}
 	var a *Activities
 	env.OnActivity(a.MarkDeployed, mock.Anything, mock.Anything).Return(nonRetryable("db down", "DB")).Once()
 	mockAll(env, tr, managedJob())
 	env.ExecuteWorkflow(DeployWorkflow, "d1")
 
-	got := tr.get()
-	if env.GetWorkflowError() == nil || !slices.Equal(got[len(got)-2:], []string{"failed", "remove:cp-d1"}) {
-		t.Fatalf("err=%v steps=%v", env.GetWorkflowError(), got)
+	if env.GetWorkflowError() == nil || !tr.has("failed") || tr.hasPrefix("remove:") || tr.has("logs") {
+		t.Fatalf("err=%v steps=%v", env.GetWorkflowError(), tr.get())
 	}
 }
 
-// Failure path 2: after SwitchRoute, before MarkDeployed, the serving container and route stay.
-func TestMarkDeployedFailureAfterSwitchKeepsContainer(t *testing.T) {
+// SEC-2: MarkDeployed is the commit point. A few failures after the route
+// switched are retried (5 s, doubling) and the deployment ends deployed.
+func TestMarkDeployedRetriedAfterRouteSwitch(t *testing.T) {
+	env, tr := newWorkflowEnv(), &trace{}
+	var a *Activities
+	calls := 0
+	env.OnActivity(a.MarkDeployed, mock.Anything, mock.Anything).Return(func(_ context.Context, in DeployedInput) error {
+		calls++
+		if calls <= 4 {
+			return errors.New("db blip")
+		}
+		tr.rec("deployed", in)
+		return nil
+	})
+	mockAll(env, tr, appJob())
+	env.ExecuteWorkflow(DeployWorkflow, "d1")
+
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 5 || !tr.has("deployed") || tr.has("failed") || tr.hasPrefix("remove:") || !tr.has("logs") {
+		t.Fatalf("calls=%d steps=%v", calls, tr.get())
+	}
+}
+
+// The commit survives a cancel that arrives while MarkDeployed is retrying.
+func TestMarkDeployedSurvivesCancellation(t *testing.T) {
+	env, tr := newWorkflowEnv(), &trace{}
+	var a *Activities
+	calls := 0
+	env.OnActivity(a.MarkDeployed, mock.Anything, mock.Anything).Return(func(_ context.Context, in DeployedInput) error {
+		calls++
+		if calls <= 2 {
+			return errors.New("db blip")
+		}
+		tr.rec("deployed", in)
+		return nil
+	})
+	mockAll(env, tr, appJob())
+	env.RegisterDelayedCallback(env.CancelWorkflow, time.Second)
+	env.ExecuteWorkflow(DeployWorkflow, "d1")
+
+	if !tr.has("deployed") || tr.has("failed") || tr.hasPrefix("remove:") {
+		t.Fatalf("err=%v steps=%v", env.GetWorkflowError(), tr.get())
+	}
+}
+
+// Failure path 3: MarkDeployed failed for good after the route switched. The
+// serving container and route stay and nothing is retired.
+func TestMarkDeployedExhaustedKeepsContainer(t *testing.T) {
 	env, tr := newWorkflowEnv(), &trace{}
 	var a *Activities
 	env.OnActivity(a.MarkDeployed, mock.Anything, mock.Anything).Return(nonRetryable("db down", "DB")).Once()
@@ -331,7 +380,7 @@ func TestMarkDeployedFailureAfterSwitchKeepsContainer(t *testing.T) {
 	env.AssertExpectations(t)
 }
 
-// Failure path 3: after MarkDeployed the row stays deployed, no cleanup runs, the run fails visibly.
+// Failure path 4: after MarkDeployed the row stays deployed, no cleanup runs, the run fails visibly.
 func TestRetireFailureAfterDeployKeepsDeployment(t *testing.T) {
 	env, tr := newWorkflowEnv(), &trace{}
 	var a *Activities
@@ -376,7 +425,7 @@ func TestManagedLogStreamFailureKeepsDeployment(t *testing.T) {
 	}
 }
 
-// Failure path 4: the build is skipped when the image exists.
+// The build is skipped when the image exists.
 func TestPrebuiltImageSkipsBuild(t *testing.T) {
 	env, tr := newWorkflowEnv(), &trace{}
 	job := appJob()
@@ -402,7 +451,7 @@ func TestPrebuiltImageSkipsBuild(t *testing.T) {
 	}
 }
 
-// Failure path 4: a lost claim is a silent no-op, before and after the build.
+// A lost claim is a silent no-op, before and after the build.
 func TestDeployLostClaimIsANoop(t *testing.T) {
 	env, tr := newWorkflowEnv(), &trace{}
 	var a *Activities
@@ -598,6 +647,11 @@ func TestActivityOptions(t *testing.T) {
 	}
 	if r.RetryPolicy == shortOptions().RetryPolicy {
 		t.Fatal("RunContainer must not share the short retry policy")
+	}
+	m := commitOptions()
+	if m.StartToCloseTimeout != time.Minute || m.ScheduleToCloseTimeout != 30*time.Minute || m.RetryPolicy.InitialInterval != 5*time.Second ||
+		m.RetryPolicy.BackoffCoefficient != 2 || m.RetryPolicy.MaximumInterval != time.Minute || m.RetryPolicy.MaximumAttempts != 0 {
+		t.Fatalf("commit = %+v", m)
 	}
 	c := claimDeployOptions()
 	if c.StartToCloseTimeout != 30*time.Second || c.ScheduleToCloseTimeout != 30*time.Minute ||

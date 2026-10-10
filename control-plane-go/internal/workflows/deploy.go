@@ -59,6 +59,17 @@ func routeOptions() workflow.ActivityOptions {
 	return o
 }
 
+// commitOptions: MarkDeployed is the commit point. Once the route switched (or
+// the managed container is healthy) it is retried for up to 30 minutes, in a
+// context that a cancel does not reach, so a Postgres blip does not orphan the
+// container.
+func commitOptions() workflow.ActivityOptions {
+	return workflow.ActivityOptions{
+		StartToCloseTimeout: time.Minute, ScheduleToCloseTimeout: 30 * time.Minute,
+		RetryPolicy: &temporal.RetryPolicy{InitialInterval: 5 * time.Second, BackoffCoefficient: 2, MaximumInterval: time.Minute},
+	}
+}
+
 // healthStartToClose is fixed. The probe deadline (HEALTH_TIMEOUT_SECONDS) is
 // capped at 600 s in internal/config, so this always exceeds it, with room for
 // a first image pull. A constant keeps workflow code free of mutable state.
@@ -78,7 +89,7 @@ func healthOptions() workflow.ActivityOptions {
 // routeAttempted is set BEFORE SwitchRoute: an error or cancel there does not
 // prove nginx was untouched (file written, reload failed; or a timeout after
 // the reload). routeSwitched is set only after SwitchRoute succeeded.
-type stage struct{ routeAttempted, routeSwitched, deployed bool }
+type stage struct{ routeAttempted, routeSwitched, committing, deployed bool }
 
 // DeployWorkflow builds (if needed) and runs one deployment. Its ID is
 // DeployWorkflowID(deploymentID), so starting it twice is harmless.
@@ -113,8 +124,9 @@ func DeployWorkflow(ctx workflow.Context, deploymentID string) error {
 		log.Warn("MarkFailed failed", "deploymentId", deploymentID)
 	}
 	switch {
-	case st.routeSwitched:
-		// The new container is serving: keep it.
+	case st.routeSwitched || st.committing:
+		// The new container is serving, or MarkDeployed may have recorded it
+		// (failure path 3): keep it. The Plan 3 reconciler cleans up.
 	case st.routeAttempted:
 		// Route state unknown. Remove the container only once the route is known
 		// not to point at it; if the revert fails, keep it (it may be serving)
@@ -213,7 +225,10 @@ func deploy(ctx workflow.Context, job store.Job) (stage, error) {
 		DeploymentID: job.DeploymentID, ContainerID: run.ContainerID, HostPort: run.HostPort,
 		ContainerPort: run.ContainerPort, RuntimeURL: runtimeURL, VolumePath: volumePath,
 	}
-	if err := workflow.ExecuteActivity(short, a.MarkDeployed, deployed).Get(ctx, nil); err != nil {
+	st.committing = true
+	commit, _ := workflow.NewDisconnectedContext(ctx)
+	commit = workflow.WithActivityOptions(commit, commitOptions())
+	if err := workflow.ExecuteActivity(commit, a.MarkDeployed, deployed).Get(commit, nil); err != nil {
 		return st, err
 	}
 	st.deployed = true

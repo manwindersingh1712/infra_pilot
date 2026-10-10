@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -291,5 +292,54 @@ func TestReadPackageJSONNotRegularFile(t *testing.T) {
 	}
 	if pkg := ReadPackageJSON(dir); pkg.Scripts != nil || pkg.Engines.Node != "" {
 		t.Fatalf("directory must read as missing, got %+v", pkg)
+	}
+}
+
+func TestGenerateDockerfile(t *testing.T) {
+	const pkgJSON = `{"scripts":{"start":"node app.js"},"engines":{"node":"18"}}`
+	cases := []struct {
+		name        string
+		serviceType string
+		files       map[string]string
+		want        []string // lines that must appear exactly; nil means the result must be ""
+	}{
+		{"nodejs", "nodejs", map[string]string{"package.json": pkgJSON},
+			[]string{"FROM node:18-alpine", `CMD ["sh", "-c", "npm start"]`, "RUN npm ci --only=production"}},
+		{"nextjs", "nextjs", map[string]string{"package.json": pkgJSON},
+			[]string{"FROM node:18-alpine", `CMD ["npm", "start"]`, "RUN npm run build"}},
+		{"react with vite", "react", map[string]string{"package.json": pkgJSON, "vite.config.ts": ""},
+			[]string{"FROM node:18-alpine AS builder", "COPY --from=builder /app/dist /usr/share/nginx/html", `CMD ["nginx", "-g", "daemon off;"]`}},
+		{"react without vite", "react", map[string]string{"package.json": pkgJSON},
+			[]string{"FROM node:18-alpine AS builder", "COPY --from=builder /app/build /usr/share/nginx/html", `CMD ["nginx", "-g", "daemon off;"]`}},
+		{"nodejs without package.json", "nodejs", nil,
+			[]string{"FROM node:20-alpine", `CMD ["sh", "-c", "node index.js"]`}},
+		{"docker", "docker", map[string]string{"package.json": pkgJSON}, nil},
+		{"mongodb", "mongodb", nil, nil},
+		{"redis", "redis", nil, nil},
+		{"empty type", "", map[string]string{"package.json": pkgJSON}, nil},
+		{"unknown type", "unknown", map[string]string{"package.json": pkgJSON}, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for name, body := range c.files {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got := GenerateDockerfile(c.serviceType, dir)
+			if c.want == nil {
+				if got != "" {
+					t.Fatalf("want empty Dockerfile, got:\n%s", got)
+				}
+				return
+			}
+			lines := strings.Split(got, "\n")
+			for _, w := range c.want {
+				if !slices.Contains(lines, w) {
+					t.Errorf("missing line %q in:\n%s", w, got)
+				}
+			}
+		})
 	}
 }

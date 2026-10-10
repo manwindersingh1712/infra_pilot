@@ -12,3 +12,14 @@
 
 ## Status
 Gate blocked. CTO to rule on fix-round scope (VER-1, VER-2, STAFF-1, STAFF-2, SEC-1 and the rest).
+
+## Fix round 1 (CTO ruling `d5341ee`; commits f942999..5f3e13a)
+- `f942999` VER-1/SEC-1 (Mongo caps CHOWN/SETUID/SETGID/DAC_READ_SEARCH; allow-list of six caps, `ErrInvalidSpec`), `8d8c329` VER-2/STAFF-1 (`StaticSiteCaps` for `TypeReact` only; Redis without `--appendonly yes`), `25d0dfb` STAFF-2 (`InsertEnvVarIfAbsent`, 20-way concurrency test), `4c3bb72` SEC-3, `7850af4` FWD-1 (`Claim` true when the row is already in `To`), `6cc4bde` FWD-2 (`keepAlive` in RunContainer), `ac6bcdb` STAFF-3 (retry/idempotency tests, checked setup), `c9c748a` SEC-2 (EvalSymlinks in `legacyDir`; helper containers cap-drop ALL + no-new-privileges; CopyIntoVolume adds CHOWN/DAC_OVERRIDE/DAC_READ_SEARCH/FOWNER), `5f3e13a` VER-3 (three real-Docker tests in `docker_managed_integration_test.go`).
+- The fix round needed four resumes (the Engineer stalled on the 10-minute watchdog while waiting on slow tests); no work was lost.
+
+## Round 1 re-check
+- **Staff + Security (combined): CHANGES REQUESTED (1 medium, 2 low).** All 11 CTO items implemented as ruled. **SEC-6 T23 (medium, regression):** if a user sets the managed password env var (`REDIS_PASSWORD` / `MONGO_INITDB_ROOT_PASSWORD`) to an empty string, `EnsureCredentials` generates a password but `InsertEnvVarIfAbsent` leaves the empty row, so Redis runs `--requirepass ""` (no auth) and Mongo init misbehaves (the old upsert overwrote it). Fix: after a non-insert, if the stored value is empty replace it with the generated password (only empty values qualify); test. STAFF-7 T23 low: `Claim` true-on-already-`To` assumes no other writer sets `To`: cutover note (Node worker must be stopped before Go workers run) in the Task 24/26 text. SEC-7 T23 low: `legacyDir` returns the unresolved path after the check (TOCTOU before the bind mount; acceptable, return the EvalSymlinks result).
+- **Verifier: PASS (no new defects).** Suite green without -short; the three T23 integration tests ran (Mongo redeploy 20 s, static-site caps 14.6 s, Redis seeded dump 2.4 s). Independent real-Docker: React-type spec under final flags `[ALL] [CHOWN SETGID SETUID] [no-new-privileges]`, 512 MB / 1 CPU / 512 pids, page served; nodejs-style container `[ALL] [] [no-new-privileges]`; `SYS_ADMIN` rejected with zero docker calls; Mongo first start auth OK, wrong password rejected, redeploy on the same volume stayed up and the same password found the doc; Redis `appendonly no`, NOAUTH/PONG; EnsureCredentials concurrency test passed against real Postgres. Not run: `Activities.RunContainer` itself for react/nodejs (needs Store + Pull of a local-only image; covered by unit tests `TestRunContainerStaticSiteCapsOnlyForReact`, `TestRunContainerForBuiltApp`). Disk 4.6 GB free before and after.
+
+## Fix round 2 plan
+SEC-6 (replace empty stored password), SEC-7 (return the resolved path). STAFF-7 → Task 24/26 cutover note.

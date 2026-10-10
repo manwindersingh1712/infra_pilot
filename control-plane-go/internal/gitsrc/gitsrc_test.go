@@ -12,6 +12,9 @@ func TestAccepted(t *testing.T) {
 			t.Errorf("url %q: %v", u, err)
 		}
 	}
+	if err := ValidRepoURL("https://xn--bcher-kva.example/x"); err != nil {
+		t.Errorf("punycode host: %v", err)
+	}
 	for _, b := range []string{"main", "feature/a-b"} {
 		if err := ValidBranch(b); err != nil {
 			t.Errorf("branch %q: %v", b, err)
@@ -42,7 +45,9 @@ func TestRejected(t *testing.T) {
 		}
 	}
 	for _, u := range []string{"file:///etc", "ext::sh -c id", "ssh://git@h/x", "git@github.com:x/y.git", "http://h/x",
-		"https://-oProxyCommand=x/y", "https://h/x y", "https://h/x\ny", "https://h/" + strings.Repeat("a", 2100), ""} {
+		"https://-oProxyCommand=x/y", "https://h/x y", "https://h/x\ny",
+		"https://h/x\u2028y", "https://h/x\u0085y", "https://h/x\u00a0y", "https://h/x\u202ey", "https://h/x\u200by",
+		"https://\uff48/x", "https://h/\uff58", "https://h/caf\u00e9", "https://h/x\ty", "https://h/" + strings.Repeat("a", 2100), ""} {
 		check("url", u, ValidRepoURL(u))
 	}
 	for _, b := range []string{"--upload-pack=x", "-b", "a..b", "a/", "x.lock", "a//b", "a@{b", "a.", ""} {

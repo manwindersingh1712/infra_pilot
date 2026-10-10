@@ -29,8 +29,8 @@ func ValidRepoURL(s string) error {
 		return invalid("repo url", "is too long")
 	}
 	for _, r := range s {
-		if r <= 0x20 || r == 0x7f {
-			return invalid("repo url", "contains control characters or whitespace")
+		if r < 0x21 || r > 0x7e {
+			return invalid("repo url", "contains characters outside printable ASCII")
 		}
 	}
 	u, err := url.Parse(s)

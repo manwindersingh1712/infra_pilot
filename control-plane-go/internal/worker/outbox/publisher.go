@@ -6,9 +6,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"math/rand/v2"
 	"time"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"infrapilot/internal/store"
 )
@@ -75,7 +79,7 @@ func (p *Publisher) Tick(ctx context.Context) (int, error) {
 			return err
 		}
 		claimed = len(events)
-		for _, e := range events {
+		for i, e := range events {
 			startErr := p.start(ctx, e)
 			if startErr == nil {
 				p.log.Info("outbox event started", "type", e.Type, "eventId", e.ID)
@@ -98,10 +102,39 @@ func (p *Publisher) Tick(ctx context.Context) (int, error) {
 			if err != nil {
 				return err
 			}
+			if transient(startErr) {
+				// Temporal is hung or unreachable: every further Start would
+				// burn a full StartTimeout while this transaction holds the
+				// row locks. Give the rest back untouched; the next tick
+				// tries them.
+				rest := events[i+1:]
+				if len(rest) == 0 {
+					return nil
+				}
+				ids := make([]string, len(rest))
+				for j, r := range rest {
+					ids[j] = r.ID
+				}
+				p.log.Warn("outbox start unavailable; deferring the rest of the batch", "deferred", len(ids))
+				return tx.RequeueOutbox(ctx, ids)
+			}
 		}
 		return nil
 	})
 	return claimed, err
+}
+
+// transient reports a timeout or connectivity failure: the signal that
+// Temporal itself, not this one event, is the problem.
+func transient(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	switch status.Code(err) {
+	case codes.Unavailable, codes.DeadlineExceeded:
+		return true
+	}
+	return false
 }
 
 func (p *Publisher) start(ctx context.Context, e store.OutboxEvent) error {

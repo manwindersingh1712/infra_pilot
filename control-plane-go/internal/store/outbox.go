@@ -51,6 +51,13 @@ func (s *Store) ClaimOutboxBatch(ctx context.Context, limit int) ([]OutboxEvent,
 	return events, err
 }
 
+// RequeueOutbox returns claimed rows to pending untouched: no attempt is
+// burned and nextAttemptAt (already due) stays, so the next tick takes them.
+func (s *Store) RequeueOutbox(ctx context.Context, ids []string) error {
+	_, err := s.db.Exec(ctx, `UPDATE "OutboxEvent" SET "status" = 'pending' WHERE "id" = ANY($1)`, ids)
+	return err
+}
+
 func (s *Store) MarkOutboxPublished(ctx context.Context, id string) error {
 	_, err := s.db.Exec(ctx,
 		`UPDATE "OutboxEvent" SET "status" = 'published', "publishedAt" = now(), "lastError" = NULL WHERE "id" = $1`, id)

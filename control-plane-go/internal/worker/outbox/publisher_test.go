@@ -32,10 +32,15 @@ type fakeStarter struct {
 	failType string
 	// block, if set, makes Start wait for ctx cancellation and return its error.
 	block bool
+	calls int
 }
 
 func (f *fakeStarter) Start(ctx context.Context, eventType string, payload []byte) error {
-	if f.block {
+	f.mu.Lock()
+	f.calls++
+	block := f.block
+	f.mu.Unlock()
+	if block {
 		<-ctx.Done()
 		return ctx.Err()
 	}
@@ -223,6 +228,53 @@ func TestStartTimeoutDoesNotHoldTheBatch(t *testing.T) {
 	}
 	if s, attempts := status(t, id); s != "pending" || attempts != 1 {
 		t.Fatalf("status=%s attempts=%d", s, attempts)
+	}
+}
+
+func TestHungStartStopsTheBatchAndRequeuesTheRest(t *testing.T) {
+	st, fs, p := setup(t)
+	ctx := context.Background()
+	fs.block = true
+	p.StartTimeout = 200 * time.Millisecond
+	var ids []string
+	for i := range outbox.BatchSize {
+		ids = append(ids, create(t, st, store.EventBuildRequested, map[string]int{"n": i}))
+	}
+
+	begin := time.Now()
+	n, err := p.Tick(ctx)
+	elapsed := time.Since(begin)
+	if err != nil || n != outbox.BatchSize {
+		t.Fatalf("n=%d err=%v", n, err)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("tick took %v with a hung Start; want about one StartTimeout", elapsed)
+	}
+	fs.mu.Lock()
+	calls := fs.calls
+	fs.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("Start called %d times, want 1", calls)
+	}
+	burned := 0
+	for _, id := range ids {
+		s, attempts := status(t, id)
+		if s != "pending" {
+			t.Fatalf("status = %s, want pending (never committed as publishing)", s)
+		}
+		burned += attempts
+	}
+	if burned != 1 {
+		t.Fatalf("%d attempts burned, want exactly 1", burned)
+	}
+
+	// Temporal recovers: the requeued rows are due on the next tick.
+	fs.mu.Lock()
+	fs.block = false
+	fs.mu.Unlock()
+	n, err = p.Tick(ctx)
+	if err != nil || n != outbox.BatchSize-1 || len(fs.all()) != outbox.BatchSize-1 {
+		t.Fatalf("recovery tick: n=%d err=%v started=%d", n, err, len(fs.all()))
 	}
 }
 

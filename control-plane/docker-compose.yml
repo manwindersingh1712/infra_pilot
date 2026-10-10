@@ -76,6 +76,21 @@ services:
     volumes:
       - clickhouse_data:/var/lib/clickhouse
 
+  # Temporal dev server (SQLite). Production uses Temporal on Postgres (Plan 3).
+  # The frontend has no authentication: publish it on loopback only, never on
+  # a public interface (spec section 5). mTLS and a dedicated namespace come
+  # with the production setup.
+  temporal:
+    image: temporalio/temporal:latest
+    container_name: cp_temporal
+    user: "0:0" # the named volume is root-owned; the dev server writes SQLite there
+    command: ["server", "start-dev", "--ip", "0.0.0.0", "--db-filename", "/data/temporal.db"]
+    ports:
+      - "127.0.0.1:7233:7233" # gRPC
+      - "127.0.0.1:8233:8233" # Web UI
+    volumes:
+      - temporal_data:/data
+
 networks:
 # cp_net is a Docker bridge network whose sole purpose is to create a
 # private, isolated communication channel between Nginx and the user's
@@ -89,3 +104,4 @@ volumes:
   redis_data:
   minio_data:
   clickhouse_data:
+  temporal_data:

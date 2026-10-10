@@ -343,3 +343,49 @@ func TestGenerateDockerfile(t *testing.T) {
 		})
 	}
 }
+
+func TestReadPackageJSONTolerant(t *testing.T) {
+	cases := []struct {
+		name        string
+		body        string
+		wantScripts map[string]string
+		wantNode    string
+	}{
+		{"engines is a string", `{"engines":"node >=14","scripts":{"start":"node x"}}`, map[string]string{"start": "node x"}, ""},
+		{"engines.node is a number", `{"engines":{"node":18},"scripts":{"start":"node x"}}`, map[string]string{"start": "node x"}, ""},
+		{"scripts is a string", `{"scripts":"oops","engines":{"node":"22"}}`, nil, "22"},
+		{"non-string script skipped", `{"scripts":{"x":1,"start":"node x"},"engines":{"node":"22"}}`, map[string]string{"start": "node x"}, "22"},
+		{"start is a number", `{"scripts":{"start":5,"serve":"node s"},"engines":{"node":"22"}}`, map[string]string{"serve": "node s"}, "22"},
+		{"scripts is null", `{"scripts":null,"engines":{"node":"22"}}`, nil, "22"},
+		{"unknown fields ignored", `{"name":"x","version":1,"engines":{"node":"22"}}`, nil, "22"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(c.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			pkg := ReadPackageJSON(dir)
+			if pkg.Engines.Node != c.wantNode || len(pkg.Scripts) != len(c.wantScripts) {
+				t.Fatalf("got %+v, want scripts %v node %q", pkg, c.wantScripts, c.wantNode)
+			}
+			for k, v := range c.wantScripts {
+				if pkg.Scripts[k] != v {
+					t.Fatalf("scripts[%q] = %q, want %q (got %+v)", k, pkg.Scripts[k], v, pkg)
+				}
+			}
+		})
+	}
+}
+
+func TestReadPackageJSONMalformedStaysEmpty(t *testing.T) {
+	for _, body := range []string{`{broken`, ``, `[1,2]`, `"str"`, `{"scripts":{"start":"x"}`} {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if pkg := ReadPackageJSON(dir); pkg.Scripts != nil || pkg.Engines.Node != "" {
+			t.Errorf("%q: want empty, got %+v", body, pkg)
+		}
+	}
+}

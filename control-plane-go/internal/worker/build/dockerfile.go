@@ -26,7 +26,6 @@ const maxPackageJSONBytes = 1 << 20 // 1 MiB
 // that escapes dir. The clone is attacker-controlled, so it is only read
 // through os.OpenRoot.
 func ReadPackageJSON(dir string) PackageJSON {
-	var pkg PackageJSON
 	root, err := os.OpenRoot(dir)
 	if err != nil {
 		return PackageJSON{}
@@ -47,10 +46,7 @@ func ReadPackageJSON(dir string) PackageJSON {
 	if err != nil {
 		return PackageJSON{}
 	}
-	if err := json.Unmarshal(b, &pkg); err != nil {
-		return PackageJSON{}
-	}
-	return pkg
+	return parsePackageJSON(b)
 }
 
 var nonVersionChars = regexp.MustCompile(`[^0-9a-zA-Z.-]`)
@@ -184,4 +180,36 @@ func GenerateDockerfile(serviceType, dir string) string {
 		return ReactDockerfile(pkg, ReactOutputDir(dir))
 	}
 	return ""
+}
+
+// parsePackageJSON decodes the fields it needs one at a time so a wrong type
+// in one (say "engines": "node >=14") does not discard the others. Wrong-typed
+// fields and non-string script entries are ignored. Syntactically invalid JSON,
+// or a top level that is not an object, yields an empty PackageJSON.
+func parsePackageJSON(b []byte) PackageJSON {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(b, &top); err != nil {
+		return PackageJSON{}
+	}
+	var pkg PackageJSON
+	var scripts map[string]json.RawMessage
+	if json.Unmarshal(top["scripts"], &scripts) == nil {
+		for name, raw := range scripts {
+			var cmd string
+			if json.Unmarshal(raw, &cmd) != nil {
+				continue
+			}
+			if pkg.Scripts == nil {
+				pkg.Scripts = map[string]string{}
+			}
+			pkg.Scripts[name] = cmd
+		}
+	}
+	var engines struct {
+		Node string `json:"node"`
+	}
+	if json.Unmarshal(top["engines"], &engines) == nil {
+		pkg.Engines.Node = engines.Node
+	}
+	return pkg
 }

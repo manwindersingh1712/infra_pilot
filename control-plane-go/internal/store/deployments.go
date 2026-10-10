@@ -89,7 +89,7 @@ func (s *Store) MarkBuilt(ctx context.Context, id, image string) error {
 func (s *Store) MarkFailed(ctx context.Context, id string) (bool, error) {
 	tag, err := s.db.Exec(ctx,
 		`UPDATE "Deployment" SET "status" = 'failed', "updatedAt" = now()
-		 WHERE "id" = $1 AND "status" <> 'deployed'`, id)
+		 WHERE "id" = $1 AND "status" NOT IN ('deployed', 'failed')`, id)
 	if err != nil {
 		return false, err
 	}

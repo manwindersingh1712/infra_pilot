@@ -203,6 +203,10 @@ func TestMarkFailedNeverOverwritesDeployed(t *testing.T) {
 	if d, _ := st.GetDeployment(ctx, building.ID); d.Status != store.StatusFailed {
 		t.Fatalf("deploying row is %s", d.Status)
 	}
+	// SEC-3 (T23r1): failing an already-failed row changes nothing.
+	if changed, err := st.MarkFailed(ctx, building.ID); err != nil || changed {
+		t.Fatalf("already-failed row: changed=%v err=%v", changed, err)
+	}
 	if changed, err := st.MarkFailed(ctx, "unknown"); err != nil || changed {
 		t.Fatalf("unknown id: changed=%v err=%v", changed, err)
 	}

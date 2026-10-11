@@ -133,6 +133,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 	// refresh because a ticket is requested on every stream (re)connect.
 	stream := func(h http.HandlerFunc) http.Handler { return s.streamLimit.wrap(h) }
 	mux.Handle("POST /logs/deployments/{id}/stream-ticket", stream(s.private(s.streamTicket).ServeHTTP))
+	// The stream authenticates with the ticket, not a Bearer token. The limiter
+	// runs first, so a request over the limit does not consume the ticket.
+	mux.Handle("GET /logs/deployments/{id}/stream", stream(s.streamLogs))
 }
 
 // withSecurityHeaders marks every response (including preflights and errors)

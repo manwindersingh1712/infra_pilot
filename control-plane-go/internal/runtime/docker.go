@@ -435,3 +435,42 @@ func NewLimits(memory, cpus string, pids int) (Limits, error) {
 // can fail fast before slow steps such as an image pull. Errors wrap
 // ErrInvalidSpec and name keys, never values.
 func (s RunSpec) Validate() error { return s.validate() }
+
+// RemoveVolume deletes a named volume; a missing volume is not an error. The
+// name is validated like every other docker argument.
+func (d Docker) RemoveVolume(ctx context.Context, name string) error {
+	if err := checkName("volume", name); err != nil {
+		return err
+	}
+	_, err := d.R.Run(ctx, "", "docker", "volume", "rm", "-f", name)
+	if err != nil && !errContains(err, "no such volume") {
+		return err
+	}
+	return nil
+}
+
+var containerIDRE = regexp.MustCompile(`^[0-9a-f]{12,64}$`)
+
+// RemoveServiceContainers force-removes every container (running or not)
+// carrying the label cp.serviceId=<serviceID>. That label is set only on
+// containers this worker created, so nothing else on the host is touched.
+// It catches containers that no Deployment row points at (a deploy cancelled
+// after the container started). Idempotent.
+func (d Docker) RemoveServiceContainers(ctx context.Context, serviceID string) error {
+	if !serviceIDRE.MatchString(serviceID) {
+		return fmt.Errorf("invalid service id %q", serviceID)
+	}
+	out, err := d.R.Run(ctx, "", "docker", "ps", "-a", "-q", "--filter", "label=cp.serviceId="+serviceID)
+	if err != nil {
+		return err
+	}
+	for _, id := range strings.Fields(out) {
+		if !containerIDRE.MatchString(id) {
+			return fmt.Errorf("docker ps returned an unexpected container id %q", id)
+		}
+		if _, err := d.R.Run(ctx, "", "docker", "rm", "-f", id); err != nil && !errContains(err, "no such container") {
+			return err
+		}
+	}
+	return nil
+}

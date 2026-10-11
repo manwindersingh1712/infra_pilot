@@ -43,12 +43,14 @@ type Deps struct {
 	DevLogin     bool // register POST /dev/login (development only; unset APP_ENV means production)
 	AuthBurst    int  // burst of the register/login limiter (10/min); 0 means 5
 	RefreshBurst int  // burst of the refresh/logout limiter (60/min); 0 means 20
+	Stream       StreamConfig
 }
 
 type Server struct {
 	Deps
 	authLimit    *ipLimiter // register, login
 	refreshLimit *ipLimiter // refresh, logout
+	streamLimit  *ipLimiter // stream-ticket, stream (its own bucket, see routes)
 }
 
 // newServer builds the Server with its two rate limiters (defaults applied).
@@ -60,16 +62,27 @@ func newServer(d Deps) *Server {
 	if refresh <= 0 {
 		refresh = defaultRefreshBurst
 	}
+	streamBurst := d.Stream.Burst
+	if streamBurst <= 0 {
+		streamBurst = defaultStreamBurst
+	}
 	return &Server{Deps: d,
 		authLimit:    newIPLimiter(strict, strictEvery),
-		refreshLimit: newIPLimiter(refresh, refreshEvery)}
+		refreshLimit: newIPLimiter(refresh, refreshEvery),
+		streamLimit:  newIPLimiter(streamBurst, streamEvery)}
 }
 
 func NewHandler(d Deps) http.Handler {
+	_, h := buildHandler(d)
+	return h
+}
+
+// buildHandler is NewHandler that also returns the Server (tests inspect it).
+func buildHandler(d Deps) (*Server, http.Handler) {
 	s := newServer(d)
 	mux := http.NewServeMux()
 	s.routes(mux)
-	return withSecurityHeaders(withRequestID(withCORS(d.CORSOrigins, s.withRecover(jsonErrors(mux)))))
+	return s, withSecurityHeaders(withRequestID(withCORS(d.CORSOrigins, s.withRecover(jsonErrors(mux)))))
 }
 
 // routes registers every endpoint. s.private requires a JWT. Each endpoint
@@ -110,6 +123,13 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.Handle("DELETE /services/connections/{id}", s.private(s.deleteConnection))
 
 	mux.Handle("GET /deployments", s.private(s.listDeployments))
+
+	// Log stream tickets. Rate-limit bucket: streamLimit, one per client
+	// address, separate from the auth buckets so a log viewer reconnecting in a
+	// loop cannot lock a user out of login or refresh, and not shared with
+	// refresh because a ticket is requested on every stream (re)connect.
+	stream := func(h http.HandlerFunc) http.Handler { return s.streamLimit.wrap(h) }
+	mux.Handle("POST /logs/deployments/{id}/stream-ticket", stream(s.private(s.streamTicket).ServeHTTP))
 }
 
 // withSecurityHeaders marks every response (including preflights and errors)

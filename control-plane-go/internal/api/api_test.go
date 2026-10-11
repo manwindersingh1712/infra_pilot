@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,6 +21,7 @@ import (
 	"infrapilot/internal/secrets"
 	"infrapilot/internal/store"
 	"infrapilot/internal/testutil"
+	"infrapilot/internal/tickets"
 )
 
 var pool *pgxpool.Pool
@@ -59,17 +60,29 @@ func (emptyWarm) Insert(context.Context, []logs.Entry) error              { retu
 func (emptyWarm) Query(context.Context, logs.Query) ([]logs.Entry, error) { return []logs.Entry{}, nil }
 func (emptyWarm) Count(context.Context, string) (int, error)              { return 0, nil }
 
-type fakeLive struct{ ch chan logs.Entry }
+// fakeLive hands every subscriber the same channel and counts open
+// subscriptions, so tests can prove the stream handler releases them.
+type fakeLive struct {
+	ch     chan logs.Entry
+	active atomic.Int32 // subscriptions not yet stopped
+	err    error        // Subscribe fails with it when set
+}
 
 func (f *fakeLive) Subscribe(context.Context, string) (<-chan logs.Entry, func(), error) {
-	return f.ch, func() {}, nil
+	if f.err != nil {
+		return nil, nil, f.err
+	}
+	f.active.Add(1)
+	var once sync.Once
+	return f.ch, func() { once.Do(func() { f.active.Add(-1) }) }, nil
 }
 
 // fakeTickets is an in-memory single-use ticket store.
 type fakeTickets struct {
-	mu sync.Mutex
-	m  map[string]string
-	n  int
+	mu        sync.Mutex
+	m         map[string]string
+	n         int
+	redeemErr error // Redeem fails with it (not ErrInvalid) when set
 }
 
 func (f *fakeTickets) Issue(_ context.Context, v string) (string, error) {
@@ -83,9 +96,12 @@ func (f *fakeTickets) Issue(_ context.Context, v string) (string, error) {
 func (f *fakeTickets) Redeem(_ context.Context, t string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.redeemErr != nil {
+		return "", f.redeemErr
+	}
 	v, ok := f.m[t]
 	if !ok {
-		return "", errors.New("invalid")
+		return "", tickets.ErrInvalid
 	}
 	delete(f.m, t)
 	return v, nil
@@ -94,6 +110,7 @@ func (f *fakeTickets) Redeem(_ context.Context, t string) (string, error) {
 type harness struct {
 	t       *testing.T
 	h       http.Handler
+	srv     *Server
 	st      *store.Store
 	signer  *auth.Signer
 	box     *secrets.Box
@@ -133,7 +150,7 @@ func newHarnessWith(t *testing.T, opts ...func(*Deps)) *harness {
 	for _, opt := range opts {
 		opt(&deps)
 	}
-	hs.h = NewHandler(deps)
+	hs.srv, hs.h = buildHandler(deps)
 	return hs
 }
 

@@ -189,3 +189,8 @@ Low-severity and deferred findings. Each line: date, task, finding ID, severity,
 - STAFF-7: `CreateDeployment` INSERT...SELECT takes no lock on the service row; a delete committing mid-statement can leave a queued deployment (ClaimDeploy/GetJob neutralise it). `FOR SHARE OF s` would close it, or soften the comment.
 - STAFF-8: a delete after ClaimDeploy is not noticed by RunContainer/SwitchRoute (job comes from workflow input). TeardownWorkflow must cancel `deploy-<id>` workflows first.
 - STAFF-9: TeardownWorkflow should mark the service's non-terminal deployments `failed`; add an activity-level test of LoadJob/BuildImage on a deleted service.
+
+## Plan 2 Task 3
+- VER-1 (low, pre-existing, possible CI flake): `TestRunStartsEventsUntilCancelled` (`internal/worker/outbox/publisher_test.go:469`, `status = pending`) failed once under CPU load and passed on idle re-runs. Make the test poll longer / wait on a condition instead of a fixed window.
+- SEC-1 (low, Task 11): the SSE handler must compare the exact expected `user:deployment` ticket value for the URL's deployment, re-check ownership, and have a wrong-deployment test; map non-`ErrInvalid` Redis errors to 5xx (not 401); rate limit the SSE route.
+- STAFF-2 (low): the expiry test uses a fixed 150 ms sleep (can only pass wrongly, never fail wrongly); leave.

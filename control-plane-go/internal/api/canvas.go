@@ -4,6 +4,8 @@ import (
 	"errors"
 	"math"
 	"net/http"
+	"unicode"
+	"unicode/utf8"
 
 	"infrapilot/internal/store"
 )
@@ -182,4 +184,90 @@ func (s *Server) autoLayout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"services": positions})
+}
+
+const maxLabelRunes = 100
+
+// validLabel: at most 100 runes, valid UTF-8, no control characters (a NUL
+// byte would make Postgres fail the insert with a 500).
+func validLabel(l string) bool {
+	if !utf8.ValidString(l) || utf8.RuneCountInString(l) > maxLabelRunes {
+		return false
+	}
+	for _, r := range l {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// createConnection connects two services of one project the caller owns.
+// Foreign, missing, deleted, malformed and other-project ends all answer the
+// same 404, so the response never says which end failed.
+func (s *Server) createConnection(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		SourceID string  `json:"sourceId"`
+		TargetID string  `json:"targetId"`
+		Label    *string `json:"label"`
+	}
+	if err := decodeJSON(w, r, &body); err != nil {
+		writeDecodeError(w, err, "invalid_request")
+		return
+	}
+	if body.Label != nil && !validLabel(*body.Label) {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	if !idShape.MatchString(body.SourceID) || !idShape.MatchString(body.TargetID) {
+		writeError(w, http.StatusNotFound, "Service not found")
+		return
+	}
+	ctx := r.Context()
+	if body.SourceID == body.TargetID {
+		// Ownership first, so a foreign id cannot tell "self" from "not yours".
+		_, err := s.Store.GetServiceForOwner(ctx, body.SourceID, userID(r))
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			writeError(w, http.StatusNotFound, "Service not found")
+		case err != nil:
+			s.internalError(w, r, err)
+		default:
+			writeError(w, http.StatusBadRequest, "Cannot connect service to itself")
+		}
+		return
+	}
+	c, err := s.Store.CreateConnectionForOwner(ctx, body.SourceID, body.TargetID, userID(r), body.Label)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		writeError(w, http.StatusNotFound, "Service not found")
+	case errors.Is(err, store.ErrConflict):
+		writeError(w, http.StatusConflict, "Connection already exists")
+	case err != nil:
+		s.internalError(w, r, err)
+	default:
+		writeJSON(w, http.StatusOK, c)
+	}
+}
+
+func (s *Server) deleteConnection(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, http.StatusNotFound, "Connection not found")
+		return
+	}
+	// Both ends must be the caller's live services.
+	c, err := s.Store.GetConnectionForOwner(r.Context(), id, userID(r))
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "Connection not found")
+		return
+	}
+	if err == nil {
+		err = s.Store.DeleteConnection(r.Context(), c.ID)
+	}
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"success": true})
 }

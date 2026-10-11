@@ -249,3 +249,156 @@ func TestAutoLayout(t *testing.T) {
 	expectBody(t, rec, `{"error":"Project not found"}`)
 	expectStatus(t, hs.do("POST", "/projects/a%00b/canvas/auto-layout", tok, nil), 404)
 }
+
+func TestConnectionLifecycle(t *testing.T) {
+	hs := newHarness(t)
+	ctx := context.Background()
+	f := testutil.Seed(t, hs.st, store.TypeNodejs)
+	db, _ := hs.st.CreateService(ctx, store.NewService{ProjectID: f.ProjectID, Name: "db", ServiceType: "redis", Branch: "main"})
+	tok := hs.token(f.UserID)
+
+	rec := hs.do("POST", "/services/connections", tok, map[string]any{"sourceId": f.ServiceID, "targetId": db.ID, "label": "uses"})
+	expectStatus(t, rec, 200)
+	conn := decode[map[string]any](t, rec)
+	if conn["sourceId"] != f.ServiceID || conn["targetId"] != db.ID || conn["label"] != "uses" || conn["createdAt"] == nil || conn["id"] == nil {
+		t.Fatalf("connection %v", conn)
+	}
+	// No label: null, like Node.
+	rec = hs.do("POST", "/services/connections", tok, map[string]any{"sourceId": db.ID, "targetId": f.ServiceID})
+	expectStatus(t, rec, 200)
+	if got := decode[map[string]any](t, rec); got["label"] != nil {
+		t.Fatalf("label %v", got["label"])
+	}
+
+	rec = hs.do("POST", "/services/connections", tok, map[string]any{"sourceId": f.ServiceID, "targetId": db.ID})
+	expectStatus(t, rec, 409)
+	expectBody(t, rec, `{"error":"Connection already exists"}`)
+	rec = hs.do("POST", "/services/connections", tok, map[string]any{"sourceId": db.ID, "targetId": db.ID})
+	expectStatus(t, rec, 400)
+	expectBody(t, rec, `{"error":"Cannot connect service to itself"}`)
+
+	c := decode[canvasResp](t, hs.do("GET", "/projects/"+f.ProjectID+"/canvas", tok, nil))
+	if len(c.Connections) != 2 {
+		t.Fatalf("canvas %+v", c)
+	}
+
+	id := conn["id"].(string)
+	expectBody(t, hs.do("DELETE", "/services/connections/"+id, tok, nil), `{"success":true}`)
+	rec = hs.do("DELETE", "/services/connections/"+id, tok, nil)
+	expectStatus(t, rec, 404)
+	expectBody(t, rec, `{"error":"Connection not found"}`)
+	if l, _ := hs.st.ListProjectConnections(ctx, f.ProjectID); len(l) != 1 {
+		t.Fatalf("connections after delete: %+v", l)
+	}
+}
+
+// Every way the two ends can be wrong answers with the same 404 body, so a
+// caller cannot tell a foreign service from a missing, deleted, malformed or
+// other-project one.
+func TestCreateConnectionNeverRevealsWhichEndFailed(t *testing.T) {
+	hs := newHarness(t)
+	ctx := context.Background()
+	f := testutil.Seed(t, hs.st, store.TypeNodejs)
+	mine, _ := hs.st.CreateService(ctx, store.NewService{ProjectID: f.ProjectID, Name: "mine", ServiceType: "redis", Branch: "main"})
+	gone, _ := hs.st.CreateService(ctx, store.NewService{ProjectID: f.ProjectID, Name: "gone", ServiceType: "redis", Branch: "main"})
+	if err := hs.st.SoftDeleteService(ctx, gone.ID); err != nil {
+		t.Fatal(err)
+	}
+	p2, _ := hs.st.CreateProject(ctx, "p2", f.UserID)
+	otherProject, _ := hs.st.CreateService(ctx, store.NewService{ProjectID: p2.ID, Name: "op", ServiceType: "redis", Branch: "main"})
+	g := testutil.Seed(t, hs.st, store.TypeNodejs)
+	tok := hs.token(f.UserID)
+
+	ends := map[string]string{
+		"foreign": g.ServiceID, "missing": "nope", "deleted": gone.ID, "other project": otherProject.ID,
+		"nul": "a\u0000b", "badutf8": "\xff\xfe", "long": strings.Repeat("a", 65), "empty": "",
+	}
+	for name, bad := range ends {
+		for pos, body := range map[string]map[string]any{
+			"as target": {"sourceId": f.ServiceID, "targetId": bad},
+			"as source": {"sourceId": bad, "targetId": mine.ID},
+			"self":      {"sourceId": bad, "targetId": bad},
+		} {
+			if name == "other project" && pos == "self" {
+				continue // the caller owns that service: self-connection is a 400 for them
+			}
+			rec := hs.do("POST", "/services/connections", tok, body)
+			if rec.Code != 404 || rec.Body.String() != `{"error":"Service not found"}`+"\n" {
+				t.Fatalf("%s %s: %d %s", name, pos, rec.Code, rec.Body.String())
+			}
+		}
+	}
+	// A foreign caller gets the same answer for services that do exist.
+	intruder, _ := hs.st.CreateUser(ctx, "evil@x.co", "h", nil)
+	rec := hs.do("POST", "/services/connections", hs.token(intruder.ID), map[string]any{"sourceId": f.ServiceID, "targetId": mine.ID})
+	expectStatus(t, rec, 404)
+	expectBody(t, rec, `{"error":"Service not found"}`)
+	// Self-connection of a foreign service is 404, not 400.
+	rec = hs.do("POST", "/services/connections", hs.token(intruder.ID), map[string]any{"sourceId": f.ServiceID, "targetId": f.ServiceID})
+	expectStatus(t, rec, 404)
+
+	// Nothing was written by any of the above.
+	for _, p := range []string{f.ProjectID, p2.ID, g.ProjectID} {
+		if l, _ := hs.st.ListProjectConnections(ctx, p); len(l) != 0 {
+			t.Fatalf("rejected requests created %+v", l)
+		}
+	}
+}
+
+func TestCreateConnectionRejectsBadBodies(t *testing.T) {
+	hs := newHarness(t)
+	ctx := context.Background()
+	f := testutil.Seed(t, hs.st, store.TypeNodejs)
+	db, _ := hs.st.CreateService(ctx, store.NewService{ProjectID: f.ProjectID, Name: "db", ServiceType: "redis", Branch: "main"})
+	tok := hs.token(f.UserID)
+	for name, body := range map[string]string{
+		"not json": `nope`, "trailing": `{} x`, "label control": `{"label":"a\u0000b"}`,
+		"label too long": `{"label":"` + strings.Repeat("x", 101) + `"}`, "label number": `{"label":5}`,
+	} {
+		if strings.HasPrefix(body, "{\"label") {
+			body = strings.Replace(body, "{", `{"sourceId":"`+f.ServiceID+`","targetId":"`+db.ID+`",`, 1)
+		}
+		rec := hs.doRaw("POST", "/services/connections", tok, strings.NewReader(body), nil)
+		if rec.Code != 400 || rec.Body.String() != `{"error":"invalid_request"}`+"\n" {
+			t.Fatalf("%s: %d %s", name, rec.Code, rec.Body.String())
+		}
+	}
+	big := strings.NewReader(`{"label":"` + strings.Repeat("x", 2<<20) + `"}`)
+	expectStatus(t, hs.doRaw("POST", "/services/connections", tok, big, nil), 413)
+	if l, _ := hs.st.ListProjectConnections(ctx, f.ProjectID); len(l) != 0 {
+		t.Fatalf("created %+v", l)
+	}
+}
+
+func TestDeleteConnectionRequiresOwnershipOfBothEnds(t *testing.T) {
+	hs := newHarness(t)
+	ctx := context.Background()
+	f := testutil.Seed(t, hs.st, store.TypeNodejs)
+	db, _ := hs.st.CreateService(ctx, store.NewService{ProjectID: f.ProjectID, Name: "db", ServiceType: "redis", Branch: "main"})
+	g := testutil.Seed(t, hs.st, store.TypeNodejs)
+	own, _ := hs.st.CreateConnection(ctx, f.ServiceID, db.ID, nil)
+	// A row the API never creates: owner's source, foreign target.
+	mixed, _ := hs.st.CreateConnection(ctx, f.ServiceID, g.ServiceID, nil)
+	intruder, _ := hs.st.CreateUser(ctx, "evil@x.co", "h", nil)
+
+	notFound := `{"error":"Connection not found"}`
+	for name, c := range map[string]struct{ id, tok string }{
+		"foreign user":      {own.ID, hs.token(intruder.ID)},
+		"source-only owner": {mixed.ID, hs.token(f.UserID)},
+		"target-only owner": {mixed.ID, hs.token(g.UserID)},
+		"missing":           {"nope", hs.token(f.UserID)},
+		"nul":               {"a%00b", hs.token(f.UserID)},
+		"badutf8":           {"%ff%fe", hs.token(f.UserID)},
+		"long":              {strings.Repeat("a", 65), hs.token(f.UserID)},
+	} {
+		rec := hs.do("DELETE", "/services/connections/"+c.id, c.tok, nil)
+		if rec.Code != 404 || rec.Body.String() != notFound+"\n" {
+			t.Fatalf("%s: %d %s", name, rec.Code, rec.Body.String())
+		}
+	}
+	if l, _ := hs.st.ListProjectConnections(ctx, f.ProjectID); len(l) != 2 {
+		t.Fatalf("a rejected delete removed a row: %+v", l)
+	}
+	expectStatus(t, hs.do("DELETE", "/services/connections/"+own.ID, "", nil), 401)
+	expectStatus(t, hs.do("DELETE", "/services/connections/"+own.ID, hs.token(f.UserID), nil), 200)
+}

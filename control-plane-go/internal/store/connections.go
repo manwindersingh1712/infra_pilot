@@ -26,6 +26,30 @@ func (s *Store) CreateConnection(ctx context.Context, sourceID, targetID string,
 	return c, err
 }
 
+// CreateConnectionForOwner connects two live services of ONE project owned by
+// ownerUserID, in a single statement (so a concurrent soft delete cannot slip
+// between the check and the insert). It returns ErrNotFound when either end is
+// missing, soft-deleted, owned by someone else, in a different project, or when
+// source == target, without saying which; ErrConflict when the pair exists.
+func (s *Store) CreateConnectionForOwner(ctx context.Context, sourceID, targetID, ownerUserID string, label *string) (ServiceConnection, error) {
+	c, err := scanConnection(s.db.QueryRow(ctx,
+		`INSERT INTO "ServiceConnection" ("id", "sourceId", "targetId", "label")
+		 SELECT $1::text, a."id", b."id", $4::text
+		 FROM "Service" a
+		 JOIN "Service" b ON b."projectId" = a."projectId"
+		 JOIN "Project" p ON p."id" = a."projectId"
+		 WHERE a."id" = $2 AND b."id" = $3 AND a."id" <> b."id"
+		   AND a."deletedAt" IS NULL AND b."deletedAt" IS NULL AND p."ownerUserId" = $5
+		 RETURNING `+connCols, cuid.New(), sourceID, targetID, label, ownerUserID))
+	switch {
+	case isUniqueViolation(err):
+		return ServiceConnection{}, ErrConflict
+	case isForeignKeyViolation(err): // a service was hard-deleted mid-statement
+		return ServiceConnection{}, ErrNotFound
+	}
+	return c, err
+}
+
 // aliveIn matches live (not soft-deleted) services of project $1.
 const aliveIn = `(SELECT "id" FROM "Service" WHERE "projectId" = $1 AND "deletedAt" IS NULL)`
 
@@ -43,12 +67,14 @@ func (s *Store) ListProjectConnections(ctx context.Context, projectID string) ([
 	return collect(rows, err, scanConnection)
 }
 
+// GetConnectionForOwner finds a connection whose two services are both live
+// and owned by ownerUserID.
 func (s *Store) GetConnectionForOwner(ctx context.Context, id, ownerUserID string) (ServiceConnection, error) {
+	const owned = `(SELECT s."id" FROM "Service" s JOIN "Project" p ON p."id" = s."projectId"
+		   WHERE p."ownerUserId" = $2 AND s."deletedAt" IS NULL)`
 	return scanConnection(s.db.QueryRow(ctx,
 		`SELECT `+connCols+` FROM "ServiceConnection"
-		 WHERE "id" = $1 AND "sourceId" IN (
-		   SELECT s."id" FROM "Service" s JOIN "Project" p ON p."id" = s."projectId"
-		   WHERE p."ownerUserId" = $2 AND s."deletedAt" IS NULL)`,
+		 WHERE "id" = $1 AND "sourceId" IN `+owned+` AND "targetId" IN `+owned,
 		id, ownerUserID))
 }
 

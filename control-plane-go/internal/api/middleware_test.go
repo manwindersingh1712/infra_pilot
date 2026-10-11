@@ -448,3 +448,49 @@ func TestRateLimiterDropsIdleClients(t *testing.T) {
 		t.Fatalf("size %d, want only the active client", n)
 	}
 }
+
+func decodeBody(t *testing.T, body string) (map[string]string, *httptest.ResponseRecorder, error) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/x", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	var dst map[string]string
+	err := decodeJSON(rec, req, &dst)
+	return dst, rec, err
+}
+
+func TestDecodeJSON(t *testing.T) {
+	dst, _, err := decodeBody(t, `{"a":"b"}`)
+	if err != nil || dst["a"] != "b" {
+		t.Fatalf("valid body: %v %v", dst, err)
+	}
+	if _, _, err := decodeBody(t, ``); err != nil {
+		t.Fatalf("empty body must be accepted: %v", err)
+	}
+	if _, _, err := decodeBody(t, `{"a":`); err == nil {
+		t.Fatal("truncated JSON must fail")
+	}
+	for _, trailing := range []string{`{"a":"b"}{"c":"d"}`, `{"a":"b"} x`, `{"a":"b"} []`} {
+		if _, _, err := decodeBody(t, trailing); err == nil {
+			t.Errorf("trailing data %q must be rejected", trailing)
+		}
+	}
+	if _, _, err := decodeBody(t, "{\"a\":\"b\"}\n  \n"); err != nil {
+		t.Fatalf("trailing whitespace is fine: %v", err)
+	}
+}
+
+func TestDecodeJSONOversizeIs413WithJSONBody(t *testing.T) {
+	big := `{"a":"` + strings.Repeat("x", 1<<20) + `"}`
+	_, rec, err := decodeBody(t, big)
+	if err == nil {
+		t.Fatal("oversize body must fail")
+	}
+	writeDecodeError(rec, err, "invalid_request")
+	expectStatus(t, rec, http.StatusRequestEntityTooLarge)
+	expectBody(t, rec, `{"error":"request_too_large"}`)
+
+	_, rec, err = decodeBody(t, `{"a":`)
+	writeDecodeError(rec, err, "invalid_request")
+	expectStatus(t, rec, http.StatusBadRequest)
+	expectBody(t, rec, `{"error":"invalid_request"}`)
+}

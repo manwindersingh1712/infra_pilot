@@ -37,3 +37,27 @@ func TestRedisErrorsAreWrappedNotInvalid(t *testing.T) {
 		t.Fatalf("issue err = %v", err)
 	}
 }
+
+func TestRedeemRejectsMalformedWithoutRedis(t *testing.T) {
+	// Unreachable Redis: a Redis call would return a dial error, not ErrInvalid.
+	s, err := tickets.New("redis://127.0.0.1:1", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	for name, tk := range map[string]string{
+		"empty":    "",
+		"short":    strings.Repeat("A", 42),
+		"long":     strings.Repeat("A", 44),
+		"huge":     strings.Repeat("A", 1<<20),
+		"bad char": strings.Repeat("A", 42) + "=",
+		"colon":    strings.Repeat("A", 42) + ":",
+		"space":    strings.Repeat("A", 42) + " ",
+	} {
+		if _, err := s.Redeem(ctx, tk); !errors.Is(err, tickets.ErrInvalid) {
+			t.Errorf("%s: err = %v, want ErrInvalid", name, err)
+		}
+	}
+}

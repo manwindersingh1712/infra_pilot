@@ -51,6 +51,9 @@ func (s *Store) Issue(ctx context.Context, value string) (string, error) {
 // Redeem returns the ticket's value and deletes it atomically (GETDEL), so a
 // ticket works exactly once.
 func (s *Store) Redeem(ctx context.Context, ticket string) (string, error) {
+	if !wellFormed(ticket) {
+		return "", ErrInvalid
+	}
 	v, err := s.c.GetDel(ctx, prefix+ticket).Result()
 	if errors.Is(err, redis.Nil) {
 		return "", ErrInvalid
@@ -59,4 +62,17 @@ func (s *Store) Redeem(ctx context.Context, ticket string) (string, error) {
 		return "", fmt.Errorf("redeem ticket: %w", err)
 	}
 	return v, nil
+}
+
+// ticketLen is the length of 32 random bytes in unpadded base64 (RawURL).
+const ticketLen = 43
+
+// wellFormed reports whether ticket has exactly the form Issue produces, so
+// malformed input never reaches Redis.
+func wellFormed(ticket string) bool {
+	if len(ticket) != ticketLen {
+		return false
+	}
+	b, err := base64.RawURLEncoding.Strict().DecodeString(ticket)
+	return err == nil && len(b) == 32
 }

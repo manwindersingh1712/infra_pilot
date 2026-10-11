@@ -175,3 +175,12 @@ Low-severity and deferred findings. Each line: date, task, finding ID, severity,
 ## Plan 2 Task 1 (low, carry into the Task 10 canvas handlers)
 - SEC-1 / STAFF-2 / STAFF-3: `CreateConnection` checks nothing, `GetConnectionForOwner` checks only the source service, `DeleteConnection` takes only an id, and self-connections are allowed. The create handler must verify the caller owns BOTH services and that they share a project; the delete handler must call `GetConnectionForOwner` first. Add a test for each.
 - STAFF-1: `connections_test.go` ignores list errors and does not cover the target-side OR branch, cross-project exclusion or inbound-edge exclusion.
+
+## Plan 2 Task 2 (open items; fix round 1 handles VER-1, STAFF-2 and SEC-1 GetJob)
+- STAFF-1 (medium, **Task 12 requirement**): nothing can read a soft-deleted service, but TeardownWorkflow runs after the soft delete. Add an explicit store method (e.g. `GetServiceAnyState`) in Task 12; do not loosen `GetService`.
+- SEC-3 / STAFF-4 (low, Task 6): replaying a consumed or revoked refresh token (logout, or two tabs refreshing at once) revokes every session of that user. Handler returns 401 and logs without the token; add a test that states the intended behaviour; add a purge job for expired rows; confirm crypto/rand tokens stored as SHA-256 hashes.
+- STAFF-3 (low, Task 13): `SetEnvVarValue` is an unconditional update, so `encrypt-env` can overwrite a concurrent user edit. Use compare-and-swap like `ReplaceEnvVarIfEquals`.
+- STAFF-5 (low): the new store tests discard errors and leave branches unproven (deleted source on connections, deleted service in owner-scoped deployment queries, `UpdateServicePositionInProject`).
+- STAFF-6 (low, Task 18 / release note): the frozen Node Prisma schema lacks `deletedAt` and `RefreshToken`; the release note must say Node must not serve this DB after migration 00003.
+- SEC-4 (low): `CREATE INDEX` on Deployment in 00003 is not CONCURRENTLY (brief write lock; fine at current size).
+- SEC-2: same as Plan 2 Task 1 SEC-1 (both-ends ownership in the Task 10 connection handlers).

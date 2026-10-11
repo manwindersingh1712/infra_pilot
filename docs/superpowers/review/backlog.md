@@ -184,3 +184,8 @@ Low-severity and deferred findings. Each line: date, task, finding ID, severity,
 - STAFF-6 (low, Task 18 / release note): the frozen Node Prisma schema lacks `deletedAt` and `RefreshToken`; the release note must say Node must not serve this DB after migration 00003.
 - SEC-4 (low): `CREATE INDEX` on Deployment in 00003 is not CONCURRENTLY (brief write lock; fine at current size).
 - SEC-2: same as Plan 2 Task 1 SEC-1 (both-ends ownership in the Task 10 connection handlers).
+
+## Plan 2 Task 2, round 2 (low, all for Task 12 teardown)
+- STAFF-7: `CreateDeployment` INSERT...SELECT takes no lock on the service row; a delete committing mid-statement can leave a queued deployment (ClaimDeploy/GetJob neutralise it). `FOR SHARE OF s` would close it, or soften the comment.
+- STAFF-8: a delete after ClaimDeploy is not noticed by RunContainer/SwitchRoute (job comes from workflow input). TeardownWorkflow must cancel `deploy-<id>` workflows first.
+- STAFF-9: TeardownWorkflow should mark the service's non-terminal deployments `failed`; add an activity-level test of LoadJob/BuildImage on a deleted service.

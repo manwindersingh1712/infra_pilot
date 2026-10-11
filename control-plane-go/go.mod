@@ -4,6 +4,7 @@ go 1.27.2
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.49.0
+	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/joho/godotenv v1.5.1
 	github.com/lucsky/cuid v1.2.1
@@ -17,6 +18,7 @@ require (
 	github.com/testcontainers/testcontainers-go/modules/redis v0.44.0
 	go.temporal.io/api v1.63.5
 	go.temporal.io/sdk v1.49.0
+	golang.org/x/crypto v0.58.0
 	google.golang.org/grpc v1.83.2
 )
 
@@ -96,11 +98,10 @@ require (
 	go.uber.org/atomic v1.12.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
-	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/net v0.60.0 // indirect
-	golang.org/x/sync v0.23.0 // indirect
-	golang.org/x/sys v0.48.0 // indirect
-	golang.org/x/text v0.42.0 // indirect
+	golang.org/x/sync v0.24.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
 	golang.org/x/time v0.11.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260831171406-18b4a7587f8a // indirect

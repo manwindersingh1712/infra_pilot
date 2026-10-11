@@ -1,0 +1,91 @@
+package auth
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/crypto/bcrypt"
+)
+
+const (
+	nodeToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyXzEyMyIsImlhdCI6MTc5MTMxMjA3MX0.gS3vLdXmKgPoS0gWqmoWfPfxPG2Oa0V9TIwUYrpgHI0"
+	nodeHash  = "$2b$10$Yd8di3UA82FrevHpKn6pjuRApg6xyMVbXa7AiNAdOnQ4/vFe00jqG" // "password123"
+)
+
+func TestSignVerifyRoundTripWithExpiry(t *testing.T) {
+	s := NewSigner("k")
+	tok, err := s.Sign("u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sub, err := s.Verify(tok); err != nil || sub != "u1" {
+		t.Fatalf("sub=%q err=%v", sub, err)
+	}
+	claims := jwt.MapClaims{}
+	jwt.NewParser().ParseUnverified(tok, claims)
+	exp, _ := claims.GetExpirationTime()
+	if exp == nil || time.Until(exp.Time) > AccessTTL || time.Until(exp.Time) < AccessTTL-time.Minute {
+		t.Fatalf("exp = %v", exp)
+	}
+}
+
+func TestVerifyRejectsExpiredToken(t *testing.T) {
+	s := NewSigner("k")
+	s.now = func() time.Time { return time.Now().Add(-time.Hour) }
+	tok, _ := s.Sign("u1")
+	if _, err := NewSigner("k").Verify(tok); err == nil {
+		t.Fatal("expired token accepted")
+	}
+}
+
+func TestVerifyRejectsNodeTokensWithoutExpiry(t *testing.T) {
+	// Node issued tokens without exp. After the Plan 2 cutover they must stop
+	// working, so every user logs in once and gets an expiring token.
+	_, err := NewSigner("test-secret").Verify(nodeToken)
+	if err == nil || !strings.Contains(err.Error(), "exp") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestVerifyRejectsBadTokens(t *testing.T) {
+	good, _ := NewSigner("a").Sign("u1")
+	for _, tok := range []string{"", "garbage", good} {
+		if _, err := NewSigner("other").Verify(tok); err == nil {
+			t.Errorf("Verify(%.20q) should fail", tok)
+		}
+	}
+	none := jwt.NewWithClaims(jwt.SigningMethodNone, jwt.MapClaims{"sub": "u1", "exp": time.Now().Add(time.Hour).Unix()})
+	unsigned, _ := none.SignedString(jwt.UnsafeAllowNoneSignatureType)
+	if _, err := NewSigner("k").Verify(unsigned); err == nil {
+		t.Fatal("alg=none must be rejected")
+	}
+}
+
+func TestRefreshTokens(t *testing.T) {
+	plain, hash, err := NewRefreshToken()
+	if err != nil || len(plain) < 40 || hash != HashRefreshToken(plain) || len(hash) != 64 {
+		t.Fatalf("plain=%q hash=%q err=%v", plain, hash, err)
+	}
+	other, _, _ := NewRefreshToken()
+	if other == plain {
+		t.Fatal("refresh tokens must be unique")
+	}
+}
+
+func TestCheckPasswordAcceptsNodeHash(t *testing.T) {
+	if !CheckPassword(nodeHash, "password123") || CheckPassword(nodeHash, "wrong") {
+		t.Fatal("bcrypt compatibility broken")
+	}
+}
+
+func TestHashPasswordUsesCost10(t *testing.T) {
+	h, err := HashPassword("password123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cost, _ := bcrypt.Cost([]byte(h)); cost != 10 || !CheckPassword(h, "password123") {
+		t.Fatalf("cost=%d", cost)
+	}
+}

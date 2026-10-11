@@ -15,10 +15,15 @@ func scanProject(row pgx.Row) (Project, error) {
 	return p, noRows(err)
 }
 
+// CreateProject returns ErrNoSuchUser when ownerUserID is not a user.
 func (s *Store) CreateProject(ctx context.Context, name, ownerUserID string) (Project, error) {
-	return scanProject(s.db.QueryRow(ctx,
+	p, err := scanProject(s.db.QueryRow(ctx,
 		`INSERT INTO "Project" ("id", "name", "ownerUserId") VALUES ($1, $2, $3) RETURNING `+projectCols,
 		cuid.New(), name, ownerUserID))
+	if isForeignKeyViolation(err) {
+		return Project{}, ErrNoSuchUser
+	}
+	return p, err
 }
 
 func (s *Store) ListProjects(ctx context.Context, ownerUserID string) ([]Project, error) {

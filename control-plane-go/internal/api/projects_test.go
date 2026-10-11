@@ -97,3 +97,12 @@ func TestProjectPathIDValidation(t *testing.T) {
 		expectBody(t, rec, `{"error":"Project not found"}`)
 	}
 }
+
+// SEC-2: a validly signed token for a user that does not exist is a 401, not a
+// 500 from the foreign-key violation.
+func TestCreateProjectUnknownUserIs401(t *testing.T) {
+	hs := newHarness(t)
+	rec := hs.do("POST", "/projects", hs.token("ghostuser"), map[string]any{"name": "Shop"})
+	expectStatus(t, rec, 401)
+	expectBody(t, rec, `{"error":"unauthorized"}`)
+}

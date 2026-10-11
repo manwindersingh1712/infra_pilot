@@ -54,6 +54,11 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p, err := s.Store.CreateProject(r.Context(), body.Name, userID(r))
+	if errors.Is(err, store.ErrNoSuchUser) {
+		// A validly signed token for a user that no longer exists.
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
 	if err != nil {
 		s.internalError(w, r, err)
 		return

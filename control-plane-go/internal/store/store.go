@@ -14,6 +14,8 @@ import (
 var (
 	ErrNotFound = errors.New("not found")
 	ErrConflict = errors.New("conflict")
+	// ErrNoSuchUser: a write referenced a user id that does not exist.
+	ErrNoSuchUser = errors.New("no such user")
 )
 
 // DBTX is satisfied by both *pgxpool.Pool and pgx.Tx.
@@ -43,6 +45,11 @@ func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
 func isUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+func isForeignKeyViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23503"
 }
 
 func noRows(err error) error {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
@@ -46,6 +47,13 @@ const versionTable = "goose_db_version"
 // halfway, so the operator must run `migrate baseline` first.
 var ErrNotBaselined = errors.New("existing Prisma schema is not baselined: run `migrate baseline` first")
 
+// inProcessMu serialises migration operations within one process before they
+// take a pool connection. Without it N concurrent callers on a small pool each
+// hold a connection while polling for the advisory lock, and the lock holder
+// can never get the second connection its migrations need (pgxpool defaults
+// to max(4, NumCPU) connections, so 4 callers starve a 4-core runner).
+var inProcessMu sync.Mutex
+
 // newMigrationLocker returns the session locker on migrationLockID. It polls
 // every second for up to 5 minutes. A new one is built per operation because
 // its retry budget is stateful and is never reset between calls.
@@ -63,6 +71,8 @@ func newMigrationLocker() (lock.SessionLocker, error) {
 // MarkBaseline) runs inside it, so they are serialised across processes.
 func withMigrationLock(ctx context.Context, pool *pgxpool.Pool,
 	fn func(ctx context.Context, conn *sql.Conn) error) (retErr error) {
+	inProcessMu.Lock()
+	defer inProcessMu.Unlock()
 	locker, err := newMigrationLocker()
 	if err != nil {
 		return err

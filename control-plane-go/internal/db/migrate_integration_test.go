@@ -290,7 +290,20 @@ func TestConcurrentBaselines(t *testing.T) {
 }
 
 func TestConcurrentMigrates(t *testing.T) {
-	_, pool := testutil.FreshDB(t, adminURL)
+	url, _ := testutil.FreshDB(t, adminURL)
+	// 4 connections is the pgxpool default on a 4-core CI runner. With 4
+	// concurrent callers every connection can be held by a waiter for the
+	// lock, leaving none for the lock holder's own migration work.
+	cfg, err := pgxpool.ParseConfig(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.MaxConns = 4
+	pool, err := pgxpool.NewWithConfig(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
 	runConcurrently(t, 4, func(ctx context.Context) error { return db.Migrate(ctx, pool) })
 	if got, want := maxVersion(t, pool), latestVersion(t); got != want {
 		t.Fatalf("version = %d, want %d", got, want)

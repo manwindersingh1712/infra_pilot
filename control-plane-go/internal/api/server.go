@@ -89,6 +89,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 	if s.DevLogin {
 		mux.HandleFunc("POST /dev/login", s.devLogin)
 	}
+
+	mux.Handle("POST /projects", s.private(s.createProject))
+	mux.Handle("GET /projects", s.private(s.listProjects))
+	mux.Handle("GET /projects/{id}", s.private(s.getProject))
 }
 
 // withSecurityHeaders marks every response (including preflights and errors)

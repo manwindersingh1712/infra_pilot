@@ -137,7 +137,6 @@ func newHarnessWith(t *testing.T, opts ...func(*Deps)) *harness {
 	return hs
 }
 
-//nolint:unused // first used by Task 7 (project endpoints); Task 6 has no private routes
 func (hs *harness) token(userID string) string {
 	tok, err := hs.signer.Sign(userID)
 	if err != nil {

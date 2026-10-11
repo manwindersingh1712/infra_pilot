@@ -30,47 +30,57 @@ type Tickets interface {
 }
 
 type Deps struct {
-	Store       *store.Store
-	Redis       Pinger
-	Signer      *auth.Signer
-	Secrets     *secrets.Box
-	Logs        *logs.Aggregator
-	Live        LiveLogs
-	Tickets     Tickets
-	Metrics     *metrics.API
-	Log         *slog.Logger
-	CORSOrigins []string
-	DevLogin    bool // register POST /dev/login (development only; unset APP_ENV means production)
-	AuthBurst   int  // requests per IP before /auth/* is rate limited; 0 means 5
+	Store        *store.Store
+	Redis        Pinger
+	Signer       *auth.Signer
+	Secrets      *secrets.Box
+	Logs         *logs.Aggregator
+	Live         LiveLogs
+	Tickets      Tickets
+	Metrics      *metrics.API
+	Log          *slog.Logger
+	CORSOrigins  []string
+	DevLogin     bool // register POST /dev/login (development only; unset APP_ENV means production)
+	AuthBurst    int  // burst of the register/login limiter (10/min); 0 means 5
+	RefreshBurst int  // burst of the refresh/logout limiter (60/min); 0 means 20
 }
 
 type Server struct {
 	Deps
-	authLimit *ipLimiter
+	authLimit    *ipLimiter // register, login
+	refreshLimit *ipLimiter // refresh, logout
 }
 
 func NewHandler(d Deps) http.Handler {
-	burst := d.AuthBurst
-	if burst <= 0 {
-		burst = 5
+	strict, refresh := d.AuthBurst, d.RefreshBurst
+	if strict <= 0 {
+		strict = defaultStrictBurst
 	}
-	s := &Server{Deps: d, authLimit: newIPLimiter(burst)}
+	if refresh <= 0 {
+		refresh = defaultRefreshBurst
+	}
+	s := &Server{Deps: d,
+		authLimit:    newIPLimiter(strict, strictEvery),
+		refreshLimit: newIPLimiter(refresh, refreshEvery)}
 	mux := http.NewServeMux()
 	s.routes(mux)
 	return withSecurityHeaders(withRequestID(withCORS(d.CORSOrigins, s.withRecover(jsonErrors(mux)))))
 }
 
-// routes registers every endpoint. s.private requires a JWT; s.authLimit
-// rate-limits credential endpoints per client IP.
+// routes registers every endpoint. s.private requires a JWT. Each endpoint
+// class has its own per-IP bucket: authLimit for register and login,
+// refreshLimit for refresh and logout, so a login burst cannot block token
+// refresh behind one shared address.
 func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /healthz", s.healthz)
 	mux.HandleFunc("GET /readyz", s.readyz)
 
-	limited := func(h http.HandlerFunc) http.Handler { return s.authLimit.wrap(h) }
-	mux.Handle("POST /auth/register", limited(s.register))
-	mux.Handle("POST /auth/login", limited(s.login))
-	mux.Handle("POST /auth/refresh", limited(s.refresh))
-	mux.HandleFunc("POST /auth/logout", s.logout)
+	strict := func(h http.HandlerFunc) http.Handler { return s.authLimit.wrap(h) }
+	refresh := func(h http.HandlerFunc) http.Handler { return s.refreshLimit.wrap(h) }
+	mux.Handle("POST /auth/register", strict(s.register))
+	mux.Handle("POST /auth/login", strict(s.login))
+	mux.Handle("POST /auth/refresh", refresh(s.refresh))
+	mux.Handle("POST /auth/logout", refresh(s.logout))
 	if s.DevLogin {
 		mux.HandleFunc("POST /dev/login", s.devLogin)
 	}

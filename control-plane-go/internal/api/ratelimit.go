@@ -16,8 +16,15 @@ const (
 	limiterMaxClients = 100_000
 )
 
-// ipLimiter allows `burst` requests per client IP, refilling one every 6s
-// (10/min). It is in memory: fine for one API instance (spec §12).
+const (
+	strictEvery         = 6 * time.Second // register, login: 10 requests/min
+	refreshEvery        = time.Second     // refresh, logout: 60 requests/min
+	defaultStrictBurst  = 5
+	defaultRefreshBurst = 20
+)
+
+// ipLimiter allows `burst` requests per client IP, refilling one token every
+// `every`. It is in memory: fine for one API instance (spec §12).
 //
 // Clients live in an LRU list (front = most recently seen), so idle entries are
 // dropped from the back in O(expired) and, when the map is full, the least
@@ -25,6 +32,7 @@ const (
 type ipLimiter struct {
 	mu      sync.Mutex
 	burst   int
+	every   time.Duration
 	max     int
 	clients map[string]*list.Element // value: *client
 	lru     *list.List
@@ -37,9 +45,9 @@ type client struct {
 	seen time.Time
 }
 
-func newIPLimiter(burst int) *ipLimiter {
+func newIPLimiter(burst int, every time.Duration) *ipLimiter {
 	return &ipLimiter{
-		burst: burst, max: limiterMaxClients,
+		burst: burst, every: every, max: limiterMaxClients,
 		clients: map[string]*list.Element{}, lru: list.New(), now: time.Now,
 	}
 }
@@ -71,7 +79,7 @@ func (l *ipLimiter) allow(key string) bool {
 	for len(l.clients) >= l.max && l.lru.Len() > 0 {
 		l.remove(l.lru.Back())
 	}
-	c := &client{key: key, lim: rate.NewLimiter(rate.Every(6*time.Second), l.burst), seen: now}
+	c := &client{key: key, lim: rate.NewLimiter(rate.Every(l.every), l.burst), seen: now}
 	l.clients[key] = l.lru.PushFront(c)
 	return c.lim.AllowN(now, 1)
 }

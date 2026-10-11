@@ -422,13 +422,14 @@ func TestDevLoginOnlyInDevelopment(t *testing.T) {
 }
 
 func TestAuthRoutesAreRateLimited(t *testing.T) {
-	hs := newHarnessWith(t, func(d *Deps) { d.AuthBurst = 2 })
-	for _, path := range []string{"/auth/login", "/auth/register", "/auth/refresh"} {
-		addr := "198.51.100." + map[string]string{"/auth/login": "1", "/auth/register": "2", "/auth/refresh": "3"}[path] + ":4000"
+	hs := newHarnessWith(t, func(d *Deps) { d.AuthBurst = 2; d.RefreshBurst = 2 })
+	for i, path := range []string{"/auth/login", "/auth/register", "/auth/refresh", "/auth/logout"} {
+		addr := fmt.Sprintf("198.51.100.%d:4000", i+1)
 		codes := []int{}
 		for range 3 {
 			codes = append(codes, hs.doFrom(addr, "POST", path, "", nil, nil).Code)
 		}
+		// A fresh address per path keeps the four buckets from interfering.
 		if codes[0] == 429 || codes[1] == 429 || codes[2] != 429 {
 			t.Fatalf("%s codes = %v", path, codes)
 		}
@@ -436,5 +437,59 @@ func TestAuthRoutesAreRateLimited(t *testing.T) {
 	// Another client is not affected.
 	if rec := hs.doFrom("203.0.113.9:1", "POST", "/auth/login", "", nil, nil); rec.Code == 429 {
 		t.Fatal("limiter is not per client")
+	}
+}
+
+// exhaust sends requests until one is rate limited and reports how many passed.
+func exhaust(hs *harness, addr, path string) int {
+	for n := range 100 {
+		if hs.doFrom(addr, "POST", path, "", nil, nil).Code == 429 {
+			return n
+		}
+	}
+	return 100
+}
+
+// SEC-2: register/login and refresh/logout are separate buckets per IP.
+func TestRateLimitBucketsAreIndependent(t *testing.T) {
+	const addr = "198.51.100.50:4000"
+	t.Run("exhausting login does not block refresh or logout", func(t *testing.T) {
+		hs := newHarnessWith(t, func(d *Deps) { d.AuthBurst = 2; d.RefreshBurst = 3 })
+		if n := exhaust(hs, addr, "/auth/login"); n != 2 {
+			t.Fatalf("login burst = %d, want 2", n)
+		}
+		if n := exhaust(hs, addr, "/auth/register"); n != 0 {
+			t.Fatalf("register shares the login bucket; passed %d", n)
+		}
+		for range 3 {
+			if rec := hs.doFrom(addr, "POST", "/auth/refresh", "", nil, nil); rec.Code == 429 {
+				t.Fatal("refresh blocked by an exhausted login bucket")
+			}
+		}
+	})
+	t.Run("exhausting refresh does not block login or register", func(t *testing.T) {
+		hs := newHarnessWith(t, func(d *Deps) { d.AuthBurst = 2; d.RefreshBurst = 3 })
+		if n := exhaust(hs, addr, "/auth/refresh"); n != 3 {
+			t.Fatalf("refresh burst = %d, want 3", n)
+		}
+		if n := exhaust(hs, addr, "/auth/logout"); n != 0 {
+			t.Fatalf("logout does not share the refresh bucket; passed %d", n)
+		}
+		for _, path := range []string{"/auth/login", "/auth/register"} {
+			if rec := hs.doFrom(addr, "POST", path, "", nil, nil); rec.Code == 429 {
+				t.Fatalf("%s blocked by an exhausted refresh bucket", path)
+			}
+		}
+	})
+}
+
+// Zero values mean the documented defaults: 5 for register/login, 20 for refresh/logout.
+func TestRateLimitDefaultBursts(t *testing.T) {
+	hs := newHarnessWith(t, func(d *Deps) { d.AuthBurst = 0; d.RefreshBurst = 0 })
+	if n := exhaust(hs, "198.51.100.60:1", "/auth/login"); n != 5 {
+		t.Fatalf("default strict burst = %d, want 5", n)
+	}
+	if n := exhaust(hs, "198.51.100.61:1", "/auth/refresh"); n != 20 {
+		t.Fatalf("default refresh burst = %d, want 20", n)
 	}
 }

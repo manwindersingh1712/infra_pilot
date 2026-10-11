@@ -99,7 +99,7 @@ func TestRecoverTurnsPanicInto500(t *testing.T) {
 }
 
 func TestRateLimitPerIP(t *testing.T) {
-	l := newIPLimiter(5)
+	l := newIPLimiter(5, strictEvery)
 	h := l.wrap(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) }))
 	call := func(ip string) int {
 		req := httptest.NewRequest("POST", "/auth/login", nil)
@@ -279,7 +279,7 @@ func TestUnmatchedRoutesUseFixedMetricsLabel(t *testing.T) {
 }
 
 func TestRateLimitIgnoresForwardedFor(t *testing.T) {
-	h := newIPLimiter(2).wrap(okHandler())
+	h := newIPLimiter(2, strictEvery).wrap(okHandler())
 	call := func(peer, xff string) int {
 		req := httptest.NewRequest("POST", "/auth/login", nil)
 		req.RemoteAddr = peer + ":5555"
@@ -305,7 +305,7 @@ func TestRateLimitIgnoresForwardedFor(t *testing.T) {
 }
 
 func TestRateLimitedResponseBodyAndRetryAfter(t *testing.T) {
-	h := newIPLimiter(1).wrap(okHandler())
+	h := newIPLimiter(1, strictEvery).wrap(okHandler())
 	for range 2 {
 		req := httptest.NewRequest("POST", "/auth/login", nil)
 		req.RemoteAddr = "10.0.0.1:1"
@@ -361,9 +361,28 @@ func TestHarnessSendsHeadersThroughFullHandler(t *testing.T) {
 	}
 }
 
+// The refill interval is a parameter: the refresh limiter refills once per second.
+func TestRateLimitRefillInterval(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	l := newIPLimiter(2, refreshEvery)
+	l.now = func() time.Time { return now }
+	l.allow("10.0.0.1")
+	l.allow("10.0.0.1")
+	if l.allow("10.0.0.1") {
+		t.Fatal("burst of 2 exhausted")
+	}
+	now = now.Add(time.Second)
+	if !l.allow("10.0.0.1") {
+		t.Fatal("one token after 1s with a 1s interval")
+	}
+	if l.allow("10.0.0.1") {
+		t.Fatal("only one token refilled")
+	}
+}
+
 func TestRateLimitRefillsAfterSixSeconds(t *testing.T) {
 	now := time.Unix(1_000_000, 0)
-	l := newIPLimiter(2)
+	l := newIPLimiter(2, strictEvery)
 	l.now = func() time.Time { return now }
 	for i := range 2 {
 		if !l.allow("10.0.0.1") {
@@ -387,7 +406,7 @@ func TestRateLimitRefillsAfterSixSeconds(t *testing.T) {
 }
 
 func TestRateLimitKeysIPv6ByPrefix64(t *testing.T) {
-	h := newIPLimiter(2).wrap(okHandler())
+	h := newIPLimiter(2, strictEvery).wrap(okHandler())
 	call := func(addr string) int {
 		req := httptest.NewRequest("POST", "/auth/login", nil)
 		req.RemoteAddr = addr
@@ -413,7 +432,7 @@ func TestRateLimitKeysIPv6ByPrefix64(t *testing.T) {
 
 func TestRateLimiterMapIsCappedAndEvictsOldest(t *testing.T) {
 	now := time.Unix(1_000_000, 0)
-	l := newIPLimiter(1)
+	l := newIPLimiter(1, strictEvery)
 	l.now = func() time.Time { return now }
 	l.max = 3
 	for _, ip := range []string{"a", "b", "c", "d", "e"} {
@@ -440,7 +459,7 @@ func TestRateLimiterMapIsCappedAndEvictsOldest(t *testing.T) {
 
 func TestRateLimiterDropsIdleClients(t *testing.T) {
 	now := time.Unix(1_000_000, 0)
-	l := newIPLimiter(1)
+	l := newIPLimiter(1, strictEvery)
 	l.now = func() time.Time { return now }
 	l.allow("a")
 	l.allow("b")
@@ -560,7 +579,7 @@ func TestRateLimitLRUKeepsActiveClients(t *testing.T) {
 
 	t.Run("eviction at the cap drops the least recently seen", func(t *testing.T) {
 		now := time.Unix(1_000_000, 0)
-		l := newIPLimiter(5)
+		l := newIPLimiter(5, strictEvery)
 		l.max = 2
 		l.now = func() time.Time { return now }
 		l.allow("a")
@@ -574,7 +593,7 @@ func TestRateLimitLRUKeepsActiveClients(t *testing.T) {
 
 	t.Run("idle sweep drops only the idle client", func(t *testing.T) {
 		now := time.Unix(1_000_000, 0)
-		l := newIPLimiter(5)
+		l := newIPLimiter(5, strictEvery)
 		l.now = func() time.Time { return now }
 		l.allow("a")
 		l.allow("b")

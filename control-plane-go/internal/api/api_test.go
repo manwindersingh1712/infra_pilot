@@ -128,7 +128,7 @@ func newHarnessWith(t *testing.T, opts ...func(*Deps)) *harness {
 		Store: st, Redis: hs.redis, Signer: hs.signer, Secrets: box,
 		Logs: &logs.Aggregator{Hot: hs.hot, Warm: emptyWarm{}, Now: time.Now},
 		Live: hs.live, Tickets: hs.tickets, Metrics: hs.metrics, Log: slog.New(slog.DiscardHandler),
-		CORSOrigins: []string{"http://localhost:5173"}, DevLogin: true, AuthBurst: 1000,
+		CORSOrigins: []string{"http://localhost:5173"}, DevLogin: true, AuthBurst: 1000, RefreshBurst: 1000,
 	}
 	for _, opt := range opts {
 		opt(&deps)

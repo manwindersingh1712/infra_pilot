@@ -22,6 +22,9 @@ type Store struct {
 }
 
 func New(url string, ttl time.Duration) (*Store, error) {
+	if ttl <= 0 {
+		return nil, fmt.Errorf("ticket ttl must be positive, got %v", ttl)
+	}
 	opt, err := redis.ParseURL(url)
 	if err != nil {
 		return nil, fmt.Errorf("parse REDIS_URL: %w", err)
@@ -36,11 +39,11 @@ func (s *Store) Ping(ctx context.Context) error { return s.c.Ping(ctx).Err() }
 func (s *Store) Issue(ctx context.Context, value string) (string, error) {
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
-		return "", err
+		return "", fmt.Errorf("issue ticket: %w", err)
 	}
 	ticket := base64.RawURLEncoding.EncodeToString(buf)
 	if err := s.c.Set(ctx, prefix+ticket, value, s.ttl).Err(); err != nil {
-		return "", err
+		return "", fmt.Errorf("issue ticket: %w", err)
 	}
 	return ticket, nil
 }
@@ -52,5 +55,8 @@ func (s *Store) Redeem(ctx context.Context, ticket string) (string, error) {
 	if errors.Is(err, redis.Nil) {
 		return "", ErrInvalid
 	}
-	return v, err
+	if err != nil {
+		return "", fmt.Errorf("redeem ticket: %w", err)
+	}
+	return v, nil
 }

@@ -133,3 +133,9 @@ func TestHashPasswordUsesCost10(t *testing.T) {
 		t.Fatalf("cost=%d", cost)
 	}
 }
+
+func TestRefreshGraceIsTenSeconds(t *testing.T) {
+	if RefreshGrace != 10*time.Second {
+		t.Fatalf("RefreshGrace = %v, want 10s", RefreshGrace)
+	}
+}

@@ -602,3 +602,60 @@ func wantGooseVersions(t *testing.T) []int64 {
 	}
 	return want
 }
+
+// 00004 adds the refresh-token family columns. Rows that exist before it get
+// familyId = id (one-token families), NOT NULL holds afterwards, and the
+// migration reverses and re-applies cleanly.
+func TestMigration00004RefreshFamily(t *testing.T) {
+	ctx := t.Context()
+	_, pool := testutil.FreshDB(t, adminURL)
+	if err := db.MigrateTo(ctx, pool, 3); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO "User" ("id","email","password","updatedAt") VALUES ('u1','m@x.co','h', now())`); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"t1", "t2"} {
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO "RefreshToken" ("id","userId","tokenHash","expiresAt") VALUES ($1,'u1',$1 || '-hash', now() + interval '1 day')`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.MigrateTo(ctx, pool, 4); err != nil {
+		t.Fatal(err)
+	}
+	check := func() {
+		t.Helper()
+		var mismatched, rotated int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE "familyId" IS DISTINCT FROM "id"), count("rotatedAt") FROM "RefreshToken"`).
+			Scan(&mismatched, &rotated); err != nil {
+			t.Fatal(err)
+		}
+		if mismatched != 0 || rotated != 0 {
+			t.Fatalf("backfill: %d rows with familyId != id, %d with rotatedAt", mismatched, rotated)
+		}
+		var nullable string
+		if err := pool.QueryRow(ctx, `SELECT is_nullable FROM information_schema.columns
+			WHERE table_name = 'RefreshToken' AND column_name = 'familyId'`).Scan(&nullable); err != nil || nullable != "NO" {
+			t.Fatalf("familyId is_nullable = %q, err %v; want NO", nullable, err)
+		}
+		var idx int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_indexes WHERE indexname = 'RefreshToken_familyId_idx'`).Scan(&idx); err != nil || idx != 1 {
+			t.Fatalf("family index count = %d, err %v", idx, err)
+		}
+	}
+	check()
+
+	if err := db.MigrateDownTo(ctx, pool, 3); err != nil {
+		t.Fatal(err)
+	}
+	var cols int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM information_schema.columns
+		WHERE table_name = 'RefreshToken' AND column_name IN ('familyId','rotatedAt')`).Scan(&cols); err != nil || cols != 0 {
+		t.Fatalf("down left %d columns, err %v", cols, err)
+	}
+	if err := db.MigrateTo(ctx, pool, 4); err != nil {
+		t.Fatal(err)
+	}
+	check()
+}

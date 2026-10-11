@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http/httptest"
 	"strings"
@@ -174,29 +175,89 @@ func TestRefreshRotates(t *testing.T) {
 	expectStatus(t, hs.do("POST", "/auth/refresh", "", map[string]any{}), 400)
 }
 
-// Intended behaviour: presenting a consumed token means two parties hold a
-// copy (theft, or two tabs racing), so the response is 401 with the same fixed
-// body as an unknown token, and ALL of that user's refresh tokens are revoked.
-// Other users are untouched. The user logs in again.
-func TestRefreshReuseRevokesEveryTokenOfThatUser(t *testing.T) {
+// backdateRotation makes a rotated token look like it was rotated secs ago.
+func backdateRotation(t *testing.T, plain string, secs int) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE "RefreshToken" SET "rotatedAt" = now() - $2::int * interval '1 second' WHERE "tokenHash" = $1`,
+		auth.HashRefreshToken(plain), secs); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Intended behaviour: presenting a rotated token after the grace window means
+// two parties hold a copy (theft), so the response is 401 with the same fixed
+// body as an unknown token, and that token's FAMILY (one login) is revoked.
+// The user's other sessions and other users are untouched.
+func TestRefreshReuseRevokesTheFamilyOnly(t *testing.T) {
 	hs := newHarness(t)
 	reg := hs.register("reuse@b.co")
 	other := hs.register("other@b.co")
 	second := decode[authResp](t, hs.do("POST", "/auth/login", "", map[string]any{"email": "reuse@b.co", "password": "password123"}))
 	next := decode[authResp](t, hsOK(t, hs.refresh(reg.RefreshToken)))
+	backdateRotation(t, reg.RefreshToken, 11)
 
-	rec := hs.refresh(reg.RefreshToken) // replay of the consumed token
+	rec := hs.refresh(reg.RefreshToken) // replay of the rotated token, outside the grace window
 	expectStatus(t, rec, 401)
 	expectBody(t, rec, invalidRefreshBody)
 
-	for name, tok := range map[string]string{"rotated successor": next.RefreshToken, "other session": second.RefreshToken} {
-		rec := hs.refresh(tok)
-		if rec.Code != 401 {
-			t.Fatalf("%s survived the reuse revocation: %d", name, rec.Code)
-		}
-		expectBody(t, rec, invalidRefreshBody)
+	rec = hs.refresh(next.RefreshToken)
+	if rec.Code != 401 {
+		t.Fatalf("rotated successor survived the reuse revocation: %d", rec.Code)
 	}
-	hsOK(t, hs.refresh(other.RefreshToken)) // a different user is unaffected
+	expectBody(t, rec, invalidRefreshBody)
+	hsOK(t, hs.refresh(second.RefreshToken)) // the user's other session survives
+	hsOK(t, hs.refresh(other.RefreshToken))  // a different user is unaffected
+}
+
+// A replay inside the grace window is a benign race (two tabs): plain 401, and
+// the winner's new token keeps working.
+func TestRefreshReplayInsideGraceRevokesNothing(t *testing.T) {
+	hs := newHarness(t)
+	reg := hs.register("grace@b.co")
+	next := decode[authResp](t, hsOK(t, hs.refresh(reg.RefreshToken)))
+	rec := hs.refresh(reg.RefreshToken)
+	expectStatus(t, rec, 401)
+	expectBody(t, rec, invalidRefreshBody)
+	hsOK(t, hs.refresh(next.RefreshToken))
+}
+
+// (f) Two concurrent refreshes with one token: one 200, one 401. The winner's
+// token works and the user's other session is untouched.
+func TestRefreshConcurrentRequests(t *testing.T) {
+	hs := newHarness(t)
+	for rep := range 10 {
+		reg := hs.register(fmt.Sprintf("conc%d@b.co", rep))
+		second := decode[authResp](t, hs.do("POST", "/auth/login", "", map[string]any{"email": fmt.Sprintf("conc%d@b.co", rep), "password": "password123"}))
+		start := make(chan struct{})
+		recs := make([]*httptest.ResponseRecorder, 2)
+		var wg sync.WaitGroup
+		for i := range recs {
+			wg.Add(1)
+			go func() { defer wg.Done(); <-start; recs[i] = hs.refresh(reg.RefreshToken) }()
+		}
+		close(start)
+		wg.Wait()
+		var winner *httptest.ResponseRecorder
+		for _, rec := range recs {
+			switch rec.Code {
+			case 200:
+				if winner != nil {
+					t.Fatalf("rep %d: two refreshes succeeded", rep)
+				}
+				winner = rec
+			case 401:
+				expectBody(t, rec, invalidRefreshBody)
+			default:
+				t.Fatalf("rep %d: status %d: %s", rep, rec.Code, rec.Body.String())
+			}
+		}
+		if winner == nil {
+			t.Fatalf("rep %d: no refresh succeeded", rep)
+		}
+		hsOK(t, hs.refresh(decode[authResp](t, winner).RefreshToken))
+		hsOK(t, hs.refresh(second.RefreshToken))
+	}
 }
 
 func TestRefreshUnknownAndRevokedTokensLookIdentical(t *testing.T) {
@@ -219,6 +280,14 @@ func TestRefreshReuseLogsWithoutTheToken(t *testing.T) {
 	hs := newHarnessWith(t, func(d *Deps) { d.Log = slog.New(slog.NewTextHandler(lw, nil)) })
 	reg := hs.register("log@b.co")
 	hsOK(t, hs.refresh(reg.RefreshToken))
+	expectStatus(t, hs.refresh(reg.RefreshToken), 401) // inside the grace window
+	mu.Lock()
+	graceOut := buf.String()
+	mu.Unlock()
+	if !strings.Contains(graceOut, "replayed inside grace window") {
+		t.Fatalf("grace replay was not logged:\n%s", graceOut)
+	}
+	backdateRotation(t, reg.RefreshToken, 11)
 	expectStatus(t, hs.refresh(reg.RefreshToken), 401)
 	expectStatus(t, hs.refresh("another-unknown-token-value"), 401)
 
@@ -288,10 +357,9 @@ func TestRefreshTokenStoredOnlyAsHash(t *testing.T) {
 	}
 }
 
-// Intended behaviour: logout revokes that one refresh token. Using it later is
-// a replay of a revoked token, so it is a 401 (and, like any replay, revokes
-// the user's other sessions). Logout is idempotent and never leaks whether the
-// token existed.
+// Intended behaviour: logout revokes the presenter's family. Using the token
+// later is a plain 401 with no further effect. Logout is idempotent and never
+// leaks whether the token existed.
 func TestLogoutRevokesRefreshToken(t *testing.T) {
 	hs := newHarness(t)
 	reg := hs.register("l@b.co")
@@ -314,6 +382,19 @@ func TestLogoutLeavesOtherSessionsAlone(t *testing.T) {
 	reg := hs.register("two@b.co")
 	second := decode[authResp](t, hs.do("POST", "/auth/login", "", map[string]any{"email": "two@b.co", "password": "password123"}))
 	expectStatus(t, hs.do("POST", "/auth/logout", "", map[string]any{"refreshToken": reg.RefreshToken}), 200)
+	hsOK(t, hs.refresh(second.RefreshToken))
+}
+
+// (e) Logging out with a stale (rotated) token of a live chain kills that chain.
+func TestLogoutWithStaleTokenKillsTheChain(t *testing.T) {
+	hs := newHarness(t)
+	reg := hs.register("stale@b.co")
+	second := decode[authResp](t, hs.do("POST", "/auth/login", "", map[string]any{"email": "stale@b.co", "password": "password123"}))
+	next := decode[authResp](t, hsOK(t, hs.refresh(reg.RefreshToken)))
+	expectBody(t, hs.do("POST", "/auth/logout", "", map[string]any{"refreshToken": reg.RefreshToken}), `{"ok":true}`)
+	rec := hs.refresh(next.RefreshToken)
+	expectStatus(t, rec, 401)
+	expectBody(t, rec, invalidRefreshBody)
 	hsOK(t, hs.refresh(second.RefreshToken))
 }
 

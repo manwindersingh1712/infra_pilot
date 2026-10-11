@@ -11,6 +11,11 @@ import (
 // RefreshTTL is how long a refresh token is valid. Each use replaces it.
 const RefreshTTL = 30 * 24 * time.Hour
 
+// RefreshGrace is how long after a rotation a replay of the old token counts as
+// a benign race (two tabs) instead of theft. Inside it the replay is a plain
+// 401 and revokes nothing.
+const RefreshGrace = 10 * time.Second
+
 // NewRefreshToken returns a random token for the client and the hash to store.
 func NewRefreshToken() (plain, hash string, err error) {
 	buf := make([]byte, 32)

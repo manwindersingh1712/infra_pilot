@@ -138,8 +138,9 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 
 // refresh exchanges a refresh token for a new access + refresh token pair.
 // Each refresh token works once. Unknown, expired, revoked and replayed tokens
-// all get the same 401 body. Replaying a consumed token revokes all of that
-// user's tokens (the store does this); the token itself is never logged.
+// all get the same 401 body. The store rotates in one transaction. A replay
+// inside auth.RefreshGrace (two tabs racing) revokes nothing; a replay after it
+// revokes the token's family (the store does this). The token is never logged.
 func (s *Server) refresh(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		RefreshToken string `json:"refreshToken"`
@@ -152,19 +153,29 @@ func (s *Server) refresh(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	userID, err := s.Store.ConsumeRefreshToken(r.Context(), auth.HashRefreshToken(body.RefreshToken))
-	if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrTokenReused) {
-		if errors.Is(err, store.ErrTokenReused) {
-			s.Log.Warn("refresh token reused; revoked all sessions of the user", "requestId", requestID(r))
-		}
-		writeError(w, http.StatusUnauthorized, "invalid_refresh_token")
-		return
-	}
+	refresh, newHash, err := auth.NewRefreshToken()
 	if err != nil {
 		s.internalError(w, r, err)
 		return
 	}
-	access, refresh, err := s.issueTokens(r.Context(), userID)
+	userID, err := s.Store.RotateRefreshToken(r.Context(), auth.HashRefreshToken(body.RefreshToken), newHash, auth.RefreshTTL)
+	switch {
+	case errors.Is(err, store.ErrReplayInGrace):
+		s.Log.Info("refresh token replayed inside grace window", "requestId", requestID(r))
+		writeError(w, http.StatusUnauthorized, "invalid_refresh_token")
+		return
+	case errors.Is(err, store.ErrNotFound):
+		writeError(w, http.StatusUnauthorized, "invalid_refresh_token")
+		return
+	case errors.Is(err, store.ErrTokenReused):
+		s.Log.Warn("refresh token reused; revoked its family", "requestId", requestID(r))
+		writeError(w, http.StatusUnauthorized, "invalid_refresh_token")
+		return
+	case err != nil:
+		s.internalError(w, r, err)
+		return
+	}
+	access, err := s.Signer.Sign(userID)
 	if err != nil {
 		s.internalError(w, r, err)
 		return
@@ -172,8 +183,8 @@ func (s *Server) refresh(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"token": access, "refreshToken": refresh})
 }
 
-// logout revokes one refresh token. It is idempotent and answers {"ok":true}
-// for unknown tokens too.
+// logout revokes the presenter's refresh-token family. It is idempotent and
+// answers {"ok":true} for unknown tokens too.
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		RefreshToken string `json:"refreshToken"`
@@ -183,7 +194,7 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.RefreshToken != "" {
-		if err := s.Store.RevokeRefreshToken(r.Context(), auth.HashRefreshToken(body.RefreshToken)); err != nil {
+		if err := s.Store.RevokeRefreshFamily(r.Context(), auth.HashRefreshToken(body.RefreshToken)); err != nil {
 			s.internalError(w, r, err)
 			return
 		}

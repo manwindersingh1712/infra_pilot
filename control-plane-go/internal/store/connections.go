@@ -53,16 +53,13 @@ func (s *Store) CreateConnectionForOwner(ctx context.Context, sourceID, targetID
 // aliveIn matches live (not soft-deleted) services of project $1.
 const aliveIn = `(SELECT "id" FROM "Service" WHERE "projectId" = $1 AND "deletedAt" IS NULL)`
 
-// alive matches every live service.
-const alive = `(SELECT "id" FROM "Service" WHERE "deletedAt" IS NULL)`
-
-// ListProjectConnections returns connections that touch the project and whose
-// two services both still exist.
+// ListProjectConnections returns connections whose two ends are both live
+// services of the project. Legacy rows may link other projects or tenants; they
+// are never returned, whichever end is in the project.
 func (s *Store) ListProjectConnections(ctx context.Context, projectID string) ([]ServiceConnection, error) {
 	rows, err := s.db.Query(ctx,
 		`SELECT `+connCols+` FROM "ServiceConnection"
-		 WHERE ("sourceId" IN `+aliveIn+` OR "targetId" IN `+aliveIn+`)
-		   AND "sourceId" IN `+alive+` AND "targetId" IN `+alive+`
+		 WHERE "sourceId" IN `+aliveIn+` AND "targetId" IN `+aliveIn+`
 		 ORDER BY "createdAt" ASC`, projectID)
 	return collect(rows, err, scanConnection)
 }
@@ -83,12 +80,12 @@ func (s *Store) DeleteConnection(ctx context.Context, id string) error {
 	return err
 }
 
-// ListSourceEdges returns [source, target] pairs whose source is in the
-// project and whose two services both still exist.
+// ListSourceEdges returns [source, target] pairs whose two ends are both live
+// services of the project.
 func (s *Store) ListSourceEdges(ctx context.Context, projectID string) ([][2]string, error) {
 	rows, err := s.db.Query(ctx,
 		`SELECT "sourceId", "targetId" FROM "ServiceConnection"
-		 WHERE "sourceId" IN `+aliveIn+` AND "targetId" IN `+alive+`
+		 WHERE "sourceId" IN `+aliveIn+` AND "targetId" IN `+aliveIn+`
 		 ORDER BY "createdAt" ASC`, projectID)
 	return collect(rows, err, func(row pgx.Row) ([2]string, error) {
 		var e [2]string

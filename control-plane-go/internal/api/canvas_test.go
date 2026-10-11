@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"testing"
@@ -43,6 +44,78 @@ func TestCanvasRead(t *testing.T) {
 		c.Services[1].ID != db.ID || len(c.Connections) != 1 || len(c.Connections[0]) != 4 ||
 		c.Connections[0]["label"] != "uses" || c.Connections[0]["sourceId"] != f.ServiceID {
 		t.Fatalf("canvas %+v", c)
+	}
+}
+
+// Legacy rows linking services of different tenants, projects or a deleted end
+// must not put a foreign id or label in the response, nor feed auto-layout.
+func TestCanvasNeverShowsLegacyCrossTenantConnections(t *testing.T) {
+	hs := newHarness(t)
+	ctx := context.Background()
+	a := testutil.Seed(t, hs.st, store.TypeNodejs)
+	b := testutil.Seed(t, hs.st, store.TypeNodejs)
+	mk := func(project, name string) store.Service {
+		s, err := hs.st.CreateService(ctx, store.NewService{ProjectID: project, Name: name, ServiceType: "redis", Branch: "main"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	aDB := mk(a.ProjectID, "a-db")
+	p2, _ := hs.st.CreateProject(ctx, "a-second", a.UserID)
+	a2 := mk(p2.ID, "a2-secret-name")
+	gone := mk(a.ProjectID, "gone-secret-name")
+	secret := "SECRET-LABEL-FROM-A"
+	mustConn := func(src, dst string, label *string) {
+		t.Helper()
+		if _, err := hs.st.CreateConnection(ctx, src, dst, label); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustConn(a.ServiceID, aDB.ID, nil) // the one legitimate edge
+	mustConn(a.ServiceID, b.ServiceID, &secret)
+	mustConn(b.ServiceID, a.ServiceID, &secret)
+	mustConn(a.ServiceID, a2.ID, &secret)
+	mustConn(a2.ID, a.ServiceID, &secret)
+	mustConn(a.ServiceID, gone.ID, &secret)
+	if err := hs.st.SoftDeleteService(ctx, gone.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, u := range map[string]string{"A": a.UserID, "B": b.UserID} {
+		project := a.ProjectID
+		if name == "B" {
+			project = b.ProjectID
+		}
+		rec := hs.do("GET", "/projects/"+project+"/canvas", hs.token(u), nil)
+		expectStatus(t, rec, 200)
+		body := rec.Body.Bytes()
+		c := decode[canvasResp](t, rec)
+		wantConns := 0
+		if name == "A" {
+			wantConns = 1
+		}
+		if len(c.Connections) != wantConns {
+			t.Fatalf("%s: connections %+v", name, c.Connections)
+		}
+		foreign := []string{secret, "a2-secret-name", "gone-secret-name", a2.ID, gone.ID}
+		if name == "A" {
+			foreign = append(foreign, b.ServiceID)
+		} else {
+			foreign = append(foreign, a.ServiceID, aDB.ID)
+		}
+		for _, x := range foreign {
+			if bytes.Contains(body, []byte(x)) {
+				t.Fatalf("%s: response leaks %q: %s", name, x, body)
+			}
+		}
+	}
+	// Auto-layout on A must not place anything by a cross-tenant edge: with
+	// only a->aDB valid, aDB is one rank right of a and nothing else moves.
+	rec := hs.do("POST", "/projects/"+a.ProjectID+"/canvas/auto-layout", hs.token(a.UserID), nil)
+	expectStatus(t, rec, 200)
+	if bytes.Contains(rec.Body.Bytes(), []byte(b.ServiceID)) {
+		t.Fatalf("auto-layout leaks: %s", rec.Body.String())
 	}
 }
 
@@ -396,8 +469,10 @@ func TestDeleteConnectionRequiresOwnershipOfBothEnds(t *testing.T) {
 			t.Fatalf("%s: %d %s", name, rec.Code, rec.Body.String())
 		}
 	}
-	if l, _ := hs.st.ListProjectConnections(ctx, f.ProjectID); len(l) != 2 {
-		t.Fatalf("a rejected delete removed a row: %+v", l)
+	// The project list now hides the cross-tenant row, so count both rows raw.
+	var rows int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM "ServiceConnection" WHERE "id" = ANY($1)`, []string{own.ID, mixed.ID}).Scan(&rows); err != nil || rows != 2 {
+		t.Fatalf("a rejected delete removed a row: %d %v", rows, err)
 	}
 	expectStatus(t, hs.do("DELETE", "/services/connections/"+own.ID, "", nil), 401)
 	expectStatus(t, hs.do("DELETE", "/services/connections/"+own.ID, hs.token(f.UserID), nil), 200)

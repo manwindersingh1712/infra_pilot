@@ -89,11 +89,10 @@ func TestConnectionListsRespectProjectAndDirection(t *testing.T) {
 		}
 		return conn
 	}
-	in := mustConn(c.other.ID, c.f.ServiceID)     // from P2 into P1: target side of the OR
-	out := mustConn(c.f.ServiceID, c.other.ID)    // from P1 out to P2
+	mustConn(c.other.ID, c.f.ServiceID)           // from P2 into P1: spans projects, listed nowhere
+	mustConn(c.f.ServiceID, c.other.ID)           // from P1 out to P2: spans projects, listed nowhere
 	inside := mustConn(c.f.ServiceID, c.db.ID)    // within P1
 	elsewhere := mustConn(c.other.ID, c.other.ID) // P2 only (self, raw store allows it)
-	_ = elsewhere
 
 	p1, err := st.ListProjectConnections(ctx, c.f.ProjectID)
 	if err != nil {
@@ -103,11 +102,11 @@ func TestConnectionListsRespectProjectAndDirection(t *testing.T) {
 	for _, x := range p1 {
 		got[x.ID] = true
 	}
-	if len(p1) != 3 || !got[in.ID] || !got[out.ID] || !got[inside.ID] {
+	if len(p1) != 1 || !got[inside.ID] { // both ends must be in the project (was: either end)
 		t.Fatalf("P1 list = %+v", p1)
 	}
 	p2, err := st.ListProjectConnections(ctx, c.p2.ID)
-	if err != nil || len(p2) != 3 { // in, out and the P2 self edge all touch P2
+	if err != nil || len(p2) != 1 || p2[0].ID != elsewhere.ID { // only the P2 self edge has both ends in P2
 		t.Fatalf("P2 list = %+v err %v", p2, err)
 	}
 	// A project with no services lists nothing, and a connection between two
@@ -118,18 +117,17 @@ func TestConnectionListsRespectProjectAndDirection(t *testing.T) {
 	}
 	foreignDB, _ := st.CreateService(ctx, store.NewService{ProjectID: c.foreign.ProjectID, Name: "d", ServiceType: "redis", Branch: "main"})
 	mustConn(c.foreign.ServiceID, foreignDB.ID)
-	if l, _ := st.ListProjectConnections(ctx, c.f.ProjectID); len(l) != 3 {
+	if l, _ := st.ListProjectConnections(ctx, c.f.ProjectID); len(l) != 1 {
 		t.Fatalf("another tenant's edge leaked: %+v", l)
 	}
 
-	// Source edges: only edges whose SOURCE is in the project (no inbound edge).
+	// Source edges: only edges with both ends in the project.
 	edges, err := st.ListSourceEdges(ctx, c.f.ProjectID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[[2]string]bool{{c.f.ServiceID, c.other.ID}: true, {c.f.ServiceID, c.db.ID}: true}
-	if len(edges) != 2 || !want[edges[0]] || !want[edges[1]] {
-		t.Fatalf("edges = %v (inbound edge from P2 must be excluded)", edges)
+	if len(edges) != 1 || edges[0] != [2]string{c.f.ServiceID, c.db.ID} {
+		t.Fatalf("edges = %v (edges to or from P2 must be excluded)", edges)
 	}
 
 	// A soft-deleted end removes the connection from both lists.
@@ -138,7 +136,7 @@ func TestConnectionListsRespectProjectAndDirection(t *testing.T) {
 	}
 	p1, _ = st.ListProjectConnections(ctx, c.f.ProjectID)
 	edges, _ = st.ListSourceEdges(ctx, c.f.ProjectID)
-	if len(p1) != 2 || len(edges) != 1 {
+	if len(p1) != 0 || len(edges) != 0 {
 		t.Fatalf("after soft delete: %+v %v", p1, edges)
 	}
 }
@@ -201,5 +199,50 @@ func TestGetConnectionForOwnerChecksBothEnds(t *testing.T) {
 	}
 	if _, err := st.GetConnectionForOwner(ctx, own.ID, c.f.UserID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("deleted end err = %v", err)
+	}
+}
+
+// Legacy rows (written by Node, or by the unchecked CreateConnection) can link
+// services of different tenants or projects. A project's lists must never
+// return them, whichever end is in the project.
+func TestLegacyConnectionRowsNeverCrossProjectsOrTenants(t *testing.T) {
+	st, ctx := newStore(t), context.Background()
+	c := newConnFixture(t, st)
+	gone, err := st.CreateService(ctx, store.NewService{ProjectID: c.f.ProjectID, Name: "gone", ServiceType: "redis", Branch: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inside, _ := st.CreateConnection(ctx, c.f.ServiceID, c.db.ID, nil)
+	for _, pair := range [][2]string{
+		{c.f.ServiceID, c.foreign.ServiceID}, {c.foreign.ServiceID, c.f.ServiceID}, // other tenant, both directions
+		{c.f.ServiceID, c.other.ID}, {c.other.ID, c.f.ServiceID}, // same user, other project
+		{c.f.ServiceID, gone.ID}, {gone.ID, c.f.ServiceID}, // soft-deleted end
+	} {
+		if _, err := st.CreateConnection(ctx, pair[0], pair[1], nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.SoftDeleteService(ctx, gone.ID); err != nil {
+		t.Fatal(err)
+	}
+	for name, project := range map[string]string{"A": c.f.ProjectID, "B": c.foreign.ProjectID, "A2": c.p2.ID} {
+		list, err := st.ListProjectConnections(ctx, project)
+		if err != nil {
+			t.Fatal(err)
+		}
+		edges, err := st.ListSourceEdges(ctx, project)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantList, wantEdges := 0, 0
+		if name == "A" {
+			wantList, wantEdges = 1, 1
+		}
+		if len(list) != wantList || len(edges) != wantEdges {
+			t.Fatalf("project %s: list %+v edges %v", name, list, edges)
+		}
+		if name == "A" && (list[0].ID != inside.ID || edges[0] != [2]string{c.f.ServiceID, c.db.ID}) {
+			t.Fatalf("project A kept the wrong row: %+v %v", list, edges)
+		}
 	}
 }

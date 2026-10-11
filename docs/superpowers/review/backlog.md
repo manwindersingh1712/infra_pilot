@@ -301,3 +301,11 @@ Source: `review/plan2/task-11-product.md`. The backend is fine for users; the ri
 - SEC-4: `/logs/health` returns the global `activeLogStreams` count to any registered user (cross-tenant activity signal): restrict or drop the count.
 - SEC-5: when the Redis hot tier has data, `search`, `sources`, `after`/`before` and `offset` are ignored and the OLDEST N lines are returned (same as Node).
 - SEC-6 (info): nothing redacts secrets in log content (owner-only exposure; same as before). SEC-7 (info): `cmd/api` needs `ReadHeaderTimeout`, `MaxHeaderBytes`, `IdleTimeout` (Task 14); `arm()` skips the write deadline if the writer lacks `Unwrap` (the middleware wrapper has it).
+
+## Plan 2 Task 11, Staff/Verifier (fix round handles STAFF-2 stream limiter test, STAFF-4 heartbeat deadline test, SEC-4 /logs/health count, OBS-1 newest-lines history; the rest is carried)
+- STAFF-1 (low): there is no GLOBAL stream cap and each stream holds a goroutine plus a dedicated Redis PubSub connection; per-deployment cap (20) never trips by default because only the owner can open a stream. Consider a global cap in hardening.
+- STAFF-3 (low): when the live channel closes, the handler returns silently with no `end` event (narrow race; 20 runs lost no frame); no test closes the fake channel.
+- STAFF-5 (Task 16): `history` replaces the list in the planned hook (`setLogs(data.logs)`): merge instead (already PROD-2). STAFF-6 (Task 14/18): shared limiter bucket + a 429 on the cap burns the ticket: reconnect storms behind nginx get 429s until `TRUSTED_PROXIES` lands.
+- Redundant pairs (not a defect): each of the two history caps and each of the two `Cache-Control: no-store` (handler + middleware) survives a mutation alone; removing both is killed. `ILIKE` with `\%` being literal in ClickHouse is verified by the Verifier's real-ClickHouse run (literal `%` and `_` OK, `\` matches nothing).
+- OBS-2 (cosmetic): the literal id `..` gets the router's `{"error":"not_found"}` instead of `deployment not found` (no ownership information leaks). OBS-3: if the DB ownership lookup fails after the ticket is spent the stream returns 500 and the ticket is burned (client requests a new one).
+- Spec/plan text to amend: add the `end` SSE event (reasons `shutdown`, `max_duration`) to the spec and to the Task 16 hook description.

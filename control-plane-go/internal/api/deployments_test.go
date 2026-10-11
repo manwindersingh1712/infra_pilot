@@ -63,3 +63,61 @@ func TestListDeploymentsRequiresAuth(t *testing.T) {
 	hs := newHarness(t)
 	expectStatus(t, hs.do("GET", "/deployments", "", nil), 401)
 }
+
+// The UI asks for one service's deployments per panel: a user with two
+// services must get only the requested service's rows back (STAFF-1).
+func TestListDeploymentsServiceFilterWithinOneOwner(t *testing.T) {
+	hs := newHarness(t)
+	ctx := context.Background()
+	f := testutil.Seed(t, hs.st, store.TypeNodejs)
+	second, err := hs.st.CreateService(ctx, store.NewService{
+		ProjectID: f.ProjectID, Name: "second", ServiceType: "redis", Branch: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d1, err := hs.st.CreateDeployment(ctx, f.ServiceID, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d2, err := hs.st.CreateDeployment(ctx, second.ID, "latest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok := hs.token(f.UserID)
+
+	all := decode[[]map[string]any](t, hs.do("GET", "/deployments", tok, nil))
+	if len(all) != 2 {
+		t.Fatalf("unfiltered list = %d rows, want 2", len(all))
+	}
+	for _, c := range []struct{ serviceID, depID string }{{f.ServiceID, d1.ID}, {second.ID, d2.ID}} {
+		got := decode[[]map[string]any](t, hs.do("GET", "/deployments?serviceId="+c.serviceID, tok, nil))
+		if len(got) != 1 || got[0]["id"] != c.depID || got[0]["serviceId"] != c.serviceID {
+			t.Fatalf("filter %s returned %v, want only %s", c.serviceID, got, c.depID)
+		}
+	}
+}
+
+// At most the 50 newest deployments come back, newest first (STAFF-2).
+func TestListDeploymentsNewestFirstAndCappedAt50(t *testing.T) {
+	hs := newHarness(t)
+	ctx := context.Background()
+	f := testutil.Seed(t, hs.st, store.TypeNodejs)
+	var ids []string
+	for i := 0; i < 52; i++ {
+		d, err := hs.st.CreateDeployment(ctx, f.ServiceID, "main")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, d.ID)
+	}
+	got := decode[[]map[string]any](t, hs.do("GET", "/deployments?serviceId="+f.ServiceID, hs.token(f.UserID), nil))
+	if len(got) != 50 {
+		t.Fatalf("got %d rows, want the 50 newest", len(got))
+	}
+	for i, row := range got {
+		want := ids[len(ids)-1-i]
+		if row["id"] != want {
+			t.Fatalf("row %d is %v, want %s (newest first); the two oldest must be dropped", i, row["id"], want)
+		}
+	}
+}

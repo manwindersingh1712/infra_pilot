@@ -47,7 +47,7 @@ func (s *Store) DeploymentExists(ctx context.Context, id string) (bool, error) {
 func (s *Store) ListDeployments(ctx context.Context, serviceID string) ([]Deployment, error) {
 	rows, err := s.db.Query(ctx,
 		`SELECT `+deploymentCols+` FROM "Deployment" WHERE ($1 = '' OR "serviceId" = $1)
-		 ORDER BY "createdAt" DESC LIMIT 50`, serviceID)
+		 ORDER BY "createdAt" DESC, "id" DESC LIMIT 50`, serviceID)
 	return collect(rows, err, scanDeployment)
 }
 
@@ -287,6 +287,6 @@ func (s *Store) ListDeploymentsForOwner(ctx context.Context, ownerUserID, servic
 	rows, err := s.db.Query(ctx,
 		`SELECT `+deploymentCols+` FROM "Deployment"
 		 WHERE ($1 = '' OR "serviceId" = $1) AND `+ownedByCaller+`
-		 ORDER BY "createdAt" DESC LIMIT 50`, serviceID, ownerUserID)
+		 ORDER BY "createdAt" DESC, "id" DESC LIMIT 50`, serviceID, ownerUserID)
 	return collect(rows, err, scanDeployment)
 }

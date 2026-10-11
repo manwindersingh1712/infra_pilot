@@ -507,8 +507,8 @@ func TestMigrateRefusesUnbaselinedPrisma(t *testing.T) {
 	if err := db.Migrate(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
-	if got := gooseVersions(t, pool); !slices.Equal(got, []int64{0, 1, 2}) {
-		t.Fatalf("goose rows = %v, want [0 1 2]", got)
+	if got := gooseVersions(t, pool); !slices.Equal(got, wantGooseVersions(t)) {
+		t.Fatalf("goose rows = %v, want %v", got, wantGooseVersions(t))
 	}
 }
 
@@ -545,8 +545,8 @@ func TestConcurrentBaselineAndMigrate(t *testing.T) {
 			if err := db.Migrate(ctx, pool); err != nil {
 				t.Fatalf("final Migrate: %v", err)
 			}
-			if got := gooseVersions(t, pool); !slices.Equal(got, []int64{0, 1, 2}) {
-				t.Fatalf("goose rows = %v, want [0 1 2]", got)
+			if got := gooseVersions(t, pool); !slices.Equal(got, wantGooseVersions(t)) {
+				t.Fatalf("goose rows = %v, want %v", got, wantGooseVersions(t))
 			}
 			var email string
 			if err := pool.QueryRow(ctx, `SELECT email FROM "User" WHERE id = 'u1'`).Scan(&email); err != nil {
@@ -590,4 +590,15 @@ func TestStatusOnEmptyDBDoesNotWrite(t *testing.T) {
 		t.Fatalf("Status with the migration lock held elsewhere: %v", err)
 	}
 	assertNoGooseTable(t, pool)
+}
+
+// wantGooseVersions is the baseline row 0 plus every embedded migration, so a
+// new migration cannot leave the expected rows stale.
+func wantGooseVersions(t *testing.T) []int64 {
+	t.Helper()
+	want := []int64{0}
+	for v := int64(1); v <= latestVersion(t); v++ {
+		want = append(want, v)
+	}
+	return want
 }

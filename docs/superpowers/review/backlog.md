@@ -169,3 +169,4 @@ Low-severity and deferred findings. Each line: date, task, finding ID, severity,
 - 2026-10-10, P1 gate, low, add `ruvector.db`, `agentdb.rvf*` and `README_NEW.md` to `.gitignore` (they must never be committed; stage by explicit path until then), Plan 3
 - 2026-10-10, P1 gate, low, no UI rollback button; first deploy after cutover leaves Node containers running until each service is redeployed; Node-era anonymous Mongo/Redis volumes are pruned by hand after verification, Plan 3
 - 2026-10-10, P1 gate, VER-1 F1, low, runbook SQL `now()` writes `timestamp without time zone`: correct only when the Postgres session timezone is UTC (compose Postgres is); if the dev DB is not UTC use `now() AT TIME ZONE 'UTC'`, cutover day
+- (2026-10-11, CTO) Remove the legacy `main` placeholder rule in `checkoutRef` (builder.go) after the Plan 2 API cutover; the Go API must send Branch, `HEAD` or a hex sha.

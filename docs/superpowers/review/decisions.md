@@ -406,3 +406,10 @@ Engineer instructions:
 3. Re-run the full Go CI set; update the Task 27 Step 3.3 SQL and release note to list only rows violating the new pattern (spaces, `=`, `#`/`-`/`.` lead, >256, non-ASCII). Commit as `fix(go): accept docker-valid env keys (dash, dot, leading digit)`.
 Registry default `localhost:5001`: yes, acceptable (matches dev stack, documented; Node default 5000 was never used in practice).
 Follow-ups: Engineer implements; Verifier re-runs CI and smoke script. Plan 2: API-side key validation backlog line.
+
+## 2026-10-11 Legacy default ref `main` on a non-main Branch (cutover blocker)
+Context: Live cutover. All 5 app services have Branch=master. The frozen Node API sends commitSha=`main` regardless of Branch. Node cloned Branch and its best-effort checkout of `main` failed silently, so the tip was built (tag `:main`). Go `checkoutRef` fails that (`main` is not in the single-branch clone), so every default deploy fails.
+Options considered: (a) treat `main` as the tip of Branch when Branch != `main`; (b) any unknown non-hex ref falls back to the tip (rejected: tag `v1.2` would claim a version the image lacks); (c) rewrite commitSha in the starter/LoadJob (rejected: the image tag must end in the ref, so the tag and the row would diverge, and more places change); (d) patch frozen Node API (not allowed without an explicit user decision).
+Decision: fix now, option (a), as an explicit, temporary legacy rule.
+Why: `main` is the Node API's placeholder, not a user-chosen revision. It is a mutable tag like Branch or HEAD, so the integrity property (a tag claims only what it contains) is unchanged. It reproduces Node behaviour exactly, including when the repo also has a `main` branch we did not clone (acceptable: same as Node). Hex refs stay verified; tags and other names still fail. `latest` never reaches the builder. ValidRef is unchanged.
+Follow-ups: Engineer instructions below; backlog line "remove legacyDefaultRef after the Plan 2 API cutover (Plan 2 API must send Branch, HEAD or hex)".

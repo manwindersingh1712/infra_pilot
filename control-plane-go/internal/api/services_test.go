@@ -1,7 +1,9 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -501,5 +503,35 @@ func TestManagedPasswordKeysAreReserved(t *testing.T) {
 	for _, key := range []string{"REDIS_PASSWORD", "MONGO_INITDB_ROOT_PASSWORD"} {
 		expectStatus(t, hs.do("POST", base, hs.token(f.UserID), map[string]any{"key": key, "value": "mine"}), 200)
 		expectStatus(t, hs.do("DELETE", base+"/"+key, hs.token(f.UserID), nil), 200)
+	}
+}
+
+// SEC-2: a reveal leaves an audit line with who/what/which request, and never
+// the keys or values themselves.
+func TestRevealIsLoggedWithoutSecrets(t *testing.T) {
+	var buf bytes.Buffer
+	hs := newHarnessWith(t, func(d *Deps) { d.Log = slog.New(slog.NewTextHandler(&buf, nil)) })
+	f := testutil.Seed(t, hs.st, store.TypeNodejs)
+	tok := hs.token(f.UserID)
+	base := "/services/" + f.ServiceID + "/env"
+	expectStatus(t, hs.do("POST", base, tok, map[string]any{"key": "TOP_SECRET_KEY", "value": "hunter2-value"}), 200)
+
+	buf.Reset()
+	expectStatus(t, hs.do("GET", base, tok, nil), 200)
+	if strings.Contains(buf.String(), "reveal") {
+		t.Fatalf("a masked read logged a reveal: %s", buf.String())
+	}
+	rec := hs.do("GET", base+"?reveal=true", tok, nil)
+	expectStatus(t, rec, 200)
+	out := buf.String()
+	for _, want := range []string{"env revealed", "serviceId=" + f.ServiceID, "userId=" + f.UserID, "requestId=" + rec.Header().Get("X-Request-ID")} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log lacks %q: %s", want, out)
+		}
+	}
+	for _, leak := range []string{"TOP_SECRET_KEY", "hunter2-value"} {
+		if strings.Contains(out, leak) {
+			t.Errorf("log leaks %q: %s", leak, out)
+		}
 	}
 }

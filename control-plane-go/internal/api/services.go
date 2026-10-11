@@ -223,6 +223,10 @@ func (s *Server) getServiceEnv(w http.ResponseWriter, r *http.Request) {
 		}
 		vars[i].Value = plain
 	}
+	if reveal {
+		// Audit trail only: never the keys or values.
+		s.Log.Info("env revealed", "serviceId", svc.ID, "userId", userID(r), "requestId", requestID(r))
+	}
 	writeJSON(w, http.StatusOK, vars)
 }
 

@@ -242,7 +242,7 @@ func (s *Server) setServiceEnv(w http.ResponseWriter, r *http.Request) {
 	// (500). The masked placeholder is refused so a UI that echoes a listed
 	// value back cannot overwrite a real secret.
 	if !runtime.ValidEnvKey(body.Key) ||
-		len(*body.Value) > maxEnvValue || !utf8.ValidString(*body.Value) ||
+		len(*body.Value) > maxEnvValue ||
 		strings.ContainsAny(*body.Value, "\r\n\x00") || *body.Value == maskedValue {
 		writeError(w, http.StatusBadRequest, "invalid_env_var")
 		return

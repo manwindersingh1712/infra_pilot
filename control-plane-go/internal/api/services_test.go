@@ -559,3 +559,17 @@ func TestMaskedPlaceholderIsNotAcceptedAsValue(t *testing.T) {
 	expectStatus(t, hs.do("POST", base, tok, map[string]any{"key": "API_KEY", "value": "*******"}), 200)
 	expectStatus(t, hs.do("POST", base, tok, map[string]any{"key": "API_KEY", "value": "********!"}), 200)
 }
+
+// STAFF-3: encoding/json turns invalid UTF-8 in a value into U+FFFD before the
+// handler sees it, so no separate validity check on the value is needed.
+func TestEnvValueInvalidUTF8IsReplacedByDecoder(t *testing.T) {
+	hs := newHarness(t)
+	f := testutil.Seed(t, hs.st, store.TypeNodejs)
+	tok := hs.token(f.UserID)
+	base := "/services/" + f.ServiceID + "/env"
+	expectStatus(t, hs.doRaw("POST", base, tok, strings.NewReader("{\"key\":\"K\",\"value\":\"a\xffb\"}"), nil), 200)
+	revealed := decode[[]map[string]any](t, hs.do("GET", base+"?reveal=true", tok, nil))
+	if len(revealed) != 1 || revealed[0]["value"] != "a�b" {
+		t.Fatalf("stored %q", revealed)
+	}
+}

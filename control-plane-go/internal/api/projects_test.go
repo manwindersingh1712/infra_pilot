@@ -72,3 +72,28 @@ func TestProjects(t *testing.T) {
 		expectBody(t, rec, `{"error":"Project not found"}`)
 	}
 }
+
+// SEC-1: an id that cannot be a stored id answers the same 404 as a missing one
+// (no 500 from Postgres rejecting a NUL byte or invalid UTF-8).
+func TestProjectPathIDValidation(t *testing.T) {
+	hs := newHarness(t)
+	u, err := hs.st.CreateUser(context.Background(), "pid@x.co", "h", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok := hs.token(u.ID)
+	for name, id := range map[string]string{
+		"nul":       "%00",
+		"bad utf8":  "%ff",
+		"too long":  strings.Repeat("a", 65),
+		"traversal": "..%2fx",
+		"space":     "a%20b",
+		"missing":   "cabc123missing",
+	} {
+		rec := hs.do("GET", "/projects/"+id, tok, nil)
+		if rec.Code != 404 {
+			t.Fatalf("%s: status %d body %s", name, rec.Code, rec.Body.String())
+		}
+		expectBody(t, rec, `{"error":"Project not found"}`)
+	}
+}

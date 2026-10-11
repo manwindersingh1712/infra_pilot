@@ -152,6 +152,10 @@ func TestRequireAuthFixedBodyForEveryFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	valid, err := signer.Sign("u1")
+	if err != nil {
+		t.Fatal(err)
+	}
 	s := &Server{Deps: Deps{Signer: signer, Log: slog.New(slog.DiscardHandler)}}
 	called := false
 	next := func(http.ResponseWriter, *http.Request) { called = true }
@@ -162,7 +166,10 @@ func TestRequireAuthFixedBodyForEveryFailure(t *testing.T) {
 		"wrong key":      "Bearer " + foreign,
 		"alg none":       "Bearer eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.e30.",
 		"empty bearer":   "Bearer ",
-		"lowercase type": "bearer " + foreign,
+		"lowercase type": "bearer " + valid,
+		"bare token":     valid,
+		"Token scheme":   "Token " + valid,
+		"double space":   "Bearer  " + valid,
 	} {
 		req := httptest.NewRequest(http.MethodGet, "/x", nil)
 		if header != "" {
@@ -317,4 +324,21 @@ func TestRateLimitedResponseBodyAndRetryAfter(t *testing.T) {
 		return
 	}
 	t.Fatal("never rate limited")
+}
+
+func TestRecoverRepanicsErrAbortHandler(t *testing.T) {
+	s := &Server{Deps: Deps{Log: slog.New(slog.DiscardHandler)}}
+	h := s.withRecover(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic(http.ErrAbortHandler) }))
+	rec := httptest.NewRecorder()
+	var got any
+	func() {
+		defer func() { got = recover() }()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	}()
+	if got != http.ErrAbortHandler {
+		t.Fatalf("recovered %v, want http.ErrAbortHandler re-panicked", got)
+	}
+	if rec.Body.Len() != 0 {
+		t.Fatalf("no body may be written for an aborted handler, got %q", rec.Body.String())
+	}
 }

@@ -28,7 +28,11 @@ func requestID(r *http.Request) string {
 // private requires a valid Bearer access token.
 func (s *Server) private(next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
 		uid, err := s.Signer.Verify(token)
 		if err != nil {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
@@ -101,7 +105,8 @@ func (s *Server) withRecover(next http.Handler) http.Handler {
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		start := time.Now()
 		defer func() {
-			if rec := recover(); rec != nil {
+			rec := recover()
+			if rec != nil && rec != http.ErrAbortHandler {
 				s.Log.Error("panic", "method", r.Method, "path", r.URL.Path, "requestId", requestID(r), "panic", rec)
 				writeError(sw, http.StatusInternalServerError, "internal_error")
 			}
@@ -112,6 +117,9 @@ func (s *Server) withRecover(next http.Handler) http.Handler {
 			s.Metrics.Observe(route, r.Method, sw.status, time.Since(start))
 			s.Log.Info("request", "method", r.Method, "path", r.URL.Path, "status", sw.status,
 				"ms", time.Since(start).Milliseconds(), "requestId", requestID(r))
+			if rec == http.ErrAbortHandler {
+				panic(rec) // net/http's signal to abort the response; must reach the server
+			}
 		}()
 		next.ServeHTTP(sw, r)
 	})

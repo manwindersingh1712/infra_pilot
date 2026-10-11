@@ -148,3 +148,51 @@ The only expected failure was `undefined: NewHandler` (a compile error), so skip
 SEC-1 (single peer IP behind a proxy) and SEC-2 (IPv6 /64 bypass, map cap) stand; STAFF-2(d) adds the missing XFF test. SEC-4 (`io.LimitReader` truncates silently) should be fixed before Task 6 uses `decodeJSON`, since it is the first POST consumer.
 
 RESULT: CHANGES REQUESTED (0 critical, 0 high, 3 medium, 3 low)
+
+## Staff (round 2)
+
+Range 58e43bf..6c22430 (cb0d6aa, 866915a, 2fb2825, 5f5fadc, 9a7f740, 830ef1b, 6c22430) in internal/api and internal/metrics. Reviewed at committed HEAD. `go build ./...`, `go vet ./...` ok; `go test -race -count=1 ./internal/api/ ./internal/metrics/` ok. `golangci-lint run` at HEAD FAILS: `internal/api/middleware_test.go:368:5: SA4000 identical expressions on the left and right side of the '||' operator` (`!l.allow("10.0.0.1") || !l.allow("10.0.0.1")`). An uncommitted working-tree edit (loop `for i := range 2`) already fixes it and gives `0 issues`; it needs committing.
+
+### Previous findings
+| ID | Status |
+|---|---|
+| STAFF-1 method label | Fixed: `normaliseMethod` in metrics.Observe (standard 7 else "OTHER"); metrics unit test and handler test both catch the raw label. |
+| STAFF-2 test gaps | Fixed: near-miss origins x simple/preflight, ACAO/Expose/Vary, unmatched label, XFF/X-Real-IP/Forwarded, 429 body and Retry-After. All six listed mutations now caught. |
+| STAFF-3 Bearer / refill | Fixed: bare token, `Token`, lowercase `bearer` with a VALID token, double space all 401; fake clock refill test exists. |
+| STAFF-4 harness | Fixed: `newHarnessWith`, `doRaw`, `doFrom`, with a test that goes through the full handler. |
+| STAFF-5 cmd/api plan snippet | Not addressed in these commits (docs only; carry-forward to Task 14, still open, not a code defect here). |
+| STAFF-6 ErrAbortHandler | Partly fixed: re-panics after metrics/log, no body written; tested, both mutations caught. The "500 after partial response / double WriteHeader" half is NOT fixed (no `wrote` tracking in statusWriter), and preflights remain unlogged/uncounted. Low, accept or note. |
+| SEC-2 | Fixed: /64 mask, `Unmap()` for v4-mapped, zone stripped, LRU with cap 100k and idle sweep from the back. Locking is correct: one mutex covers map and list, `size()` locks, `remove` is only called under the lock, no scan of the whole map. Unparseable host falls back to the raw string (bounded by TCP peer format, fine). |
+| SEC-4 | Fixed: `MaxBytesReader`, 413 `request_too_large` JSON via `writeDecodeError`, trailing data rejected via `dec.Token()` (whitespace-only tail accepted, empty body accepted, truncated JSON is a 400). A MaxBytesError raised while probing the tail is also passed through (correct). |
+| SEC-5 | Fixed: `withSecurityHeaders` is the outermost layer (covers preflight, 401, 404/405). |
+| SEC-6 | Fixed: missing `Bearer ` prefix is 401 (case-sensitive, stricter than RFC 7235, acceptable and tested). |
+| Verifier obs. JSON 404/405 | Fixed: `jsonErrors` uses `mux.Handler` to detect the unmatched case, keeps `Allow`, and matched routes still go through `mux.ServeHTTP` so `r.Pattern` is set for metrics (unmatched label still tested). Redirect-handler case (pattern "" with 301) falls through to `mux.ServeHTTP` unchanged. |
+
+### Mutation results at HEAD (throwaway git archive copy outside the repo; "caught" = a test fails)
+Previous-review mutations: substring origin match caught (also prefix match); preflight leaking Allow-* to a disallowed origin caught; unmatched label = raw path caught; XFF honoured caught; Vary: Origin dropped caught; Expose-Headers dropped caught; method label raw caught (metrics unit test and handler test).
+New-code mutations caught: bare token accepted, no re-panic, swallow ErrAbortHandler, no IPv6 /64 mask, no Unmap, no cap, evict newest instead of oldest, no idle sweep, LimitReader instead of MaxBytesReader, trailing data accepted, 413 mapped to 400, nosniff dropped, no-store dropped, plain-text 404, Allow dropped, security headers moved inside CORS.
+SURVIVED: dropping `l.lru.MoveToFront(e)` in `ipLimiter.allow`.
+
+[STAFF-7] severity: medium
+where: control-plane-go/internal/api/middleware_test.go (limiter tests), ratelimit.go:63
+problem: The one thing that makes the structure an LRU is untested. Without `MoveToFront` on a hit, an active client keeps its insertion position: at the cap it is evicted ahead of idle clients (its bucket resets, so an attacker at the cap can reset limits by cycling), and the idle sweep from the back stops at the first recent-`seen` entry while older entries behind it never expire, so the O(expired) sweep invariant is violated. All limiter tests pass with this line deleted because the cap test touches each key once.
+evidence: mutation `no-movefront` run in the archive copy: `ok infrapilot/internal/api`.
+fix: add a case: cap 3, add a, b, c; hit a again (spend/limit it); add d; assert a is still tracked/limited and b is the one evicted (fresh bucket). Similar idle-sweep case: touch the oldest key at t+9m, advance to t+11m, assert it survives while an untouched peer is dropped.
+
+[STAFF-8] severity: low
+where: control-plane-go/internal/api/ratelimit.go:66-68
+problem: At the cap an attacker with many source addresses (IPv4 botnet, many /64s) evicts legitimate clients' buckets, resetting their limits; this is the accepted trade-off of a bound, but it is undocumented and cap-eviction is not logged or counted. Not a regression versus the unbounded map. Also eviction drops an active (non-expired) entry silently.
+fix: comment the trade-off in `ipLimiter`; optionally a counter metric for evictions (useful operability signal). SEC-1 (trusted proxy) still open by design, unchanged here.
+
+[STAFF-9] severity: low
+where: committed HEAD, middleware_test.go:368
+problem: golangci-lint (SA4000) fails at the committed tip (see above); the uncommitted working-tree change fixes it. Not a behavioural issue, but the round must not close with a red lint. Commit it.
+
+### Other notes
+- `decodeJSON` and `writeDecodeError` keep `//nolint:unused`; Tasks 6+ must remove them by hand (no nolintlint).
+- Oversize test covers the value-too-big path; the "valid value followed by >1 MiB whitespace" path (Token returns MaxBytesError) is correct by reading but untested. Low, optional.
+
+RESULT: CHANGES REQUESTED (0 critical, 0 high, 1 medium, 2 low) -- STAFF-7 (LRU MoveToFront untested), STAFF-8, STAFF-9 (lint red at HEAD; working-tree fix exists, commit it). All round 1 findings are fixed except the carry-forward STAFF-5 (Task 14 docs) and the minor double-WriteHeader half of STAFF-6.
+
+## Close-out (orchestrator)
+Fix round 1 commits: cb0d6aa, 866915a, 2fb2825, 5f5fadc, 9a7f740, 830ef1b, 6c22430; then 689c49e (VER-1: SA4000 lint, found by the round-2 Verifier) and 7abf89d (STAFF-7: LRU test, mutation-proven: deleting MoveToFront fails both subtests). STAFF-9 (lint at HEAD) was fixed by 689c49e. After these the orchestrator ran `golangci-lint run`: 0 issues. The round-2 Verifier had already passed build, vet, gosec, gitleaks (repo root, 327 commits, no leaks), `-count=3` on api/metrics and the full `go test -race -count=1 ./...`; the two later commits touch only `middleware_test.go`. Result: task clean. SEC-1 (trusted proxy) is a Task 18 cutover blocker; Task 14 notes and lows are in backlog.md.

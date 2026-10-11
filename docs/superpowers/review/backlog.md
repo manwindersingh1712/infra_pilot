@@ -207,3 +207,8 @@ Low-severity and deferred findings. Each line: date, task, finding ID, severity,
 - STAFF-6 (low): `withRecover` swallows `http.ErrAbortHandler` and can double-write headers after a partial response; preflights are answered before the log/metrics layer so they are neither logged nor counted.
 - Remove the `//nolint:unused` markers on `harness.token`, `decode`, `internalError`, `decodeJSON` as Tasks 6+ start using them (`.golangci.yml` has no `nolintlint`, so stale markers will not be flagged).
 - Process: `docs/superpowers/agents/security.md` tells reviewers to run gitleaks from `control-plane-go/`; gitleaks reads `.gitleaksignore` from the current directory, so run it from the repo root (or pass `--gitleaks-ignore-path ../.gitleaksignore`). CI is unaffected.
+
+## Plan 2 Task 5, closed (round 2)
+- STAFF-8 (low): at the 100k cap, a flood from many source addresses evicts real clients' limiter buckets (accepted trade-off of a bound). Document it in the release note; optionally count evictions in a metric.
+- STAFF-6 (low, still partly open): a 500 can still be written after a partial response; preflights are neither logged nor counted.
+- Process: a Staff round-2 re-check found a mutation (delete `MoveToFront`) that survived; closed by `7abf89d`. Engineer stalls on the watchdog during long fix rounds: resume with SendMessage, then verify with fresh reviewers (done for this task).

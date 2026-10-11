@@ -78,22 +78,106 @@ func TestRegisterAndLogin(t *testing.T) {
 	}
 }
 
-// STAFF-2: bcrypt reads only 72 bytes, so longer passwords are a client error
-// (400), not a 500 and not a silent truncation. The limit is in bytes.
-func TestRegisterPasswordLengthLimit(t *testing.T) {
+// PROD-4, SEC-5: password limits are in bytes (bcrypt reads only 72) and have
+// their own codes on register. A bad email is reported first as invalid_request.
+func TestRegisterPasswordLengthLimits(t *testing.T) {
 	hs := newHarness(t)
-	ok := strings.Repeat("a", 72)
-	expectStatus(t, hs.do("POST", "/auth/register", "", map[string]any{"email": "p72@b.co", "password": ok}), 200)
-	for name, pw := range map[string]string{
-		"73 ascii bytes":       strings.Repeat("a", 73),
-		"75 bytes in 25 runes": strings.Repeat("€", 25),
+	for _, tc := range []struct {
+		name, pw, wantErr string
+	}{
+		{"7 ascii bytes", strings.Repeat("a", 7), "password_too_short"},
+		{"empty", "", "password_too_short"},
+		{"7 bytes in 3 runes", "€€a", "password_too_short"}, // 3+3+1 bytes = 7
+		{"73 ascii bytes", strings.Repeat("a", 73), "password_too_long"},
+		{"75 bytes in 25 runes", strings.Repeat("€", 25), "password_too_long"},
+		{"8 ascii bytes", strings.Repeat("a", 8), ""},
+		{"8 bytes in 3 runes", "€€aa", ""},
+		{"72 ascii bytes", strings.Repeat("a", 72), ""},
+		{"72 bytes in 24 runes", strings.Repeat("€", 24), ""},
 	} {
-		rec := hs.do("POST", "/auth/register", "", map[string]any{"email": "long@b.co", "password": pw})
-		if rec.Code != 400 {
-			t.Fatalf("%s: status %d, want 400", name, rec.Code)
+		email := strings.ReplaceAll(tc.name, " ", "") + "@b.co"
+		rec := hs.do("POST", "/auth/register", "", map[string]any{"email": email, "password": tc.pw})
+		if tc.wantErr == "" {
+			if rec.Code != 200 {
+				t.Fatalf("%s: status %d, want 200: %s", tc.name, rec.Code, rec.Body.String())
+			}
+			continue
 		}
+		if rec.Code != 400 {
+			t.Fatalf("%s: status %d, want 400", tc.name, rec.Code)
+		}
+		expectBody(t, rec, `{"error":"`+tc.wantErr+`"}`)
+	}
+	// The email is checked before the password.
+	rec := hs.do("POST", "/auth/register", "", map[string]any{"email": "nope", "password": "x"})
+	expectStatus(t, rec, 400)
+	expectBody(t, rec, `{"error":"invalid_request"}`)
+}
+
+// Login has no password length check (existing hashes, Node parity): an
+// over-long or short password is just wrong credentials.
+func TestLoginHasNoPasswordLengthCheck(t *testing.T) {
+	hs := newHarness(t)
+	hs.register("len@b.co")
+	for _, pw := range []string{"x", strings.Repeat("a", 73)} {
+		rec := hs.do("POST", "/auth/login", "", map[string]any{"email": "len@b.co", "password": pw})
+		expectStatus(t, rec, 401)
+		expectBody(t, rec, `{"error":"invalid_credentials"}`)
+	}
+}
+
+// emailOfLen returns a syntactically valid address of exactly n bytes.
+func emailOfLen(n int) string {
+	const domain = "@b.co"
+	return strings.Repeat("a", n-len(domain)) + domain
+}
+
+// Email is capped at 254 bytes (RFC 5321) before parsing, on register and login.
+func TestEmailLengthCap(t *testing.T) {
+	hs := newHarness(t)
+	long, ok := emailOfLen(255), emailOfLen(254)
+
+	rec := hs.do("POST", "/auth/register", "", map[string]any{"email": long, "password": "password123"})
+	expectStatus(t, rec, 400)
+	expectBody(t, rec, `{"error":"invalid_request"}`)
+	expectStatus(t, hs.do("POST", "/auth/register", "", map[string]any{"email": ok, "password": "password123"}), 200)
+
+	rec = hs.do("POST", "/auth/login", "", map[string]any{"email": long, "password": "password123"})
+	expectStatus(t, rec, 400)
+	expectBody(t, rec, `{"error":"invalid_request"}`)
+	expectStatus(t, hs.do("POST", "/auth/login", "", map[string]any{"email": ok, "password": "password123"}), 200)
+
+	// Multi-byte local part: 127 two-byte runes = 254 bytes of local part alone, over the cap.
+	rec = hs.do("POST", "/auth/register", "", map[string]any{"email": strings.Repeat("é", 127) + "@b.co", "password": "password123"})
+	expectStatus(t, rec, 400)
+}
+
+// Name is capped at 100 characters (runes, not bytes); null or absent is fine.
+func TestRegisterNameLengthCap(t *testing.T) {
+	hs := newHarness(t)
+	for i, tc := range []struct {
+		name   any
+		wantOK bool
+	}{
+		{strings.Repeat("a", 100), true},
+		{strings.Repeat("€", 100), true}, // 300 bytes, 100 characters
+		{strings.Repeat("a", 101), false},
+		{strings.Repeat("€", 101), false},
+		{nil, true},
+	} {
+		body := map[string]any{"email": fmt.Sprintf("n%d@b.co", i), "password": "password123"}
+		if tc.name != nil {
+			body["name"] = tc.name
+		}
+		rec := hs.do("POST", "/auth/register", "", body)
+		if tc.wantOK {
+			expectStatus(t, rec, 200)
+			continue
+		}
+		expectStatus(t, rec, 400)
 		expectBody(t, rec, `{"error":"invalid_request"}`)
 	}
+	expectStatus(t, hs.do("POST", "/auth/register", "", map[string]any{"email": "absent@b.co", "password": "password123"}), 200)
 }
 
 func TestRegisterRejectsDevAccount(t *testing.T) {

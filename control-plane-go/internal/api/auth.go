@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/mail"
 	"sync"
+	"unicode/utf8"
 
 	"infrapilot/internal/auth"
 	"infrapilot/internal/store"
@@ -26,10 +27,15 @@ type authResponse struct {
 const (
 	devEmail     = "dev@local"
 	minPasswordB = 8
-	maxPasswordB = 72 // bcrypt reads only the first 72 bytes
+	maxPasswordB = 72  // bcrypt reads only the first 72 bytes
+	maxEmailB    = 254 // RFC 5321 path limit
+	maxNameRunes = 100
 )
 
 func validEmail(s string) bool {
+	if len(s) > maxEmailB { // cheap cap before parsing
+		return false
+	}
 	a, err := mail.ParseAddress(s)
 	return err == nil && a.Address == s
 }
@@ -82,7 +88,17 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		writeDecodeError(w, err, "invalid_request")
 		return
 	}
-	if !validEmail(body.Email) || len(body.Password) < minPasswordB || len(body.Password) > maxPasswordB {
+	switch {
+	case !validEmail(body.Email):
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	case len(body.Password) < minPasswordB:
+		writeError(w, http.StatusBadRequest, "password_too_short")
+		return
+	case len(body.Password) > maxPasswordB:
+		writeError(w, http.StatusBadRequest, "password_too_long")
+		return
+	case body.Name != nil && utf8.RuneCountInString(*body.Name) > maxNameRunes:
 		writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}

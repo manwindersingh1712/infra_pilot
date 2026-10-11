@@ -19,7 +19,7 @@ import (
 // flags the deploy activities use. Same gating as the Task 16 test in
 // docker_integration_test.go: skipped under -short and without a daemon.
 // This file is an external test package so it can use workflows.Managed and
-// workflows.StaticSiteCaps directly instead of copies that could drift
+// workflows.TenantCaps directly instead of copies that could drift
 // (workflows imports runtime, so package runtime cannot import it).
 
 type realDocker struct {
@@ -147,8 +147,8 @@ func TestT23MongoRedeployOnExistingVolumeStaysUp(t *testing.T) {
 }
 
 // VER-2: stock nginx:alpine (the production stage of a generated React
-// Dockerfile) needs StaticSiteCaps under --cap-drop ALL, and fails without.
-func TestT23StaticSiteNeedsStaticSiteCaps(t *testing.T) {
+// Dockerfile) needs TenantCaps under --cap-drop ALL, and fails without.
+func TestT23StaticSiteNeedsTenantCaps(t *testing.T) {
 	d := newRealDocker(t)
 	network := "t23-static-net-" + d.suffix
 	with, without := "t23-static-caps-"+d.suffix, "t23-static-nocaps-"+d.suffix
@@ -159,7 +159,7 @@ func TestT23StaticSiteNeedsStaticSiteCaps(t *testing.T) {
 	}
 
 	if _, err := d.Run(d.ctx, runtime.RunSpec{
-		Image: "nginx:alpine", Name: with, Network: network, ContainerPort: 80, CapAdd: workflows.StaticSiteCaps,
+		Image: "nginx:alpine", Name: with, Network: network, ContainerPort: 80, CapAdd: workflows.TenantCaps,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -185,6 +185,43 @@ func TestT23StaticSiteNeedsStaticSiteCaps(t *testing.T) {
 	logs, _ := exec.CommandContext(d.ctx, "docker", "logs", without).CombinedOutput()
 	if !strings.Contains(string(logs), "Operation not permitted") {
 		t.Logf("without caps: unexpected log tail: %s", logs)
+	}
+}
+
+// CTO 2026-10-11: a docker-type service with its own Dockerfile on stock
+// nginx (root, chown/setuid entrypoint) needs TenantCaps and fails without.
+// Uses the local nginx:alpine (the only nginx image kept on the dev box).
+func TestT23DockerTypeNginxNeedsTenantCaps(t *testing.T) {
+	d := newRealDocker(t)
+	network := "t23-dockertype-net-" + d.suffix
+	with, without := "t23-dockertype-caps-"+d.suffix, "t23-dockertype-nocaps-"+d.suffix
+	d.cleanup(t, []string{with, without}, "", network)
+	d.ensureImage(t, "nginx:alpine")
+	if err := d.EnsureNetwork(d.ctx, network); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := d.Run(d.ctx, runtime.RunSpec{
+		Image: "nginx:alpine", Name: with, Network: network, ContainerPort: 80, CapAdd: workflows.TenantCaps,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(5 * time.Second)
+	if running, err := d.IsRunning(d.ctx, with); err != nil || !running {
+		t.Fatalf("with caps: running=%v err=%v", running, err)
+	}
+	if err := d.Probe(d.ctx, network, with, 80); err != nil {
+		t.Fatalf("with caps: probe: %v", err)
+	}
+
+	if _, err := d.Run(d.ctx, runtime.RunSpec{Image: "nginx:alpine", Name: without, Network: network, ContainerPort: 80}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(5 * time.Second)
+	if running, _ := d.IsRunning(d.ctx, without); running {
+		if err := d.Probe(d.ctx, network, without, 80); err == nil {
+			t.Fatal("without caps: nginx served on port 80; the cap set would not be needed")
+		}
 	}
 }
 

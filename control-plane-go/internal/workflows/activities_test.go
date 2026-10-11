@@ -636,7 +636,7 @@ func TestRunContainerForBuiltApp(t *testing.T) {
 	if s.Name != "cp-"+j.DeploymentID || s.Network != "cp-proj-"+j.ProjectID || s.Aliases[0] != "svc-"+j.ServiceID ||
 		s.Labels["cp.projectId"] != j.ProjectID || s.Env["NODE_ENV"] != "production" || s.Env["FOO"] != "bar" ||
 		s.Env["PLAIN"] != "legacy" || s.ContainerPort != 8080 || s.PublishPort != 0 || s.Volume != "" ||
-		s.VolumeTarget != "" || len(s.Tmpfs) != 0 || len(s.CapAdd) != 0 {
+		s.VolumeTarget != "" || len(s.Tmpfs) != 0 || !slices.Equal(s.CapAdd, TenantCaps) {
 		t.Fatalf("spec %+v", s)
 	}
 	if res.HostPort != nil || res.ContainerName != s.Name || res.ContainerPort != 8080 {
@@ -644,24 +644,38 @@ func TestRunContainerForBuiltApp(t *testing.T) {
 	}
 }
 
-// VER-2 (T23r1): only react static sites get the nginx master's three caps.
-func TestRunContainerStaticSiteCapsOnlyForReact(t *testing.T) {
+// CTO 2026-10-11: every non-managed (built-app) service gets the three tenant
+// caps (Node parity for stock nginx, su-exec and gosu entrypoints); managed
+// types keep their own sets, and every set passes the RunSpec allow-list.
+func TestRunContainerTenantCapsForAllNonManaged(t *testing.T) {
 	for typ, want := range map[string][]string{
-		store.TypeReact: StaticSiteCaps, store.TypeNodejs: nil, store.TypeNextjs: nil, store.TypeDocker: nil,
+		store.TypeReact: TenantCaps, store.TypeNodejs: TenantCaps, store.TypeNextjs: TenantCaps, store.TypeDocker: TenantCaps,
+		store.TypeMongoDB: {"CHOWN", "SETUID", "SETGID", "DAC_READ_SEARCH"}, store.TypeRedis: {"DAC_OVERRIDE"},
 	} {
 		e := newEnv(t)
 		j := e.job(t, typ)
-		image := "reg:5001/" + j.ServiceID + ":main"
-		j.Image = &image
-		if _, err := e.run(t, e.acts.RunContainer, RunInput{Job: j, Network: "n"}); err != nil {
+		var in RunInput
+		if _, managed := Managed[typ]; managed {
+			e.run(t, e.acts.EnsureCredentials, j)
+			in = RunInput{Job: j, Network: "n", Volume: "cp-vol-" + j.ServiceID}
+		} else {
+			image := "reg:5001/" + j.ServiceID + ":main"
+			j.Image = &image
+			in = RunInput{Job: j, Network: "n"}
+		}
+		if _, err := e.run(t, e.acts.RunContainer, in); err != nil {
 			t.Fatalf("%s: %v", typ, err)
 		}
-		if got := e.docker.specs[0].CapAdd; !slices.Equal(got, want) {
+		got := e.docker.specs[0].CapAdd
+		if !slices.Equal(got, want) {
 			t.Fatalf("%s: CapAdd %v, want %v", typ, got, want)
 		}
+		if err := (runtime.RunSpec{Image: "i", Name: "n", CapAdd: got}).Validate(); err != nil && strings.Contains(err.Error(), "capability") {
+			t.Fatalf("%s: %v", typ, err)
+		}
 	}
-	if !slices.Equal(StaticSiteCaps, []string{"CHOWN", "SETUID", "SETGID"}) {
-		t.Fatalf("StaticSiteCaps %v", StaticSiteCaps)
+	if !slices.Equal(TenantCaps, []string{"CHOWN", "SETUID", "SETGID"}) {
+		t.Fatalf("TenantCaps %v", TenantCaps)
 	}
 }
 

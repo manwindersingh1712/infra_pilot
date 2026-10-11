@@ -398,9 +398,7 @@ func (a *Activities) RunContainer(ctx context.Context, in RunInput) (RunResult, 
 			port = a.Cfg.DefaultContainerPort
 		}
 		spec.ContainerPort = port
-		if job.ServiceType == store.TypeReact {
-			spec.CapAdd = StaticSiteCaps
-		}
+		spec.CapAdd = TenantCaps
 	}
 
 	id, err := a.Docker.Run(ctx, spec)

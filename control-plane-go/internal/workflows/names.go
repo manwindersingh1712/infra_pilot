@@ -12,9 +12,10 @@ func ServiceAlias(serviceID string) string        { return "svc-" + serviceID }
 func NetworkName(projectID string) string         { return "cp-proj-" + projectID }
 func VolumeName(serviceID string) string          { return "cp-vol-" + serviceID }
 
-// StaticSiteCaps are added back (after --cap-drop ALL) for react services:
-// stock nginx's master chowns its cache dirs and drops to the nginx user.
-var StaticSiteCaps = []string{"CHOWN", "SETUID", "SETGID"}
+// TenantCaps are added back (after --cap-drop ALL) for every non-managed
+// service. Node parity: stock nginx, su-exec and gosu entrypoints; blanket
+// grant in Plan 1, Plan 2 replaces it with a per-service setting.
+var TenantCaps = []string{"CHOWN", "SETUID", "SETGID"}
 
 // ManagedImage describes a managed database service.
 type ManagedImage struct {

@@ -104,6 +104,12 @@ func (l *streamSlots) total() int {
 	return n
 }
 
+func (l *streamSlots) forUser(uid string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.perUser[uid]
+}
+
 func (l *streamSlots) forDeployment(dep string) int {
 	l.mu.Lock()
 	defer l.mu.Unlock()

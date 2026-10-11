@@ -173,11 +173,9 @@ func (s *Server) getLogs(w http.ResponseWriter, r *http.Request) {
 	}{entries, meta})
 }
 
+// logsHealth reports the caller's own open log streams on this instance. A
+// global count would let any registered user watch other tenants' activity
+// (SEC-4); the field name is kept for compatibility with the Node API.
 func (s *Server) logsHealth(w http.ResponseWriter, r *http.Request) {
-	n, err := s.Logs.ActiveStreamCount(r.Context())
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": "healthy", "activeLogStreams": n})
+	writeJSON(w, http.StatusOK, map[string]any{"status": "healthy", "activeLogStreams": s.streams.forUser(userID(r))})
 }

@@ -90,7 +90,7 @@ func TestGetLogsIsOwnerScoped(t *testing.T) {
 	expectBody(t, rec, `{"error":"deployment not found"}`)
 	expectStatus(t, hs.do("GET", "/logs/deployments/"+dep.ID+"?after=nope", tok, nil), 400)
 	expectStatus(t, hs.do("GET", "/logs/deployments/"+dep.ID, "", nil), 401)
-	expectBody(t, hs.do("GET", "/logs/health", tok, nil), `{"activeLogStreams":1,"status":"healthy"}`)
+	expectBody(t, hs.do("GET", "/logs/health", tok, nil), `{"activeLogStreams":0,"status":"healthy"}`)
 	expectStatus(t, hs.do("GET", "/logs/health", "", nil), 401)
 }
 

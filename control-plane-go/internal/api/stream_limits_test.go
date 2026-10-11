@@ -230,3 +230,15 @@ func TestStreamIdleSurvivesWriteTimeoutShorterThanHeartbeat(t *testing.T) {
 		}
 	}
 }
+
+// SEC-4: /logs/health reports the caller's own open streams, never a global
+// count that would show other tenants' activity.
+func TestLogsHealthCountsOnlyCallersStreams(t *testing.T) {
+	sf := newStreamFixture(t)
+	sf.hs.hot.entries["other-dep"] = []logs.Entry{{DeploymentID: "other-dep", Message: "x", Timestamp: "t"}} // global count would be >= 1
+	expectBody(t, sf.hs.do("GET", "/logs/health", sf.tok, nil), `{"activeLogStreams":0,"status":"healthy"}`)
+	sf.open(t, sf.ticket())
+	waitFor(t, "stream slot", func() bool { return sf.hs.srv.streams.total() == 1 })
+	expectBody(t, sf.hs.do("GET", "/logs/health", sf.tok, nil), `{"activeLogStreams":1,"status":"healthy"}`)
+	expectBody(t, sf.hs.do("GET", "/logs/health", sf.hs.token("someone-else"), nil), `{"activeLogStreams":0,"status":"healthy"}`)
+}

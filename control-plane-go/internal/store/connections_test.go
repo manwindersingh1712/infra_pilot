@@ -53,10 +53,10 @@ func TestConnections(t *testing.T) {
 // connFixture: owner A has project P1 (svc, db) and project P2 (other);
 // tenant B has one service.
 type connFixture struct {
-	f              testutil.Fixture
-	db, other, foe store.Service
-	p2             store.Project
-	foreign        testutil.Fixture
+	f         testutil.Fixture
+	db, other store.Service
+	p2        store.Project
+	foreign   testutil.Fixture
 }
 
 func newConnFixture(t *testing.T, st *store.Store) connFixture {

@@ -93,6 +93,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.Handle("POST /projects", s.private(s.createProject))
 	mux.Handle("GET /projects", s.private(s.listProjects))
 	mux.Handle("GET /projects/{id}", s.private(s.getProject))
+
+	mux.Handle("POST /services", s.private(s.createService))
+	mux.Handle("GET /services", s.private(s.listServices))
 }
 
 // withSecurityHeaders marks every response (including preflights and errors)

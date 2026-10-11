@@ -103,6 +103,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.Handle("DELETE /services/{id}/env/{key}", s.private(s.deleteServiceEnv))
 
 	mux.Handle("GET /projects/{id}/canvas", s.private(s.getCanvas))
+	mux.Handle("PUT /projects/{id}/canvas", s.private(s.updateCanvas))
+	mux.Handle("POST /projects/{id}/canvas/auto-layout", s.private(s.autoLayout))
+	mux.Handle("POST /services/{id}/position", s.private(s.updatePosition))
 
 	mux.Handle("GET /deployments", s.private(s.listDeployments))
 }

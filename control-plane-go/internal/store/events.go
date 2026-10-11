@@ -5,4 +5,6 @@ package store
 const (
 	EventBuildRequested  = "build.requested"
 	EventDeployRequested = "deploy.requested"
+	// EventTeardownRequested starts TeardownWorkflow; payload {serviceId, purgeData}.
+	EventTeardownRequested = "teardown.requested"
 )

@@ -282,3 +282,35 @@ func (s *Server) deleteServiceEnv(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
 }
+
+// deleteService hides the service at once and queues TeardownWorkflow to
+// remove its containers and route (and its data volume with ?purgeData=true).
+// The soft delete and the outbox event commit together. Cancelling in-flight
+// deploy-<id> workflows and failing the service's open deployments is the
+// teardown workflow's job (Plan 2 Task 12): the API holds no Temporal client.
+func (s *Server) deleteService(w http.ResponseWriter, r *http.Request) {
+	svc, ok := s.ownedService(w, r)
+	if !ok {
+		return
+	}
+	purge := r.URL.Query().Get("purgeData") == "true"
+	ctx := r.Context()
+	err := s.Store.InTx(ctx, func(tx *store.Store) error {
+		if err := tx.SoftDeleteService(ctx, svc.ID); err != nil {
+			return err
+		}
+		_, err := tx.CreateOutboxEvent(ctx, store.EventTeardownRequested,
+			map[string]any{"serviceId": svc.ID, "purgeData": purge})
+		return err
+	})
+	if errors.Is(err, store.ErrNotFound) {
+		// A concurrent delete won; exactly one teardown event is written.
+		writeError(w, http.StatusNotFound, "service_not_found")
+		return
+	}
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]bool{"deleted": true})
+}

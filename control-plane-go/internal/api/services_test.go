@@ -384,3 +384,87 @@ func TestServiceEnvBodyErrors(t *testing.T) {
 	expectStatus(t, hs.doRaw("POST", base, tok, strings.NewReader(`{"key":"A","value":1}`), nil), 400)
 	expectStatus(t, hs.doRaw("POST", base, tok, strings.NewReader(`{"key":"A","value":"`+strings.Repeat("v", 2<<20)+`"}`), nil), 413)
 }
+
+func TestDeleteServiceQueuesTeardown(t *testing.T) {
+	hs := newHarness(t)
+	ctx := context.Background()
+	f := testutil.Seed(t, hs.st, store.TypeRedis)
+	tok := hs.token(f.UserID)
+
+	expectStatus(t, hs.do("DELETE", "/services/"+f.ServiceID, hs.token("someone-else"), nil), 404)
+	if _, err := hs.st.GetService(ctx, f.ServiceID); err != nil || len(outboxEvents(t)) != 0 {
+		t.Fatalf("a foreign delete changed state: %v %v", err, outboxEvents(t))
+	}
+
+	rec := hs.do("DELETE", "/services/"+f.ServiceID+"?purgeData=true", tok, nil)
+	expectStatus(t, rec, 202)
+	expectBody(t, rec, `{"deleted":true}`)
+	if _, err := hs.st.GetService(ctx, f.ServiceID); err == nil {
+		t.Fatal("service still visible")
+	}
+	ev := outboxEvents(t)
+	if len(ev) != 1 || ev[0][0] != store.EventTeardownRequested ||
+		ev[0][1] != `{"purgeData": true, "serviceId": "`+f.ServiceID+`"}` {
+		t.Fatalf("outbox %v", ev)
+	}
+	rec = hs.do("DELETE", "/services/"+f.ServiceID, tok, nil)
+	expectStatus(t, rec, 404)
+	expectBody(t, rec, `{"error":"service_not_found"}`)
+	if len(outboxEvents(t)) != 1 {
+		t.Fatal("a repeated delete queued a second teardown")
+	}
+	// Gone from every owner-scoped read.
+	if list := decode[[]map[string]any](t, hs.do("GET", "/services", tok, nil)); len(list) != 0 {
+		t.Fatalf("deleted service listed: %v", list)
+	}
+}
+
+func TestDeleteServiceDefaultsToKeepingData(t *testing.T) {
+	hs := newHarness(t)
+	for _, q := range []string{"", "?purgeData=false", "?purgeData=1", "?purgeData=TRUE"} {
+		g := testutil.Seed(t, hs.st, store.TypeRedis)
+		expectStatus(t, hs.do("DELETE", "/services/"+g.ServiceID+q, hs.token(g.UserID), nil), 202)
+		ev := outboxEvents(t)
+		if last := ev[len(ev)-1][1]; last != `{"purgeData": false, "serviceId": "`+g.ServiceID+`"}` {
+			t.Errorf("query %q: payload %s", q, last)
+		}
+	}
+}
+
+func TestDeleteServiceRejectsBadIDs(t *testing.T) {
+	hs := newHarness(t)
+	f := testutil.Seed(t, hs.st, store.TypeRedis)
+	tok := hs.token(f.UserID)
+	for _, id := range []string{"%00", "%ff", strings.Repeat("a", 65), "cabc123missing", "..%2fx"} {
+		rec := hs.do("DELETE", "/services/"+id, tok, nil)
+		expectStatus(t, rec, 404)
+		expectBody(t, rec, `{"error":"service_not_found"}`)
+	}
+	expectStatus(t, hs.do("DELETE", "/services/"+f.ServiceID, "", nil), 401)
+	if len(outboxEvents(t)) != 0 {
+		t.Fatal("a rejected delete queued a teardown")
+	}
+}
+
+func TestConcurrentDeletesQueueOneTeardown(t *testing.T) {
+	hs := newHarness(t)
+	f := testutil.Seed(t, hs.st, store.TypeRedis)
+	tok := hs.token(f.UserID)
+	const n = 8
+	codes := make(chan int, n)
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		go func() {
+			<-start
+			codes <- hs.do("DELETE", "/services/"+f.ServiceID, tok, nil).Code
+		}()
+	}
+	close(start)
+	got := map[int]int{}
+	for i := 0; i < n; i++ {
+		got[<-codes]++
+	}
+	if got[202] != 1 || got[404] != n-1 || len(outboxEvents(t)) != 1 {
+		t.Fatalf("codes %v, outbox %v", got, outboxEvents(t))
+	}
+}

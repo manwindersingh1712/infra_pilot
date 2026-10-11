@@ -96,6 +96,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 
 	mux.Handle("POST /services", s.private(s.createService))
 	mux.Handle("GET /services", s.private(s.listServices))
+	mux.Handle("DELETE /services/{id}", s.private(s.deleteService))
 	mux.Handle("POST /services/{id}/deploy", s.private(s.deployService))
 	mux.Handle("GET /services/{id}/env", s.private(s.getServiceEnv))
 	mux.Handle("POST /services/{id}/env", s.private(s.setServiceEnv))

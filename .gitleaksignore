@@ -13,3 +13,8 @@
 # docs/superpowers/plans/2026-10-07-go-plan2-api.md:4982, commit 8235ae6: prose describing a
 # manual ownership check ("As user A, `curl` user B's ..."), matched by curl-auth-user. No credential.
 8235ae653d6c725ccf288e2a89657e2f72db2455:docs/superpowers/plans/2026-10-07-go-plan2-api.md:curl-auth-user:4982
+
+# control-plane-go/internal/auth/auth_test.go:13, commit a49bfda: test-fixture JWT `nodeToken`
+# (sub "user_123", no exp) signed with the throwaway test key "test-secret"; the test asserts it
+# is rejected. No real key or user.
+a49bfda002e35cd9199bc0032c409b16b75c6430:control-plane-go/internal/auth/auth_test.go:jwt:13

@@ -365,8 +365,10 @@ func TestRateLimitRefillsAfterSixSeconds(t *testing.T) {
 	now := time.Unix(1_000_000, 0)
 	l := newIPLimiter(2)
 	l.now = func() time.Time { return now }
-	if !l.allow("10.0.0.1") || !l.allow("10.0.0.1") {
-		t.Fatal("burst of 2 must pass")
+	for i := range 2 {
+		if !l.allow("10.0.0.1") {
+			t.Fatalf("request %d of the burst of 2 must pass", i+1)
+		}
 	}
 	if l.allow("10.0.0.1") {
 		t.Fatal("third request inside the burst window must be limited")

@@ -212,3 +212,13 @@ Low-severity and deferred findings. Each line: date, task, finding ID, severity,
 - STAFF-8 (low): at the 100k cap, a flood from many source addresses evicts real clients' limiter buckets (accepted trade-off of a bound). Document it in the release note; optionally count evictions in a metric.
 - STAFF-6 (low, still partly open): a 500 can still be written after a partial response; preflights are neither logged nor counted.
 - Process: a Staff round-2 re-check found a mutation (delete `MoveToFront`) that survived; closed by `7abf89d`. Engineer stalls on the watchdog during long fix rounds: resume with SendMessage, then verify with fresh reviewers (done for this task).
+
+## Plan 2 Task 6 lows (CTO 2026-10-11; fix round handles the rulings in decisions.md)
+- Per-email login limiter / lockout policy: roadmap Phase 2 hardening, with email verification and a Redis-backed limiter. IPv6 /64 grouping of limiter keys.
+- Absolute session lifetime: a rotating family lives forever while used (sliding 30 days). Add a family cap (e.g. 90 days from first login) in Phase 2.
+- SEC-3 (409 `email_already_exists` enumerates emails) and SEC-5 case-sensitive email: Node parity; fix together with email verification (lowercase + `lower("email")` unique index + data migration).
+- SEC-4: login for a stored non-bcrypt hash (`dev@local`) returns fast; run the dummy compare on a hash parse error or give the dev user a real random bcrypt. Dev DB only.
+- STAFF-3: require a dot in the email domain and reject quoted local parts (also `x@local`, `admin@localhost`).
+- STAFF-4: `TestLoginUnknownEmailPaysForBcrypt` uses a 15 ms wall-clock threshold; assert the dummy hash cost equals `HashPassword`'s cost instead.
+- STAFF-5: `harness.token` `//nolint:unused` removal goes on the Task 7 checklist.
+- STAFF-1/STAFF-2 (UI): covered by the Task 15 follow-ups in decisions.md (error-code messages, single-flight refresh, re-read on 401).

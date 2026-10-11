@@ -122,3 +122,65 @@ func (s *Server) listServices(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, svcs)
 }
+
+// deployService records a queued deployment and its outbox event atomically.
+// Managed services skip the build (the workflow decides; the event type is
+// kept for compatibility with Node-era rows).
+func (s *Server) deployService(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		CommitSha *string `json:"commitSha"`
+	}
+	if err := decodeJSON(w, r, &body); err != nil {
+		writeDecodeError(w, err, "invalid_request")
+		return
+	}
+	if body.CommitSha != nil && gitsrc.ValidRef(*body.CommitSha) != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	svc, ok := s.ownedService(w, r)
+	if !ok {
+		return
+	}
+	managed := store.IsManaged(svc.ServiceType)
+	sha, event := defaultRef(svc), store.EventBuildRequested
+	if managed {
+		sha, event = "latest", store.EventDeployRequested
+	}
+	if body.CommitSha != nil {
+		sha = *body.CommitSha
+	}
+
+	ctx := r.Context()
+	var dep store.Deployment
+	err := s.Store.InTx(ctx, func(tx *store.Store) error {
+		var err error
+		if dep, err = tx.CreateDeployment(ctx, svc.ID, sha); err != nil {
+			return err
+		}
+		_, err = tx.CreateOutboxEvent(ctx, event, map[string]string{"deploymentId": dep.ID})
+		return err
+	})
+	if errors.Is(err, store.ErrNotFound) {
+		// Deleted between the ownership check and the insert.
+		writeError(w, http.StatusNotFound, "service_not_found")
+		return
+	}
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"deploymentId": dep.ID, "status": dep.Status})
+}
+
+// defaultRef is the revision a deploy builds when the caller names none: the
+// tip of the service's branch (the builder treats a ref equal to the branch as
+// the tip), or HEAD when the branch name cannot double as an image tag (for
+// example "feature/x"). The Node API's placeholder "main" is not sent any
+// more, so the builder's legacy rule for it can go after cutover.
+func defaultRef(svc store.Service) string {
+	if gitsrc.ValidRef(svc.Branch) == nil {
+		return svc.Branch
+	}
+	return "HEAD"
+}

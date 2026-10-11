@@ -112,3 +112,27 @@ func TestServeWarnsOnNonLoopback(t *testing.T) {
 		t.Fatalf("log = %s", out)
 	}
 }
+
+func TestAPIObserveBoundsMethodLabel(t *testing.T) {
+	m := NewAPI()
+	for _, method := range []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "M0", "M1", "get", "PROPFIND"} {
+		m.Observe("unmatched", method, 404, time.Millisecond)
+	}
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+	body := rec.Body.String()
+	for _, want := range []string{
+		`cp_http_requests_total{method="GET",route="unmatched",status="404"} 1`,
+		`cp_http_requests_total{method="DELETE",route="unmatched",status="404"} 1`,
+		`cp_http_requests_total{method="OTHER",route="unmatched",status="404"} 4`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q in:\n%s", want, body)
+		}
+	}
+	for _, bad := range []string{`method="M0"`, `method="M1"`, `method="get"`, `method="PROPFIND"`} {
+		if strings.Contains(body, bad) {
+			t.Errorf("unbounded method label %s leaked", bad)
+		}
+	}
+}

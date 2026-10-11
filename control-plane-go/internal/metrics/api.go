@@ -40,8 +40,19 @@ func (m *API) Observe(route, method string, status int, d time.Duration) {
 	if m == nil {
 		return
 	}
-	m.requests.WithLabelValues(route, method, strconv.Itoa(status)).Inc()
+	m.requests.WithLabelValues(route, normaliseMethod(method), strconv.Itoa(status)).Inc()
 	m.duration.WithLabelValues(route).Observe(d.Seconds())
+}
+
+// normaliseMethod bounds the method label: Go's server accepts any token as a
+// method, so a raw r.Method would let a client mint unbounded series.
+func normaliseMethod(method string) string {
+	switch method {
+	case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch,
+		http.MethodDelete, http.MethodHead, http.MethodOptions:
+		return method
+	}
+	return "OTHER"
 }
 
 func (m *API) Handler() http.Handler { return promhttp.HandlerFor(m.reg, promhttp.HandlerOpts{}) }

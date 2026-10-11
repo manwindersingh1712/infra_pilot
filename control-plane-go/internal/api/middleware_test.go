@@ -547,3 +547,43 @@ func TestMuxNotFoundAndMethodNotAllowedAreJSON(t *testing.T) {
 	expectStatus(t, rec, 200)
 	expectBody(t, rec, `{"ok":true}`)
 }
+
+// A client that is still sending requests must outlive an idle one, both when
+// the map is full and when idle entries are swept (STAFF-7).
+func TestRateLimitLRUKeepsActiveClients(t *testing.T) {
+	has := func(l *ipLimiter, key string) bool {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		_, ok := l.clients[key]
+		return ok
+	}
+
+	t.Run("eviction at the cap drops the least recently seen", func(t *testing.T) {
+		now := time.Unix(1_000_000, 0)
+		l := newIPLimiter(5)
+		l.max = 2
+		l.now = func() time.Time { return now }
+		l.allow("a")
+		l.allow("b")
+		l.allow("a") // a is now the most recently seen
+		l.allow("c") // full: must evict b, not a
+		if !has(l, "a") || has(l, "b") || !has(l, "c") {
+			t.Fatalf("clients a=%v b=%v c=%v, want a and c kept, b evicted", has(l, "a"), has(l, "b"), has(l, "c"))
+		}
+	})
+
+	t.Run("idle sweep drops only the idle client", func(t *testing.T) {
+		now := time.Unix(1_000_000, 0)
+		l := newIPLimiter(5)
+		l.now = func() time.Time { return now }
+		l.allow("a")
+		l.allow("b")
+		now = now.Add(limiterIdleTTL - time.Minute)
+		l.allow("a") // a stays active; b is idle
+		now = now.Add(2 * time.Minute)
+		l.allow("c") // triggers the sweep: b is past the TTL, a is not
+		if !has(l, "a") || has(l, "b") {
+			t.Fatalf("a=%v b=%v, want the active client kept and the idle one swept", has(l, "a"), has(l, "b"))
+		}
+	})
+}

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"infrapilot/internal/auth"
+	"infrapilot/internal/metrics"
 )
 
 func TestCORSAllowsListedOriginOnly(t *testing.T) {
@@ -176,4 +177,144 @@ func TestRequireAuthFixedBodyForEveryFailure(t *testing.T) {
 	if called {
 		t.Fatal("handler ran for an unauthenticated request")
 	}
+}
+
+func okHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })
+}
+
+func TestCORSRejectsNearMissOrigins(t *testing.T) {
+	h := withCORS([]string{"http://localhost:5173"}, okHandler())
+	for _, origin := range []string{
+		"http://localhost:5173.evil.test", "http://localhost:51730", "http://localhost", "https://localhost:5173",
+		"http://localhost:5173/", "HTTP://LOCALHOST:5173", "null", "http://evil.test/http://localhost:5173",
+	} {
+		for _, preflight := range []bool{false, true} {
+			method := http.MethodGet
+			if preflight {
+				method = http.MethodOptions
+			}
+			req := httptest.NewRequest(method, "/projects", nil)
+			req.Header.Set("Origin", origin)
+			if preflight {
+				req.Header.Set("Access-Control-Request-Method", "POST")
+			}
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			for k := range rec.Header() {
+				if strings.HasPrefix(k, "Access-Control-") {
+					t.Errorf("origin %q preflight=%v got %s=%q", origin, preflight, k, rec.Header().Get(k))
+				}
+			}
+			if preflight && rec.Code != http.StatusNoContent {
+				t.Errorf("origin %q preflight code %d", origin, rec.Code)
+			}
+		}
+	}
+}
+
+func TestCORSHeadersOnListedOrigin(t *testing.T) {
+	h := withCORS([]string{"http://localhost:5173"}, okHandler())
+	req := httptest.NewRequest(http.MethodGet, "/projects", nil)
+	req.Header.Set("Origin", "http://localhost:5173")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	hd := rec.Header()
+	if hd.Get("Access-Control-Allow-Origin") != "http://localhost:5173" {
+		t.Fatalf("ACAO %q", hd.Get("Access-Control-Allow-Origin"))
+	}
+	if hd.Get("Access-Control-Expose-Headers") != "X-Request-ID" {
+		t.Fatalf("Expose-Headers %q", hd.Get("Access-Control-Expose-Headers"))
+	}
+	if hd.Get("Access-Control-Allow-Credentials") != "" {
+		t.Fatal("credentials must not be allowed")
+	}
+	if !strings.Contains(strings.Join(hd.Values("Vary"), ","), "Origin") {
+		t.Fatalf("Vary %v", hd.Values("Vary"))
+	}
+	// Vary: Origin is also set for unlisted and absent origins (cache safety).
+	for _, origin := range []string{"", "https://evil.test"} {
+		req := httptest.NewRequest(http.MethodGet, "/projects", nil)
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if !strings.Contains(strings.Join(rec.Header().Values("Vary"), ","), "Origin") {
+			t.Errorf("origin %q: Vary %v", origin, rec.Header().Values("Vary"))
+		}
+	}
+}
+
+func TestUnmatchedRoutesUseFixedMetricsLabel(t *testing.T) {
+	m := metrics.NewAPI()
+	h := NewHandler(Deps{Metrics: m, Log: slog.New(slog.DiscardHandler), CORSOrigins: []string{"http://localhost:5173"}})
+	for _, tc := range []struct{ method, path string }{
+		{"GET", "/nope/123"}, {"GET", "/nope/456"}, {"POST", "/healthz"}, {"PROPFIND", "/healthz"},
+	} {
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(tc.method, tc.path, nil))
+	}
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+	body := rec.Body.String()
+	if !strings.Contains(body, `cp_http_requests_total{method="GET",route="unmatched",status="404"} 2`) {
+		t.Errorf("404s not aggregated under unmatched:\n%s", body)
+	}
+	if !strings.Contains(body, `route="unmatched",status="405"`) {
+		t.Errorf("405 not under unmatched:\n%s", body)
+	}
+	for _, leaked := range []string{"/nope", "PROPFIND"} {
+		if strings.Contains(body, leaked) {
+			t.Errorf("raw %q leaked into metrics", leaked)
+		}
+	}
+}
+
+func TestRateLimitIgnoresForwardedFor(t *testing.T) {
+	h := newIPLimiter(2).wrap(okHandler())
+	call := func(peer, xff string) int {
+		req := httptest.NewRequest("POST", "/auth/login", nil)
+		req.RemoteAddr = peer + ":5555"
+		if xff != "" {
+			req.Header.Set("X-Forwarded-For", xff)
+			req.Header.Set("X-Real-IP", xff)
+			req.Header.Set("Forwarded", "for="+xff)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	call("10.0.0.1", "")
+	call("10.0.0.1", "")
+	// Same peer with a fresh spoofed address in every header must still be limited.
+	if c := call("10.0.0.1", "203.0.113.9"); c != http.StatusTooManyRequests {
+		t.Fatalf("spoofed X-Forwarded-For got %d, want 429", c)
+	}
+	// A different peer claiming the limited address is not limited by it.
+	if c := call("10.0.0.2", "10.0.0.1"); c != 200 {
+		t.Fatalf("other peer claiming the limited IP got %d, want 200", c)
+	}
+}
+
+func TestRateLimitedResponseBodyAndRetryAfter(t *testing.T) {
+	h := newIPLimiter(1).wrap(okHandler())
+	for range 2 {
+		req := httptest.NewRequest("POST", "/auth/login", nil)
+		req.RemoteAddr = "10.0.0.1:1"
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code == 200 {
+			continue
+		}
+		expectStatus(t, rec, http.StatusTooManyRequests)
+		expectBody(t, rec, `{"error":"too_many_requests"}`)
+		if rec.Header().Get("Retry-After") != "60" {
+			t.Fatalf("Retry-After %q", rec.Header().Get("Retry-After"))
+		}
+		if !strings.HasPrefix(rec.Header().Get("Content-Type"), "application/json") {
+			t.Fatalf("Content-Type %q", rec.Header().Get("Content-Type"))
+		}
+		return
+	}
+	t.Fatal("never rate limited")
 }

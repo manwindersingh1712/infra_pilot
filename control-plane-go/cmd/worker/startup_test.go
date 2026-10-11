@@ -174,10 +174,13 @@ func TestResumeLoopDoesNotBlockOthersOrCancel(t *testing.T) {
 	var buf bytes.Buffer
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	sup := newSupervisor(slog.New(slog.NewTextHandler(&buf, nil)), cancel)
+	// One logger for both: a handler serialises writes with its own mutex, so
+	// two handlers over one bytes.Buffer would race (T26).
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	sup := newSupervisor(log, cancel)
 
 	release := make(chan struct{})
-	sup.Start(ctx, "resume", resumeLoop(ctx, slog.New(slog.NewTextHandler(&buf, nil)), func() int {
+	sup.Start(ctx, "resume", resumeLoop(ctx, log, func() int {
 		<-release // a hung Docker daemon
 		return 3
 	}))

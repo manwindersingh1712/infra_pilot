@@ -383,3 +383,68 @@ func TestRateLimitRefillsAfterSixSeconds(t *testing.T) {
 		t.Fatal("only one token refilled")
 	}
 }
+
+func TestRateLimitKeysIPv6ByPrefix64(t *testing.T) {
+	h := newIPLimiter(2).wrap(okHandler())
+	call := func(addr string) int {
+		req := httptest.NewRequest("POST", "/auth/login", nil)
+		req.RemoteAddr = addr
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	call("[2001:db8:1:2::1]:1")
+	call("[2001:db8:1:2:aaaa:bbbb:cccc:dddd]:2")
+	if c := call("[2001:db8:1:2:1234::9]:3"); c != http.StatusTooManyRequests {
+		t.Fatalf("same /64, new host part: %d, want 429", c)
+	}
+	if c := call("[2001:db8:1:3::1]:4"); c != 200 {
+		t.Fatalf("different /64 must have its own bucket, got %d", c)
+	}
+	// IPv4 and its IPv4-mapped IPv6 form are the same client.
+	call("10.1.1.1:1")
+	call("10.1.1.1:1")
+	if c := call("[::ffff:10.1.1.1]:2"); c != http.StatusTooManyRequests {
+		t.Fatalf("v4-mapped form must share the v4 bucket, got %d", c)
+	}
+}
+
+func TestRateLimiterMapIsCappedAndEvictsOldest(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	l := newIPLimiter(1)
+	l.now = func() time.Time { return now }
+	l.max = 3
+	for _, ip := range []string{"a", "b", "c", "d", "e"} {
+		l.allow(ip)
+		now = now.Add(time.Second)
+	}
+	if n := l.size(); n != 3 {
+		t.Fatalf("size %d, want capped at 3", n)
+	}
+	// "c","d","e" survive: they are still limited (their single token is spent).
+	for _, ip := range []string{"c", "d", "e"} {
+		if l.allow(ip) {
+			t.Errorf("%s should still be tracked and limited", ip)
+		}
+	}
+	// "a" was evicted, so it starts with a fresh bucket.
+	if !l.allow("a") {
+		t.Error("evicted client should get a fresh bucket")
+	}
+	if n := l.size(); n != 3 {
+		t.Fatalf("size %d after re-adding, want 3", n)
+	}
+}
+
+func TestRateLimiterDropsIdleClients(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	l := newIPLimiter(1)
+	l.now = func() time.Time { return now }
+	l.allow("a")
+	l.allow("b")
+	now = now.Add(11 * time.Minute)
+	l.allow("c")
+	if n := l.size(); n != 1 {
+		t.Fatalf("size %d, want only the active client", n)
+	}
+}

@@ -106,3 +106,47 @@ func TestCreateProjectUnknownUserIs401(t *testing.T) {
 	expectStatus(t, rec, 401)
 	expectBody(t, rec, `{"error":"unauthorized"}`)
 }
+
+// STAFF-1: body fields other than name are ignored, and the name limits count
+// runes, not bytes.
+func TestCreateProjectBodyAndNameBoundaries(t *testing.T) {
+	hs := newHarness(t)
+	ctx := context.Background()
+	u, err := hs.st.CreateUser(ctx, "bnd@x.co", "h", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := hs.st.CreateUser(ctx, "bnd2@x.co", "h", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok := hs.token(u.ID)
+
+	rec := hs.do("POST", "/projects", tok, map[string]any{"name": "Shop", "ownerUserId": other.ID, "id": "chosenid"})
+	expectStatus(t, rec, 200)
+	p := decode[map[string]any](t, rec)
+	if p["ownerUserId"] != u.ID || p["id"] == "chosenid" {
+		t.Fatalf("body fields were honoured: %v", p)
+	}
+	if list := decode[[]map[string]any](t, hs.do("GET", "/projects", hs.token(other.ID), nil)); len(list) != 0 {
+		t.Fatalf("other user owns %v", list)
+	}
+
+	for name, tc := range map[string]struct {
+		name string
+		want int
+	}{
+		"2 runes":        {"ab", 200},
+		"100 runes":      {strings.Repeat("a", 100), 200},
+		"100 multi-byte": {strings.Repeat("é", 100), 200},
+		"101 multi-byte": {strings.Repeat("é", 101), 400},
+		"101 ascii":      {strings.Repeat("a", 101), 400},
+		"1 multi-byte":   {"é", 400},
+		"2 multi-byte":   {"éé", 200},
+	} {
+		rec := hs.do("POST", "/projects", tok, map[string]any{"name": tc.name})
+		if rec.Code != tc.want {
+			t.Fatalf("%s: status %d want %d body %s", name, rec.Code, tc.want, rec.Body.String())
+		}
+	}
+}

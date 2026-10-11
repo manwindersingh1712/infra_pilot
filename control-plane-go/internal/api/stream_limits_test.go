@@ -188,3 +188,25 @@ func TestStreamWriteDeadlineDropsStalledClient(t *testing.T) {
 		return sf.hs.live.active.Load() == 0 && sf.hs.srv.streams.total() == 0
 	})
 }
+
+// STAFF-2: the stream route is rate limited before the ticket is redeemed, so
+// a 429 never spends a ticket.
+func TestStreamRouteRateLimitDoesNotSpendTicket(t *testing.T) {
+	sf := newStreamFixture(t, func(d *Deps) { d.Stream.Burst = 2 })
+	tk := sf.ticket() // issued in-process (its own client address), not through the real socket
+	for i := 0; i < 2; i++ { // both tokens of the socket client's bucket
+		if code, _ := sf.get(t, sf.dep.ID, "garbage"); code != 401 {
+			t.Fatalf("garbage ticket status %d", code)
+		}
+	}
+	// The bucket is empty (it refills one token per second): the valid ticket
+	// must be refused with 429 without being redeemed.
+	if code, body := sf.get(t, sf.dep.ID, tk); code != 429 {
+		t.Fatalf("status %d %q, want 429", code, body)
+	}
+	time.Sleep(1200 * time.Millisecond)
+	code, fr := sf.getOpen(t, sf.dep.ID, tk)
+	if code != 200 || fr.event != "history" {
+		t.Fatalf("ticket was spent by the 429: %d %v", code, fr)
+	}
+}

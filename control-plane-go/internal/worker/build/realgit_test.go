@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -93,5 +94,47 @@ func TestRealGitHardenedFlagsRefuseFileClone(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(err.Error()), "not allowed") || !strings.HasPrefix(err.Error(), "git clone:") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// A repo whose default branch is master and which also has a main branch at a
+// different commit: the legacy ref "main" must keep the cloned master tip.
+func TestRealGitLegacyDefaultRefKeepsBranchTip(t *testing.T) {
+	realGit(t)
+	ctx := context.Background()
+	src := filepath.Join(t.TempDir(), "src")
+	var r runtime.ExecRunner
+	run := func(dir string, args ...string) string {
+		t.Helper()
+		out, err := r.Run(ctx, dir, "git", args...)
+		if err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+		return strings.TrimSpace(out)
+	}
+	run("", "init", "-q", "-b", "master", src)
+	run(src, "commit", "-q", "--allow-empty", "-m", "one")
+	run(src, "switch", "-q", "-c", "main")
+	run(src, "commit", "-q", "--allow-empty", "-m", "main only")
+	run(src, "switch", "-q", "master")
+	run(src, "commit", "-q", "--allow-empty", "-m", "two")
+	masterTip := run(src, "rev-parse", "master")
+	if masterTip == run(src, "rev-parse", "main") {
+		t.Fatal("main and master must differ")
+	}
+
+	// The hardened gitArgs refuse file://, so clone with the same shape minus
+	// the protocol pin; checkoutRef itself still runs through gitArgs.
+	dst := filepath.Join(t.TempDir(), "dst")
+	args := append(slices.Clone(gitSafe[4:]), "-c", "protocol.file.allow=always", "clone", "--depth", "1", "--single-branch", "--no-tags", "--branch", "master", "--", "file://"+src, dst)
+	if _, err := r.Run(ctx, "", "git", args...); err != nil {
+		t.Fatal(err)
+	}
+	b := Builder{R: r, Log: slog.New(slog.DiscardHandler)}
+	if err := b.checkoutRef(ctx, dst, Spec{RepoURL: "file://" + src, Branch: "master", CommitSha: "main"}); err != nil {
+		t.Fatalf("checkoutRef(main): %v", err)
+	}
+	if head := run(dst, "rev-parse", "HEAD"); head != masterTip {
+		t.Fatalf("HEAD = %s, want master tip %s", head, masterTip)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -461,5 +462,68 @@ func TestBuildAndPushRejectsBadImageTag(t *testing.T) {
 		if cmds := r.Commands(); len(cmds) != 0 {
 			t.Errorf("tag %q ran %v", tag, cmds)
 		}
+	}
+}
+
+// The Node API sends commitSha "main" whatever the Branch; that placeholder
+// means the tip of the cloned branch, never a ref to fetch.
+func TestBuildAndPushLegacyDefaultRef(t *testing.T) {
+	cases := []struct {
+		name, branch, ref string
+		wantWarn          bool
+		fetch, sw, rev    int
+		wantErr           bool
+	}{
+		{name: "master branch, legacy main", branch: "master", ref: "main", wantWarn: true},
+		{name: "main branch, main", branch: "main", ref: "main"},
+		{name: "HEAD", branch: "master", ref: "HEAD"},
+		{name: "hex ref", branch: "master", ref: "abc1234", fetch: 1, sw: 1, rev: 1},
+		{name: "tag on master branch fails", branch: "master", ref: "v1.2", fetch: 1, sw: 1, wantErr: true},
+		{name: "feature branch ref", branch: "master", ref: "feature-x", fetch: 1, sw: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &testutil.FakeRunner{Handle: func(c testutil.Call) (string, error) {
+				switch {
+				case c.Name == "git" && gitSub(c.Args) == "clone":
+					_ = os.MkdirAll(c.Args[len(c.Args)-1], 0o750)
+				case c.Name == "git" && gitSub(c.Args) == "fetch":
+					return "", errors.New("shallow fetch failed")
+				case c.Name == "git" && gitSub(c.Args) == "switch" && tc.wantErr:
+					return "", errors.New("fatal: invalid reference")
+				case c.Name == "git" && gitSub(c.Args) == "rev-parse":
+					return fakeSha, nil
+				}
+				return "", nil
+			}}
+			var logs bytes.Buffer
+			b := newBuilder(r)
+			b.Log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+			s := gitSpec(tc.ref)
+			s.Branch = tc.branch
+			s.WorkDir = t.TempDir() + "/w"
+			err := b.BuildAndPush(context.Background(), s)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
+			}
+			cmds := r.Commands()
+			if !slices.ContainsFunc(cmds, func(c string) bool { return strings.Contains(c, "--branch "+tc.branch+" ") }) {
+				t.Errorf("clone did not use --branch %s: %v", tc.branch, cmds)
+			}
+			for sub, want := range map[string]int{"fetch": tc.fetch, "switch": tc.sw, "rev-parse": tc.rev} {
+				if n := countSub(cmds, sub); n != want {
+					t.Errorf("%s ran %d times, want %d: %v", sub, n, want, cmds)
+				}
+			}
+			built := slices.ContainsFunc(cmds, func(c string) bool {
+				return strings.Contains(c, "buildx build") && strings.HasSuffix(c, "-t img:"+tc.ref+" .")
+			})
+			if built == tc.wantErr {
+				t.Errorf("build ran = %v, wantErr %v: %v", built, tc.wantErr, cmds)
+			}
+			if got := strings.Contains(logs.String(), "legacy default ref"); got != tc.wantWarn {
+				t.Errorf("legacy warn logged = %v, want %v (%s)", got, tc.wantWarn, logs.String())
+			}
+		})
 	}
 }

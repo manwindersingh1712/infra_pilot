@@ -126,15 +126,24 @@ func (b Builder) git(ctx context.Context, dir, op, repoURL string, args ...strin
 	return out, b.fail(ctx, op, err, repoURL)
 }
 
+// legacyDefaultRef is the Node API placeholder (control-plane/apps/api
+// serviceController.ts defaults commitSha to main); remove after the Plan 2 API
+// cutover (backlog).
+const legacyDefaultRef = "main"
+
 var hexRefRe = regexp.MustCompile(`^[0-9a-fA-F]{7,40}$`)
 
 // checkoutRef moves the clone to s.CommitSha. The branch tip and HEAD need no
-// work. Any other ref is fetched (best effort, the object may already be
+// work, and neither does the legacy default ref. Any other ref is fetched (best effort, the object may already be
 // present) and then switched to; a failing switch fails the build, because the
 // image is pushed under that ref's tag.
 func (b Builder) checkoutRef(ctx context.Context, repo string, s Spec) error {
 	ref := s.CommitSha
 	if ref == s.Branch || ref == "HEAD" {
+		return nil
+	}
+	if ref == legacyDefaultRef {
+		b.Log.Warn("legacy default ref \"main\" treated as tip of branch", "branch", s.Branch, "ref", ref)
 		return nil
 	}
 	if _, err := b.git(ctx, repo, "git fetch", s.RepoURL, "fetch", "--depth", "50", "--no-tags", "--end-of-options", "origin", ref); err != nil {

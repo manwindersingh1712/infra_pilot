@@ -150,3 +150,39 @@ func TestCreateProjectBodyAndNameBoundaries(t *testing.T) {
 		}
 	}
 }
+
+// PROD-3: rows written outside the create handler (legacy Node data) with names
+// the handler would reject must still load through list and get.
+func TestStoredOddNamesStillLoad(t *testing.T) {
+	hs := newHarness(t)
+	ctx := context.Background()
+	u, err := hs.st.CreateUser(ctx, "odd@x.co", "h", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok := hs.token(u.ID)
+	names := map[string]string{
+		"one char":  "x",
+		"101 chars": strings.Repeat("a", 101),
+		"control":   "Sh\u0001op\tx",
+	}
+	ids := map[string]string{}
+	for k, n := range names {
+		p, err := hs.st.CreateProject(ctx, n, u.ID)
+		if err != nil {
+			t.Fatalf("%s: %v", k, err)
+		}
+		ids[k] = p.ID
+	}
+	list := decode[[]map[string]any](t, hs.do("GET", "/projects", tok, nil))
+	if len(list) != len(names) {
+		t.Fatalf("list has %d projects, want %d", len(list), len(names))
+	}
+	for k, n := range names {
+		rec := hs.do("GET", "/projects/"+ids[k], tok, nil)
+		expectStatus(t, rec, 200)
+		if got := decode[map[string]any](t, rec)["name"]; got != n {
+			t.Fatalf("%s: name %q want %q", k, got, n)
+		}
+	}
+}

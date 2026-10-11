@@ -51,6 +51,7 @@ func (s *Server) getCanvas(w http.ResponseWriter, r *http.Request) {
 // (and out of the UI's layout maths).
 const maxCoord = 1e6
 
+// NaN and Inf cannot arrive through JSON; they are rejected defensively anyway.
 func validCoord(v float64) bool {
 	return !math.IsNaN(v) && !math.IsInf(v, 0) && math.Abs(v) <= maxCoord
 }

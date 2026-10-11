@@ -171,3 +171,7 @@ Low-severity and deferred findings. Each line: date, task, finding ID, severity,
 - 2026-10-10, P1 gate, VER-1 F1, low, runbook SQL `now()` writes `timestamp without time zone`: correct only when the Postgres session timezone is UTC (compose Postgres is); if the dev DB is not UTC use `now() AT TIME ZONE 'UTC'`, cutover day
 - (2026-10-11, CTO) Remove the legacy `main` placeholder rule in `checkoutRef` (builder.go) after the Plan 2 API cutover; the Go API must send Branch, `HEAD` or a hex sha.
 - (2026-10-11, CTO) Plan 2: replace the blanket TenantCaps grant (docker/nodejs/nextjs/react) with a per-service capability setting (column + API + UI), default off for generated Dockerfiles, on for existing services via migration; SAAS_ROADMAP Phase 2/6.
+
+## Plan 2 Task 1 (low, carry into the Task 10 canvas handlers)
+- SEC-1 / STAFF-2 / STAFF-3: `CreateConnection` checks nothing, `GetConnectionForOwner` checks only the source service, `DeleteConnection` takes only an id, and self-connections are allowed. The create handler must verify the caller owns BOTH services and that they share a project; the delete handler must call `GetConnectionForOwner` first. Add a test for each.
+- STAFF-1: `connections_test.go` ignores list errors and does not cover the target-side OR branch, cross-project exclusion or inbound-edge exclusion.

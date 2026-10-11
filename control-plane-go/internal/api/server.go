@@ -124,6 +124,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 
 	mux.Handle("GET /deployments", s.private(s.listDeployments))
 
+	mux.Handle("GET /logs/deployments/{id}", s.private(s.getLogs))
+	mux.Handle("GET /logs/health", s.private(s.logsHealth))
+
 	// Log stream tickets. Rate-limit bucket: streamLimit, one per client
 	// address, separate from the auth buckets so a log viewer reconnecting in a
 	// loop cannot lock a user out of login or refresh, and not shared with

@@ -137,7 +137,7 @@ func newHarnessWith(t *testing.T, opts ...func(*Deps)) *harness {
 	return hs
 }
 
-//nolint:unused // used by the endpoint tasks that follow (Plan 2 Tasks 6+)
+//nolint:unused // first used by Task 7 (project endpoints); Task 6 has no private routes
 func (hs *harness) token(userID string) string {
 	tok, err := hs.signer.Sign(userID)
 	if err != nil {
@@ -187,7 +187,6 @@ func (hs *harness) doFrom(remoteAddr, method, path, token string, body io.Reader
 	return rec
 }
 
-//nolint:unused // used by the endpoint tasks that follow (Plan 2 Tasks 6+)
 func decode[T any](t *testing.T, rec *httptest.ResponseRecorder) T {
 	t.Helper()
 	var v T

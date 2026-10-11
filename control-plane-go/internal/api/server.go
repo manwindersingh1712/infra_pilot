@@ -65,6 +65,15 @@ func NewHandler(d Deps) http.Handler {
 func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /healthz", s.healthz)
 	mux.HandleFunc("GET /readyz", s.readyz)
+
+	limited := func(h http.HandlerFunc) http.Handler { return s.authLimit.wrap(h) }
+	mux.Handle("POST /auth/register", limited(s.register))
+	mux.Handle("POST /auth/login", limited(s.login))
+	mux.Handle("POST /auth/refresh", limited(s.refresh))
+	mux.HandleFunc("POST /auth/logout", s.logout)
+	if s.DevLogin {
+		mux.HandleFunc("POST /dev/login", s.devLogin)
+	}
 }
 
 // withSecurityHeaders marks every response (including preflights and errors)

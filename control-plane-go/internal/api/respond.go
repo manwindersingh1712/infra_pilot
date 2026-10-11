@@ -19,7 +19,6 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
-//nolint:unused // used by the endpoint tasks that follow (Plan 2 Tasks 6+)
 func (s *Server) internalError(w http.ResponseWriter, r *http.Request, err error) {
 	s.Log.Error("request failed", "method", r.Method, "path", r.URL.Path, "requestId", requestID(r), "err", err)
 	writeError(w, http.StatusInternalServerError, "internal_error")
@@ -32,8 +31,6 @@ var errTrailingData = errors.New("unexpected data after JSON body")
 
 // decodeJSON reads an optional JSON body (max 1 MiB, one value, no trailing
 // data). An empty body leaves dst unchanged. On failure call writeDecodeError.
-//
-//nolint:unused // used by the endpoint tasks that follow (Plan 2 Tasks 6+)
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 	if err := dec.Decode(dst); err != nil {
@@ -54,8 +51,6 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 
 // writeDecodeError answers a decodeJSON failure: 413 when the body was over the
 // limit, otherwise 400 with msg.
-//
-//nolint:unused // used by the endpoint tasks that follow (Plan 2 Tasks 6+)
 func writeDecodeError(w http.ResponseWriter, err error, msg string) {
 	var tooBig *http.MaxBytesError
 	if errors.As(err, &tooBig) {

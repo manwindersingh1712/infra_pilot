@@ -577,3 +577,18 @@ func TestRateLimitDefaultBursts(t *testing.T) {
 		t.Fatalf("default refresh burst = %d, want 20", n)
 	}
 }
+
+// The refill interval of each limiter is what turns a burst into a rate:
+// register/login 10 per minute, refresh/logout 60 per minute (STAFF-1).
+func TestServerLimiterRefillIntervals(t *testing.T) {
+	s := newServer(Deps{})
+	if s.authLimit.every != 6*time.Second {
+		t.Fatalf("register/login refills every %v, want 6s (10/min)", s.authLimit.every)
+	}
+	if s.refreshLimit.every != time.Second {
+		t.Fatalf("refresh/logout refills every %v, want 1s (60/min)", s.refreshLimit.every)
+	}
+	if s.authLimit.burst != 5 || s.refreshLimit.burst != 20 {
+		t.Fatalf("default bursts %d/%d, want 5/20", s.authLimit.burst, s.refreshLimit.burst)
+	}
+}

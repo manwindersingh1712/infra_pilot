@@ -51,7 +51,8 @@ type Server struct {
 	refreshLimit *ipLimiter // refresh, logout
 }
 
-func NewHandler(d Deps) http.Handler {
+// newServer builds the Server with its two rate limiters (defaults applied).
+func newServer(d Deps) *Server {
 	strict, refresh := d.AuthBurst, d.RefreshBurst
 	if strict <= 0 {
 		strict = defaultStrictBurst
@@ -59,9 +60,13 @@ func NewHandler(d Deps) http.Handler {
 	if refresh <= 0 {
 		refresh = defaultRefreshBurst
 	}
-	s := &Server{Deps: d,
+	return &Server{Deps: d,
 		authLimit:    newIPLimiter(strict, strictEvery),
 		refreshLimit: newIPLimiter(refresh, refreshEvery)}
+}
+
+func NewHandler(d Deps) http.Handler {
+	s := newServer(d)
 	mux := http.NewServeMux()
 	s.routes(mux)
 	return withSecurityHeaders(withRequestID(withCORS(d.CORSOrigins, s.withRecover(jsonErrors(mux)))))

@@ -17,7 +17,14 @@ type Signer struct {
 	now    func() time.Time
 }
 
-func NewSigner(secret string) *Signer { return &Signer{secret: []byte(secret), now: time.Now} }
+// NewSigner returns an error for an empty secret. The length policy for real
+// deployments lives in config; this is only a guard against an unset secret.
+func NewSigner(secret string) (*Signer, error) {
+	if secret == "" {
+		return nil, errors.New("auth: empty JWT secret")
+	}
+	return &Signer{secret: []byte(secret), now: time.Now}, nil
+}
 
 // Sign returns an HS256 token with claims {sub, iat, exp}.
 func (s *Signer) Sign(userID string) (string, error) {

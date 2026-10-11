@@ -14,8 +14,23 @@ const (
 	nodeHash  = "$2b$10$Yd8di3UA82FrevHpKn6pjuRApg6xyMVbXa7AiNAdOnQ4/vFe00jqG" // "password123"
 )
 
+func mustSigner(t *testing.T, secret string) *Signer {
+	t.Helper()
+	s, err := NewSigner(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func TestNewSignerRejectsEmptySecret(t *testing.T) {
+	if s, err := NewSigner(""); err == nil || s != nil {
+		t.Fatalf("s=%v err=%v", s, err)
+	}
+}
+
 func TestSignVerifyRoundTripWithExpiry(t *testing.T) {
-	s := NewSigner("k")
+	s := mustSigner(t, "k")
 	tok, err := s.Sign("u1")
 	if err != nil {
 		t.Fatal(err)
@@ -32,10 +47,10 @@ func TestSignVerifyRoundTripWithExpiry(t *testing.T) {
 }
 
 func TestVerifyRejectsExpiredToken(t *testing.T) {
-	s := NewSigner("k")
+	s := mustSigner(t, "k")
 	s.now = func() time.Time { return time.Now().Add(-time.Hour) }
 	tok, _ := s.Sign("u1")
-	if _, err := NewSigner("k").Verify(tok); err == nil {
+	if _, err := mustSigner(t, "k").Verify(tok); err == nil {
 		t.Fatal("expired token accepted")
 	}
 }
@@ -43,22 +58,22 @@ func TestVerifyRejectsExpiredToken(t *testing.T) {
 func TestVerifyRejectsNodeTokensWithoutExpiry(t *testing.T) {
 	// Node issued tokens without exp. After the Plan 2 cutover they must stop
 	// working, so every user logs in once and gets an expiring token.
-	_, err := NewSigner("test-secret").Verify(nodeToken)
+	_, err := mustSigner(t, "test-secret").Verify(nodeToken)
 	if err == nil || !strings.Contains(err.Error(), "exp") {
 		t.Fatalf("err = %v", err)
 	}
 }
 
 func TestVerifyRejectsBadTokens(t *testing.T) {
-	good, _ := NewSigner("a").Sign("u1")
+	good, _ := mustSigner(t, "a").Sign("u1")
 	for _, tok := range []string{"", "garbage", good} {
-		if _, err := NewSigner("other").Verify(tok); err == nil {
+		if _, err := mustSigner(t, "other").Verify(tok); err == nil {
 			t.Errorf("Verify(%.20q) should fail", tok)
 		}
 	}
 	none := jwt.NewWithClaims(jwt.SigningMethodNone, jwt.MapClaims{"sub": "u1", "exp": time.Now().Add(time.Hour).Unix()})
 	unsigned, _ := none.SignedString(jwt.UnsafeAllowNoneSignatureType)
-	if _, err := NewSigner("k").Verify(unsigned); err == nil {
+	if _, err := mustSigner(t, "k").Verify(unsigned); err == nil {
 		t.Fatal("alg=none must be rejected")
 	}
 }
@@ -71,7 +86,7 @@ func TestVerifyPinsHS256(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := NewSigner("k").Verify(tok); err == nil {
+		if _, err := mustSigner(t, "k").Verify(tok); err == nil {
 			t.Errorf("%s token accepted", m.Alg())
 		}
 	}
@@ -86,7 +101,7 @@ func TestVerifyRequiresSub(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := NewSigner("k").Verify(tok); err == nil {
+		if _, err := mustSigner(t, "k").Verify(tok); err == nil {
 			t.Errorf("token with %s sub accepted", name)
 		}
 	}

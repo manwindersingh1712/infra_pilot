@@ -101,6 +101,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.Handle("GET /services/{id}/env", s.private(s.getServiceEnv))
 	mux.Handle("POST /services/{id}/env", s.private(s.setServiceEnv))
 	mux.Handle("DELETE /services/{id}/env/{key}", s.private(s.deleteServiceEnv))
+
+	mux.Handle("GET /deployments", s.private(s.listDeployments))
 }
 
 // withSecurityHeaders marks every response (including preflights and errors)

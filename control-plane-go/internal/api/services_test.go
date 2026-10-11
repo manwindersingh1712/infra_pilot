@@ -5,7 +5,11 @@ import (
 	"context"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"infrapilot/internal/secrets"
 	"infrapilot/internal/store"
@@ -571,5 +575,112 @@ func TestEnvValueInvalidUTF8IsReplacedByDecoder(t *testing.T) {
 	revealed := decode[[]map[string]any](t, hs.do("GET", base+"?reveal=true", tok, nil))
 	if len(revealed) != 1 || revealed[0]["value"] != "a�b" {
 		t.Fatalf("stored %q", revealed)
+	}
+}
+
+// failOutboxInserts makes every INSERT into "OutboxEvent" raise, so the second
+// statement of a handler's transaction fails after the first succeeded.
+func failOutboxInserts(t *testing.T) {
+	t.Helper()
+	ctx := context.Background()
+	for _, q := range []string{
+		`CREATE FUNCTION test_fail_outbox() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'outbox down'; END $$`,
+		`CREATE TRIGGER test_fail_outbox BEFORE INSERT ON "OutboxEvent" FOR EACH ROW EXECUTE FUNCTION test_fail_outbox()`,
+	} {
+		if _, err := pool.Exec(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DROP TRIGGER IF EXISTS test_fail_outbox ON "OutboxEvent"`)
+		_, _ = pool.Exec(context.Background(), `DROP FUNCTION IF EXISTS test_fail_outbox()`)
+	})
+}
+
+// STAFF-4a: the soft delete and the teardown event commit together.
+func TestDeleteServiceIsAtomicWithItsOutboxEvent(t *testing.T) {
+	hs := newHarness(t)
+	f := testutil.Seed(t, hs.st, store.TypeRedis)
+	failOutboxInserts(t)
+	expectStatus(t, hs.do("DELETE", "/services/"+f.ServiceID, hs.token(f.UserID), nil), 500)
+	if _, err := hs.st.GetService(context.Background(), f.ServiceID); err != nil {
+		t.Fatalf("service soft-deleted although its teardown event failed: %v", err)
+	}
+	if len(outboxEvents(t)) != 0 {
+		t.Fatal("outbox rows after a failed delete")
+	}
+}
+
+// STAFF-4b: the deployment row and its outbox event commit together.
+func TestDeployServiceIsAtomicWithItsOutboxEvent(t *testing.T) {
+	hs := newHarness(t)
+	f := testutil.Seed(t, hs.st, store.TypeNodejs)
+	failOutboxInserts(t)
+	expectStatus(t, hs.do("POST", "/services/"+f.ServiceID+"/deploy", hs.token(f.UserID), nil), 500)
+	if n := deploymentCount(t); n != 0 {
+		t.Fatalf("%d deployment rows left although the outbox event failed", n)
+	}
+}
+
+// deleteAfterOwnershipCheck returns a Deps option whose store soft-deletes the
+// service right after the handler's ownership lookup, so the next statement
+// meets a service that has just disappeared (the race the handlers answer 404).
+func deleteAfterOwnershipCheck(t *testing.T, serviceID *string) func(*Deps) {
+	t.Helper()
+	cfg := pool.Config().Copy()
+	cfg.ConnConfig.Tracer = &afterOwnerLookup{fn: func() {
+		_, err := pool.Exec(context.Background(), `UPDATE "Service" SET "deletedAt" = now() WHERE "id" = $1`, *serviceID)
+		if err != nil {
+			t.Error(err)
+		}
+	}}
+	traced, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(traced.Close)
+	return func(d *Deps) { d.Store = store.New(traced) }
+}
+
+type afterOwnerLookup struct {
+	once sync.Once
+	fn   func()
+}
+
+func (a *afterOwnerLookup) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
+	return ctx
+}
+
+func (a *afterOwnerLookup) TraceQueryEnd(_ context.Context, _ *pgx.Conn, d pgx.TraceQueryEndData) {
+	if strings.Contains(d.CommandTag.String(), "SELECT") {
+		a.once.Do(a.fn)
+	}
+}
+
+// STAFF-4c: a delete that lands between the ownership check and the write is a
+// plain 404 and leaves nothing behind.
+func TestDeployRacingADeleteIs404(t *testing.T) {
+	var id string
+	hs := newHarnessWith(t, deleteAfterOwnershipCheck(t, &id))
+	f := testutil.Seed(t, hs.st, store.TypeNodejs)
+	id = f.ServiceID
+	rec := hs.do("POST", "/services/"+f.ServiceID+"/deploy", hs.token(f.UserID), nil)
+	expectStatus(t, rec, 404)
+	expectBody(t, rec, `{"error":"service_not_found"}`)
+	if deploymentCount(t) != 0 || len(outboxEvents(t)) != 0 {
+		t.Fatal("the raced deploy left rows")
+	}
+}
+
+func TestDeleteRacingADeleteIs404(t *testing.T) {
+	var id string
+	hs := newHarnessWith(t, deleteAfterOwnershipCheck(t, &id))
+	f := testutil.Seed(t, hs.st, store.TypeRedis)
+	id = f.ServiceID
+	rec := hs.do("DELETE", "/services/"+f.ServiceID, hs.token(f.UserID), nil)
+	expectStatus(t, rec, 404)
+	expectBody(t, rec, `{"error":"service_not_found"}`)
+	if len(outboxEvents(t)) != 0 {
+		t.Fatal("the raced delete queued a teardown")
 	}
 }

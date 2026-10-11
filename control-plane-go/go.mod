@@ -19,6 +19,7 @@ require (
 	go.temporal.io/api v1.63.5
 	go.temporal.io/sdk v1.49.0
 	golang.org/x/crypto v0.58.0
+	golang.org/x/time v0.16.0
 	google.golang.org/grpc v1.83.2
 )
 
@@ -102,7 +103,6 @@ require (
 	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
-	golang.org/x/time v0.11.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260831171406-18b4a7587f8a // indirect
 	google.golang.org/protobuf v1.36.12 // indirect

@@ -222,3 +222,11 @@ Low-severity and deferred findings. Each line: date, task, finding ID, severity,
 - STAFF-4: `TestLoginUnknownEmailPaysForBcrypt` uses a 15 ms wall-clock threshold; assert the dummy hash cost equals `HashPassword`'s cost instead.
 - STAFF-5: `harness.token` `//nolint:unused` removal goes on the Task 7 checklist.
 - STAFF-1/STAFF-2 (UI): covered by the Task 15 follow-ups in decisions.md (error-code messages, single-flight refresh, re-read on 401).
+
+## Plan 2 Task 6, round 2 (lows; Task 6 closed)
+- SEC-8: a `name` containing a NUL byte (`\u0000`) passes the 100-rune cap and Postgres rejects it, so register returns 500 instead of 400 (reasoned, not run). Reject control characters in `name` with 400 `invalid_request`.
+- STAFF-2: the 00004 migration test does not assert the index is gone after down (covered indirectly by the second up).
+- STAFF-3: in the refresh handler's `switch`, the `ErrReplayInGrace` case must stay before `ErrNotFound` (it wraps it); add a comment. The reuse Warn log carries only `requestId`; consider adding the family id (not the token) so an operator can tell which session was cut.
+- Informational: keep the DB session time zone on UTC (the grace window compares DB timestamps); the pool already sets `timezone=UTC`. Pre-migration refresh chains became single-token families. Someone holding an old token can force one family re-login after the grace window (accepted residual).
+- `TestRotateRefreshTokenIsAtomic` was never seen failing under a "drop the transaction" mutation (could not be built mechanically).
+- Task 15 reminder: a user who loses the refresh response and retries after 10 s must log in again (accepted by the CTO); never sign out on a 429 or 5xx from `/auth/refresh`.

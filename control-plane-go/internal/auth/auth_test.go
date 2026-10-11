@@ -63,6 +63,35 @@ func TestVerifyRejectsBadTokens(t *testing.T) {
 	}
 }
 
+func TestVerifyPinsHS256(t *testing.T) {
+	// Right secret, valid exp and sub: only the algorithm is wrong.
+	claims := jwt.MapClaims{"sub": "u1", "exp": time.Now().Add(time.Hour).Unix()}
+	for _, m := range []jwt.SigningMethod{jwt.SigningMethodHS384, jwt.SigningMethodHS512} {
+		tok, err := jwt.NewWithClaims(m, claims).SignedString([]byte("k"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := NewSigner("k").Verify(tok); err == nil {
+			t.Errorf("%s token accepted", m.Alg())
+		}
+	}
+}
+
+func TestVerifyRequiresSub(t *testing.T) {
+	for name, claims := range map[string]jwt.MapClaims{
+		"missing": {"exp": time.Now().Add(time.Hour).Unix()},
+		"empty":   {"sub": "", "exp": time.Now().Add(time.Hour).Unix()},
+	} {
+		tok, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte("k"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := NewSigner("k").Verify(tok); err == nil {
+			t.Errorf("token with %s sub accepted", name)
+		}
+	}
+}
+
 func TestRefreshTokens(t *testing.T) {
 	plain, hash, err := NewRefreshToken()
 	if err != nil || len(plain) < 40 || hash != HashRefreshToken(plain) || len(hash) != 64 {

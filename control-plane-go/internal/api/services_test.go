@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"infrapilot/internal/secrets"
 	"infrapilot/internal/store"
 	"infrapilot/internal/testutil"
 )
@@ -264,4 +265,122 @@ func TestDeployDeletedServiceIs404(t *testing.T) {
 	if deploymentCount(t) != 0 || len(outboxEvents(t)) != 0 {
 		t.Fatal("deploy of a deleted service left rows")
 	}
+}
+
+func TestServiceEnvIsEncryptedAndMasked(t *testing.T) {
+	hs := newHarness(t)
+	ctx := context.Background()
+	f := testutil.Seed(t, hs.st, store.TypeNodejs)
+	tok := hs.token(f.UserID)
+	base := "/services/" + f.ServiceID + "/env"
+
+	rec := hs.do("POST", base, tok, map[string]any{"key": "API_KEY", "value": "s3cret"})
+	expectStatus(t, rec, 200)
+	if v := decode[map[string]any](t, rec); v["value"] != "********" || v["key"] != "API_KEY" {
+		t.Fatalf("set response %v", v)
+	}
+	raw, _ := hs.st.EnvMap(ctx, f.ServiceID)
+	if !secrets.IsEncrypted(raw["API_KEY"]) {
+		t.Fatalf("stored value not encrypted: %q", raw["API_KEY"])
+	}
+
+	if _, err := hs.st.UpsertEnvVar(ctx, f.ServiceID, "LEGACY", "plain"); err != nil { // written by the Node API before encryption
+		t.Fatal(err)
+	}
+	masked := decode[[]map[string]any](t, hs.do("GET", base, tok, nil))
+	revealed := decode[[]map[string]any](t, hs.do("GET", base+"?reveal=true", tok, nil))
+	if len(masked) != 2 || masked[0]["value"] != "********" || masked[1]["value"] != "********" ||
+		revealed[0]["value"] != "s3cret" || revealed[1]["value"] != "plain" {
+		t.Fatalf("masked %v revealed %v", masked, revealed)
+	}
+	if body := hs.do("GET", base, tok, nil).Body.String(); strings.Contains(body, "s3cret") || strings.Contains(body, "enc:v1:") {
+		t.Fatalf("masked list leaks: %s", body)
+	}
+	// Setting an existing key replaces the value (still one row).
+	expectStatus(t, hs.do("POST", base, tok, map[string]any{"key": "API_KEY", "value": "n3w"}), 200)
+	revealed = decode[[]map[string]any](t, hs.do("GET", base+"?reveal=true", tok, nil))
+	if len(revealed) != 2 || revealed[0]["value"] != "n3w" {
+		t.Fatalf("after overwrite %v", revealed)
+	}
+
+	for _, body := range []map[string]any{
+		{"key": "", "value": "x"}, {"key": "B"}, {"key": "A B", "value": "x"}, {"key": "A=B", "value": "x"},
+		{"key": "#X", "value": "x"}, {"key": "-X", "value": "x"}, {"key": ".X", "value": "x"},
+		{"key": "Kéy", "value": "x"}, {"key": "K\u0000", "value": "x"}, {"key": strings.Repeat("A", 257), "value": "x"},
+		{"key": "OK", "value": "a\nb"}, {"key": "OK", "value": "a\rb"}, {"key": "OK", "value": "a\u0000b"},
+		{"key": "OK", "value": strings.Repeat("v", 32<<10+1)},
+	} {
+		rec := hs.do("POST", base, tok, body)
+		if rec.Code != 400 {
+			t.Errorf("%.40v: status %d", body, rec.Code)
+		}
+	}
+	// Keys the worker accepts (dash, dot, leading digit) and an empty value are fine.
+	for _, key := range []string{"BAD-KEY", "my.key", "1ST", "_X", strings.Repeat("A", 256)} {
+		expectStatus(t, hs.do("POST", base, tok, map[string]any{"key": key, "value": ""}), 200)
+	}
+
+	rec = hs.do("DELETE", base+"/API_KEY", tok, nil)
+	expectBody(t, rec, `{"deleted":true}`)
+	if raw, _ := hs.st.EnvMap(ctx, f.ServiceID); raw["API_KEY"] != "" {
+		t.Fatal("key not deleted")
+	}
+	// Unknown and unstorable keys answer the same way.
+	for _, key := range []string{"NOPE", "%00", "%ff"} {
+		rec = hs.do("DELETE", base+"/"+key, tok, nil)
+		expectStatus(t, rec, 200)
+		expectBody(t, rec, `{"deleted":true}`)
+	}
+}
+
+func TestServiceEnvOwnership(t *testing.T) {
+	hs := newHarness(t)
+	ctx := context.Background()
+	f := testutil.Seed(t, hs.st, store.TypeNodejs)
+	other := testutil.Seed(t, hs.st, store.TypeNodejs)
+	tok := hs.token(f.UserID)
+	if _, err := hs.st.UpsertEnvVar(ctx, other.ServiceID, "KEEP", "v"); err != nil {
+		t.Fatal(err)
+	}
+	deleted := testutil.Seed(t, hs.st, store.TypeNodejs)
+	if err := hs.st.SoftDeleteService(ctx, deleted.ServiceID); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, id := range map[string]string{
+		"foreign": other.ServiceID, "missing": "cabc123missing", "nul": "%00", "bad utf8": "%ff",
+		"too long": strings.Repeat("a", 65),
+	} {
+		for _, c := range []struct {
+			method, suffix string
+			body           any
+		}{
+			{"GET", "/env", nil}, {"GET", "/env?reveal=true", nil},
+			{"POST", "/env", map[string]any{"key": "X", "value": "y"}},
+			{"DELETE", "/env/KEEP", nil},
+		} {
+			rec := hs.do(c.method, "/services/"+id+c.suffix, tok, c.body)
+			if rec.Code != 404 || rec.Body.String() != `{"error":"service_not_found"}`+"\n" {
+				t.Errorf("%s %s %s: %d %s", name, c.method, c.suffix, rec.Code, rec.Body.String())
+			}
+		}
+	}
+	// A soft-deleted service's own owner cannot reach its env either.
+	expectStatus(t, hs.do("GET", "/services/"+deleted.ServiceID+"/env", hs.token(deleted.UserID), nil), 404)
+	expectStatus(t, hs.do("GET", "/services/"+other.ServiceID+"/env", "", nil), 401)
+
+	raw, _ := hs.st.EnvMap(ctx, other.ServiceID)
+	if len(raw) != 1 || raw["KEEP"] != "v" {
+		t.Fatalf("the intruder changed another tenant's env: %v", raw)
+	}
+}
+
+func TestServiceEnvBodyErrors(t *testing.T) {
+	hs := newHarness(t)
+	f := testutil.Seed(t, hs.st, store.TypeNodejs)
+	tok := hs.token(f.UserID)
+	base := "/services/" + f.ServiceID + "/env"
+	expectStatus(t, hs.doRaw("POST", base, tok, strings.NewReader(`{"key":`), nil), 400)
+	expectStatus(t, hs.doRaw("POST", base, tok, strings.NewReader(`{"key":"A","value":1}`), nil), 400)
+	expectStatus(t, hs.doRaw("POST", base, tok, strings.NewReader(`{"key":"A","value":"`+strings.Repeat("v", 2<<20)+`"}`), nil), 413)
 }

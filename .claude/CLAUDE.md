@@ -200,7 +200,7 @@ Env vars the worker reads (`internal/config/config.go`; defaults in brackets):
 - Required: `DATABASE_URL`, `ENV_ENCRYPTION_KEY` (base64, 32 bytes: `openssl rand -base64 32`; back it up, it decrypts generated managed-DB passwords).
 - App/log: `APP_ENV` or `NODE_ENV` [production], `LOG_FORMAT` [text], `WORKER_METRICS_ADDR` [127.0.0.1:9091]. (API-only, Plan 2: `API_PORT`, `JWT_SECRET`, `CORS_ORIGINS`, `API_METRICS_ADDR`.)
 - Temporal: `TEMPORAL_HOST_PORT` [localhost:7233], `TEMPORAL_NAMESPACE` [default].
-- Stores: `REDIS_URL` [redis://localhost:6379], `CLICKHOUSE_URL` [http://localhost:8123], `CLICKHOUSE_USER` [default], `CLICKHOUSE_PASSWORD`.
+- Stores: `REDIS_URL` [redis://localhost:6379; the dev stack uses redis://localhost:6380], `CLICKHOUSE_URL` [http://localhost:8123], `CLICKHOUSE_USER` [default], `CLICKHOUSE_PASSWORD`.
 - Build/registry: `REGISTRY_HOST` [localhost:5001], `BUILD_WORKDIR` [/tmp/cp-builds], `BUILDER_NAME` [cp-builder], `BUILDER_MEMORY` [2g], `BUILDER_CPUS` [2], `PROBE_IMAGE` [busybox:1.36].
 - Containers: `CONTAINER_MEMORY` [512m], `CONTAINER_CPUS` [0.5], `CONTAINER_PIDS` [256], `DEFAULT_CONTAINER_PORT` [3080], `HEALTH_TIMEOUT_SECONDS` [60, max 600], `EXPOSE_MANAGED_PORTS` [true only when APP_ENV=development], `DATA_PLANE_PORT_RANGE_START/END` [20000/20100], `LEGACY_VOLUME_ROOT` [/tmp/cp-volumes].
 - Nginx: `NGINX_ROUTES_DIR` [infra/nginx/conf.d/routes, relative: set an absolute path, e.g. `<repo>/control-plane/infra/nginx/conf.d/routes`], `NGINX_CONTAINER` [cp_nginx], `NGINX_PORT` [80], `SERVICE_BASE_DOMAIN` [localhost].
@@ -226,7 +226,7 @@ REGISTRY_HOST=localhost:5001
 BUILD_WORKDIR=/tmp/cp-builds
 DEFAULT_CONTAINER_PORT=3080
 NGINX_PORT=80
-REDIS_URL=redis://localhost:6379
+REDIS_URL=redis://localhost:6380
 ```
 
 **cp-ui/.env:**
@@ -293,7 +293,7 @@ Auth is JWT-based, stored in `localStorage` as `cp_token`.
 - `5672` - RabbitMQ (AMQP)
 - `15672` - RabbitMQ Management UI
 - `5001` - Docker Registry
-- `6379` - Redis
+- `6380` - Redis (Docker `cp_redis`, loopback only; 6379 is left to a host Redis)
 - `9000` - MinIO S3 API
 - `9001` - MinIO Console
 - `8123` - ClickHouse HTTP

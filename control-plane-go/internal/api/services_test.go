@@ -535,3 +535,27 @@ func TestRevealIsLoggedWithoutSecrets(t *testing.T) {
 		}
 	}
 }
+
+// PROD-1: a client that echoes the masked placeholder back must never replace
+// a real secret with it.
+func TestMaskedPlaceholderIsNotAcceptedAsValue(t *testing.T) {
+	hs := newHarness(t)
+	ctx := context.Background()
+	f := testutil.Seed(t, hs.st, store.TypeNodejs)
+	tok := hs.token(f.UserID)
+	base := "/services/" + f.ServiceID + "/env"
+	expectStatus(t, hs.do("POST", base, tok, map[string]any{"key": "API_KEY", "value": "real"}), 200)
+	rec := hs.do("POST", base, tok, map[string]any{"key": "API_KEY", "value": "********"})
+	expectStatus(t, rec, 400)
+	expectBody(t, rec, `{"error":"invalid_env_var"}`)
+	revealed := decode[[]map[string]any](t, hs.do("GET", base+"?reveal=true", tok, nil))
+	if len(revealed) != 1 || revealed[0]["value"] != "real" {
+		t.Fatalf("secret overwritten: %v", revealed)
+	}
+	if raw, _ := hs.st.EnvMap(ctx, f.ServiceID); len(raw) != 1 {
+		t.Fatalf("rows %v", raw)
+	}
+	// Only the exact placeholder is refused.
+	expectStatus(t, hs.do("POST", base, tok, map[string]any{"key": "API_KEY", "value": "*******"}), 200)
+	expectStatus(t, hs.do("POST", base, tok, map[string]any{"key": "API_KEY", "value": "********!"}), 200)
+}

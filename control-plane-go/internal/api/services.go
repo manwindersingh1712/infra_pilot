@@ -244,11 +244,12 @@ func (s *Server) setServiceEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The worker writes KEY=VALUE lines to a docker env file, so a value with a
-	// line break would not deploy; a NUL byte or invalid UTF-8 would make
-	// Postgres fail (500).
+	// line break would not deploy, and a NUL byte would make Postgres fail
+	// (500). The masked placeholder is refused so a UI that echoes a listed
+	// value back cannot overwrite a real secret.
 	if len(body.Key) > maxEnvKeyLen || !envKeyPattern.MatchString(body.Key) ||
 		len(*body.Value) > maxEnvValue || !utf8.ValidString(*body.Value) ||
-		strings.ContainsAny(*body.Value, "\r\n\x00") {
+		strings.ContainsAny(*body.Value, "\r\n\x00") || *body.Value == maskedValue {
 		writeError(w, http.StatusBadRequest, "invalid_env_var")
 		return
 	}

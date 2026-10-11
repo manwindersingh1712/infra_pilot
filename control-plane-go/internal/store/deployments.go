@@ -23,11 +23,13 @@ func scanDeployment(row pgx.Row) (Deployment, error) {
 }
 
 // CreateDeployment inserts a queued deployment. "updatedAt" has no DB default
-// (Prisma set it in app code), so it is set explicitly.
+// (Prisma set it in app code), so it is set explicitly. A missing or
+// soft-deleted service yields ErrNotFound and inserts nothing.
 func (s *Store) CreateDeployment(ctx context.Context, serviceID, commitSha string) (Deployment, error) {
 	return scanDeployment(s.db.QueryRow(ctx,
 		`INSERT INTO "Deployment" ("id", "serviceId", "commitSha", "status", "updatedAt")
-		 VALUES ($1, $2, $3, 'queued', now()) RETURNING `+deploymentCols,
+		 SELECT $1, s."id", $3, 'queued', now() FROM "Service" s
+		 WHERE s."id" = $2 AND s."deletedAt" IS NULL RETURNING `+deploymentCols,
 		cuid.New(), serviceID, commitSha))
 }
 
@@ -65,7 +67,7 @@ func (s *Store) ClaimDeployment(ctx context.Context, id, from, to string) (bool,
 type ClaimResult int
 
 const (
-	ClaimLost ClaimResult = iota // the row is gone or not queued: nothing to do
+	ClaimLost ClaimResult = iota // the row is gone, not queued, or its service is deleted: nothing to do
 	ClaimWon                     // the row is now (or already was) deploying
 	ClaimBusy                    // another deployment of the service is deploying: retry later
 )
@@ -92,8 +94,13 @@ func (s *Store) ClaimDeploy(ctx context.Context, id string) (ClaimResult, error)
 			}
 			return err
 		}
-		if _, err := tx.db.Exec(ctx, `SELECT 1 FROM "Service" WHERE "id" = $1 FOR NO KEY UPDATE`, serviceID); err != nil {
+		var deleted bool
+		if err := tx.db.QueryRow(ctx,
+			`SELECT "deletedAt" IS NOT NULL FROM "Service" WHERE "id" = $1 FOR NO KEY UPDATE`, serviceID).Scan(&deleted); err != nil {
 			return err
+		}
+		if deleted {
+			return nil // a deleted service must not start a container; teardown owns it
 		}
 		var status string
 		if err := tx.db.QueryRow(ctx, `SELECT "status"::text FROM "Deployment" WHERE "id" = $1`, id).Scan(&status); err != nil {
@@ -251,12 +258,15 @@ type Job struct {
 	ProjectID    string
 }
 
+// GetJob returns ErrNotFound for a deployment whose service is soft-deleted, so
+// no build or deploy step acts on it.
 func (s *Store) GetJob(ctx context.Context, id string) (Job, error) {
 	var j Job
 	err := s.db.QueryRow(ctx,
 		`SELECT d."id", d."status"::text, d."commitSha", d."image", d."volumePath",
 		        s."id", s."serviceType"::text, s."repoUrl", s."branch", s."projectId"
-		 FROM "Deployment" d JOIN "Service" s ON s."id" = d."serviceId" WHERE d."id" = $1`, id).
+		 FROM "Deployment" d JOIN "Service" s ON s."id" = d."serviceId"
+		 WHERE d."id" = $1 AND s."deletedAt" IS NULL`, id).
 		Scan(&j.DeploymentID, &j.Status, &j.CommitSha, &j.Image, &j.VolumePath,
 			&j.ServiceID, &j.ServiceType, &j.RepoURL, &j.Branch, &j.ProjectID)
 	return j, noRows(err)

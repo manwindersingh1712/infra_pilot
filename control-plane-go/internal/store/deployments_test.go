@@ -381,3 +381,45 @@ func TestClaimDeployNonQueuedRowIsLost(t *testing.T) {
 		t.Fatalf("missing row = %v, %v", r, err)
 	}
 }
+
+func TestCreateDeploymentRejectsSoftDeletedService(t *testing.T) {
+	st, ctx := newStore(t), context.Background()
+	f := testutil.Seed(t, st, store.TypeNodejs)
+	if err := st.SoftDeleteService(ctx, f.ServiceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateDeployment(ctx, f.ServiceID, "main"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("deleted service err = %v, want ErrNotFound", err)
+	}
+	if _, err := st.CreateDeployment(ctx, "missing", "main"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("missing service err = %v, want ErrNotFound", err)
+	}
+	all, _ := st.ListDeployments(ctx, f.ServiceID)
+	if len(all) != 0 {
+		t.Fatalf("%d deployments were inserted", len(all))
+	}
+}
+
+func TestClaimDeployAndGetJobIgnoreSoftDeletedService(t *testing.T) {
+	st, ctx := newStore(t), context.Background()
+	f := testutil.Seed(t, st, store.TypeNodejs)
+	queued, _ := st.CreateDeployment(ctx, f.ServiceID, "main")
+	running, _ := st.CreateDeployment(ctx, f.ServiceID, "abc1234")
+	if r, err := st.ClaimDeploy(ctx, running.ID); err != nil || r != store.ClaimWon {
+		t.Fatalf("claim before delete = %v, %v", r, err)
+	}
+	if err := st.SoftDeleteService(ctx, f.ServiceID); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{queued.ID, running.ID} {
+		if r, err := st.ClaimDeploy(ctx, id); err != nil || r != store.ClaimLost {
+			t.Fatalf("ClaimDeploy(%s) after delete = %v, %v, want ClaimLost", id, r, err)
+		}
+		if _, err := st.GetJob(ctx, id); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("GetJob(%s) after delete err = %v, want ErrNotFound", id, err)
+		}
+	}
+	if d, _ := st.GetDeployment(ctx, queued.ID); d.Status != store.StatusQueued {
+		t.Fatalf("queued row moved to %s", d.Status)
+	}
+}

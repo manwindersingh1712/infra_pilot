@@ -26,12 +26,19 @@ func (s *Store) CreateConnection(ctx context.Context, sourceID, targetID string,
 	return c, err
 }
 
-// ListProjectConnections returns connections touching any service of the project.
+// aliveIn matches live (not soft-deleted) services of project $1.
+const aliveIn = `(SELECT "id" FROM "Service" WHERE "projectId" = $1 AND "deletedAt" IS NULL)`
+
+// alive matches every live service.
+const alive = `(SELECT "id" FROM "Service" WHERE "deletedAt" IS NULL)`
+
+// ListProjectConnections returns connections that touch the project and whose
+// two services both still exist.
 func (s *Store) ListProjectConnections(ctx context.Context, projectID string) ([]ServiceConnection, error) {
 	rows, err := s.db.Query(ctx,
 		`SELECT `+connCols+` FROM "ServiceConnection"
-		 WHERE "sourceId" IN (SELECT "id" FROM "Service" WHERE "projectId" = $1)
-		    OR "targetId" IN (SELECT "id" FROM "Service" WHERE "projectId" = $1)
+		 WHERE ("sourceId" IN `+aliveIn+` OR "targetId" IN `+aliveIn+`)
+		   AND "sourceId" IN `+alive+` AND "targetId" IN `+alive+`
 		 ORDER BY "createdAt" ASC`, projectID)
 	return collect(rows, err, scanConnection)
 }
@@ -40,7 +47,8 @@ func (s *Store) GetConnectionForOwner(ctx context.Context, id, ownerUserID strin
 	return scanConnection(s.db.QueryRow(ctx,
 		`SELECT `+connCols+` FROM "ServiceConnection"
 		 WHERE "id" = $1 AND "sourceId" IN (
-		   SELECT s."id" FROM "Service" s JOIN "Project" p ON p."id" = s."projectId" WHERE p."ownerUserId" = $2)`,
+		   SELECT s."id" FROM "Service" s JOIN "Project" p ON p."id" = s."projectId"
+		   WHERE p."ownerUserId" = $2 AND s."deletedAt" IS NULL)`,
 		id, ownerUserID))
 }
 
@@ -49,11 +57,12 @@ func (s *Store) DeleteConnection(ctx context.Context, id string) error {
 	return err
 }
 
-// ListSourceEdges returns [source, target] pairs whose source is in the project.
+// ListSourceEdges returns [source, target] pairs whose source is in the
+// project and whose two services both still exist.
 func (s *Store) ListSourceEdges(ctx context.Context, projectID string) ([][2]string, error) {
 	rows, err := s.db.Query(ctx,
 		`SELECT "sourceId", "targetId" FROM "ServiceConnection"
-		 WHERE "sourceId" IN (SELECT "id" FROM "Service" WHERE "projectId" = $1)
+		 WHERE "sourceId" IN `+aliveIn+` AND "targetId" IN `+alive+`
 		 ORDER BY "createdAt" ASC`, projectID)
 	return collect(rows, err, func(row pgx.Row) ([2]string, error) {
 		var e [2]string

@@ -261,3 +261,22 @@ func (s *Store) GetJob(ctx context.Context, id string) (Job, error) {
 			&j.ServiceID, &j.ServiceType, &j.RepoURL, &j.Branch, &j.ProjectID)
 	return j, noRows(err)
 }
+
+// ownedByCaller limits deployments to live services in projects owned by $2.
+const ownedByCaller = `"serviceId" IN (
+	SELECT s."id" FROM "Service" s JOIN "Project" p ON p."id" = s."projectId"
+	WHERE p."ownerUserId" = $2 AND s."deletedAt" IS NULL)`
+
+func (s *Store) GetDeploymentForOwner(ctx context.Context, id, ownerUserID string) (Deployment, error) {
+	return scanDeployment(s.db.QueryRow(ctx,
+		`SELECT `+deploymentCols+` FROM "Deployment" WHERE "id" = $1 AND `+ownedByCaller, id, ownerUserID))
+}
+
+// ListDeploymentsForOwner returns the caller's 50 newest deployments, optionally for one service.
+func (s *Store) ListDeploymentsForOwner(ctx context.Context, ownerUserID, serviceID string) ([]Deployment, error) {
+	rows, err := s.db.Query(ctx,
+		`SELECT `+deploymentCols+` FROM "Deployment"
+		 WHERE ($1 = '' OR "serviceId" = $1) AND `+ownedByCaller+`
+		 ORDER BY "createdAt" DESC LIMIT 50`, serviceID, ownerUserID)
+	return collect(rows, err, scanDeployment)
+}

@@ -72,3 +72,15 @@ func (s *Store) EnvMap(ctx context.Context, serviceID string) (map[string]string
 	}
 	return m, nil
 }
+
+// ListUnencryptedEnvVars returns env vars still stored in plain text.
+func (s *Store) ListUnencryptedEnvVars(ctx context.Context) ([]EnvVar, error) {
+	rows, err := s.db.Query(ctx,
+		`SELECT `+envCols+` FROM "EnvVar" WHERE "value" NOT LIKE 'enc:v1:%' ORDER BY "createdAt"`)
+	return collect(rows, err, scanEnvVar)
+}
+
+func (s *Store) SetEnvVarValue(ctx context.Context, id, value string) error {
+	_, err := s.db.Exec(ctx, `UPDATE "EnvVar" SET "value" = $2 WHERE "id" = $1`, id, value)
+	return err
+}

@@ -51,6 +51,7 @@ type Server struct {
 	authLimit    *ipLimiter // register, login
 	refreshLimit *ipLimiter // refresh, logout
 	streamLimit  *ipLimiter // stream-ticket, stream (its own bucket, see routes)
+	streams      *streamSlots
 }
 
 // newServer builds the Server with its two rate limiters (defaults applied).
@@ -69,7 +70,8 @@ func newServer(d Deps) *Server {
 	return &Server{Deps: d,
 		authLimit:    newIPLimiter(strict, strictEvery),
 		refreshLimit: newIPLimiter(refresh, refreshEvery),
-		streamLimit:  newIPLimiter(streamBurst, streamEvery)}
+		streamLimit:  newIPLimiter(streamBurst, streamEvery),
+		streams:      newStreamSlots(d.Stream)}
 }
 
 func NewHandler(d Deps) http.Handler {

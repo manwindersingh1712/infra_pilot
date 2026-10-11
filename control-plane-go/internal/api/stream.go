@@ -1,12 +1,14 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"infrapilot/internal/logs"
@@ -21,6 +23,20 @@ type StreamConfig struct {
 	// Heartbeat is the interval between ": ping" comment lines that keep
 	// proxies from closing an idle stream. Default 15 s.
 	Heartbeat time.Duration
+	// MaxPerUser and MaxPerDeployment cap concurrent streams (429
+	// too_many_streams beyond them). Defaults 5 and 20. In memory, so they
+	// hold for a single API instance (spec §12).
+	MaxPerUser, MaxPerDeployment int
+	// MaxDuration ends a stream after this long with an "end" event; the
+	// client asks for a new ticket and reconnects. Default 1 h.
+	MaxDuration time.Duration
+	// WriteTimeout is the deadline for each write to a stream. A client that
+	// stops reading is dropped after this long. Default 10 s.
+	WriteTimeout time.Duration
+	// Shutdown, when cancelled, ends every open stream (with an "end" event)
+	// and makes new ones answer 503. cmd/api passes a context that is
+	// cancelled when shutdown begins (Task 14). Nil means never.
+	Shutdown context.Context
 }
 
 const (
@@ -29,7 +45,70 @@ const (
 	defaultHeartbeat   = 15 * time.Second
 	// historyEntries is the most lines the first "history" event carries.
 	historyEntries = 100
+
+	defaultMaxPerUser       = 5
+	defaultMaxPerDeployment = 20
+	defaultMaxDuration      = time.Hour
+	defaultWriteTimeout     = 10 * time.Second
 )
+
+// streamSlots counts open streams per user and per deployment.
+type streamSlots struct {
+	mu                           sync.Mutex
+	perUser, perDep              map[string]int
+	maxPerUser, maxPerDeployment int
+}
+
+func newStreamSlots(c StreamConfig) *streamSlots {
+	u, d := c.MaxPerUser, c.MaxPerDeployment
+	if u <= 0 {
+		u = defaultMaxPerUser
+	}
+	if d <= 0 {
+		d = defaultMaxPerDeployment
+	}
+	return &streamSlots{perUser: map[string]int{}, perDep: map[string]int{}, maxPerUser: u, maxPerDeployment: d}
+}
+
+// acquire takes a slot for (user, deployment) unless either cap is reached.
+func (l *streamSlots) acquire(uid, dep string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.perUser[uid] >= l.maxPerUser || l.perDep[dep] >= l.maxPerDeployment {
+		return false
+	}
+	l.perUser[uid]++
+	l.perDep[dep]++
+	return true
+}
+
+func (l *streamSlots) release(uid, dep string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for m, k := range map[*map[string]int]string{&l.perUser: uid, &l.perDep: dep} {
+		if (*m)[k] <= 1 {
+			delete(*m, k)
+		} else {
+			(*m)[k]--
+		}
+	}
+}
+
+func (l *streamSlots) total() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	n := 0
+	for _, c := range l.perUser {
+		n += c
+	}
+	return n
+}
+
+func (l *streamSlots) forDeployment(dep string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.perDep[dep]
+}
 
 type streamMeta struct {
 	Source     string `json:"source"`
@@ -66,6 +145,11 @@ func (s *Server) streamFailed(w http.ResponseWriter, r *http.Request, ticket str
 //
 // The ticket is in the URL, so nothing on this route logs or echoes the query.
 func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request) {
+	sd := s.Stream.Shutdown
+	if sd != nil && sd.Err() != nil { // closing down: refuse before spending the ticket
+		writeError(w, http.StatusServiceUnavailable, "unavailable")
+		return
+	}
 	ticket := r.URL.Query().Get("ticket")
 	value, err := s.Tickets.Redeem(r.Context(), ticket)
 	if err != nil {
@@ -95,7 +179,24 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := r.Context()
+	if !s.streams.acquire(uid, id) {
+		w.Header().Set("Retry-After", "5")
+		writeError(w, http.StatusTooManyRequests, "too_many_streams")
+		return
+	}
+	defer s.streams.release(uid, id)
+
+	// The stream ends when the client goes away, after MaxDuration, or when the
+	// server shuts down; the Redis subscription is tied to this context.
+	maxDur := s.Stream.MaxDuration
+	if maxDur <= 0 {
+		maxDur = defaultMaxDuration
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), maxDur)
+	defer cancel()
+	if sd != nil {
+		defer context.AfterFunc(sd, cancel)()
+	}
 	// Subscribe before reading history so lines written in between are not
 	// lost; the UI drops duplicates (same timestamp and message).
 	live, stop, err := s.Live.Subscribe(ctx, id)
@@ -116,7 +217,26 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request) {
 	h.Set("X-Accel-Buffering", "no") // nginx: do not buffer the stream
 	w.WriteHeader(http.StatusOK)
 	rc := http.NewResponseController(w)
+	// Per-request write deadline, set before every write. The http.Server's
+	// WriteTimeout covers a whole response and would kill a long-lived stream
+	// (Task 14: leave WriteTimeout set for the other routes; this overrides it
+	// for this request). A client that stops reading fails the write after
+	// WriteTimeout instead of pinning the goroutine and the subscription.
+	wt := s.Stream.WriteTimeout
+	if wt <= 0 {
+		wt = defaultWriteTimeout
+	}
+	defer func() { _ = rc.SetWriteDeadline(time.Time{}) }()
+	arm := func() error {
+		if err := rc.SetWriteDeadline(time.Now().Add(wt)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+			return err
+		}
+		return nil
+	}
 	send := func(event string, v any) error {
+		if err := arm(); err != nil {
+			return err
+		}
 		if err := writeEvent(w, event, v); err != nil {
 			return err
 		}
@@ -139,12 +259,22 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-ctx.Done():
+			switch {
+			case r.Context().Err() != nil: // client gone: nothing to tell it
+			case sd != nil && sd.Err() != nil:
+				_ = send("end", map[string]string{"reason": "shutdown"})
+			default:
+				_ = send("end", map[string]string{"reason": "max_duration"})
+			}
 			return
 		case e, ok := <-live:
 			if !ok || send("log", capEntry(e)) != nil {
 				return
 			}
 		case <-ping.C:
+			if arm() != nil {
+				return
+			}
 			if _, err := io.WriteString(w, ": ping\n\n"); err != nil || rc.Flush() != nil {
 				return
 			}

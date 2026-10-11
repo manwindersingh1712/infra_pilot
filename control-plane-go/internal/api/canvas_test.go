@@ -14,7 +14,6 @@ type canvasResp struct {
 	Services []struct {
 		ID              string  `json:"id"`
 		Name            string  `json:"name"`
-		RepoURL         *string `json:"repoUrl"`
 		PositionX       float64 `json:"positionX"`
 		DeploymentCount int     `json:"deploymentCount"`
 	} `json:"services"`
@@ -128,28 +127,21 @@ func TestCanvasEmptyProjectIsEmptyArrays(t *testing.T) {
 	expectBody(t, rec, `{"connections":[],"services":[]}`)
 }
 
-func TestCanvasMasksRepoURLCredentials(t *testing.T) {
+// The canvas never carries a repo URL (the UI does not read it); URL masking
+// is covered by TestRepoURLCredentialsMasked on the services endpoints.
+func TestCanvasHasNoRepoURL(t *testing.T) {
 	hs := newHarness(t)
 	ctx := context.Background()
 	f := testutil.Seed(t, hs.st, store.TypeNodejs)
 	raw := "https://tok123@github.com/x/y"
-	svc, err := hs.st.CreateService(ctx, store.NewService{ProjectID: f.ProjectID, Name: "private", ServiceType: store.TypeNodejs, RepoURL: &raw, Branch: "main"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	q := "https://h/x?token=ghp_Q"
-	if _, err := hs.st.CreateService(ctx, store.NewService{ProjectID: f.ProjectID, Name: "query", ServiceType: store.TypeNodejs, RepoURL: &q, Branch: "main"}); err != nil {
+	if _, err := hs.st.CreateService(ctx, store.NewService{ProjectID: f.ProjectID, Name: "private", ServiceType: store.TypeNodejs, RepoURL: &raw, Branch: "main"}); err != nil {
 		t.Fatal(err)
 	}
 	rec := hs.do("GET", "/projects/"+f.ProjectID+"/canvas", hs.token(f.UserID), nil)
 	expectStatus(t, rec, 200)
 	body := rec.Body.String()
-	if strings.Contains(body, "tok123") || strings.Contains(body, "ghp_Q") || !strings.Contains(body, "https://****@github.com/x/y") {
-		t.Fatalf("canvas leaks or lost the url: %s", body)
-	}
-	stored, err := hs.st.GetService(ctx, svc.ID)
-	if err != nil || stored.RepoURL == nil || *stored.RepoURL != raw {
-		t.Fatalf("store row must stay raw: %+v %v", stored, err)
+	if strings.Contains(body, "repoUrl") || strings.Contains(body, "tok123") || strings.Contains(body, "github.com") {
+		t.Fatalf("canvas carries a repo url: %s", body)
 	}
 }
 

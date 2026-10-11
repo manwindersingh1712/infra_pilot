@@ -103,7 +103,6 @@ type CanvasService struct {
 	ID              string  `json:"id"`
 	Name            string  `json:"name"`
 	ServiceType     string  `json:"serviceType"`
-	RepoURL         *string `json:"repoUrl"` // raw; API handlers pass it through publicService
 	PositionX       float64 `json:"positionX"`
 	PositionY       float64 `json:"positionY"`
 	DeploymentCount int     `json:"deploymentCount"`
@@ -111,13 +110,13 @@ type CanvasService struct {
 
 func (s *Store) ListCanvasServices(ctx context.Context, projectID string) ([]CanvasService, error) {
 	rows, err := s.db.Query(ctx,
-		`SELECT s."id", s."name", s."serviceType"::text, s."repoUrl", s."positionX", s."positionY",
+		`SELECT s."id", s."name", s."serviceType"::text, s."positionX", s."positionY",
 		        (SELECT count(*) FROM "Deployment" d WHERE d."serviceId" = s."id")::int
 		 FROM "Service" s WHERE s."projectId" = $1 AND s."deletedAt" IS NULL
 		 ORDER BY s."createdAt" ASC`, projectID)
 	return collect(rows, err, func(row pgx.Row) (CanvasService, error) {
 		var c CanvasService
-		err := row.Scan(&c.ID, &c.Name, &c.ServiceType, &c.RepoURL, &c.PositionX, &c.PositionY, &c.DeploymentCount)
+		err := row.Scan(&c.ID, &c.Name, &c.ServiceType, &c.PositionX, &c.PositionY, &c.DeploymentCount)
 		return c, err
 	})
 }

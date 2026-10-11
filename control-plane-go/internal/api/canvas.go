@@ -17,13 +17,6 @@ type canvasConnection struct {
 	Label    *string `json:"label"`
 }
 
-// publicCanvasService runs the canvas view's repo URL through publicService,
-// the only way a service's URL may leave the API.
-func publicCanvasService(c store.CanvasService) store.CanvasService {
-	c.RepoURL = publicService(store.Service{RepoURL: c.RepoURL}).RepoURL
-	return c
-}
-
 // ownedProjectID returns the path's project id after the ownership check; it
 // writes 404 "Project not found" (same for malformed, missing and foreign ids).
 func (s *Server) ownedProjectID(w http.ResponseWriter, r *http.Request) (string, bool) {
@@ -40,9 +33,6 @@ func (s *Server) getCanvas(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.internalError(w, r, err)
 		return
-	}
-	for i := range services {
-		services[i] = publicCanvasService(services[i])
 	}
 	conns, err := s.Store.ListProjectConnections(r.Context(), id)
 	if err != nil {

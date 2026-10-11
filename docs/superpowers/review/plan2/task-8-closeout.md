@@ -1,0 +1,5 @@
+# Task 8 close-out (orchestrator)
+
+Round 1 reviews of 058321e..ce69f7f: Security (1 medium reserved managed-DB env keys, 5 low), Staff (approve; 1 medium = same item, 4 low), Verifier (pass, 96/96 end-to-end checks), Product (approve; UI items to Tasks 15/17). Fix round 1: 6d83d2f, f91a9b8, 1621a0d, f6c9e78, a1798a0, 77f8daf. Round 2: Security (0 medium, 1 low, 1 info), Staff (approve, 17/17 mutants killed, 3 low), Verifier (pass; worker regression table 41 keys, 0 differences; dev DB untouched). Records: task-8-{security,staff,verifier,product}.md and task-8-round2-{security,staff,verifier}.md. Open items and carry-forwards (Tasks 10, 12, 15/17, Plan 3, release notes, cutover checklist) are in backlog.md.
+
+Rules carried to Tasks 9-12: use `pathID(r)` for every `{id}`; every response containing a service goes through `publicService`; owner-scoped store methods only; foreign, missing, invalid and soft-deleted ids all answer identically; create test users with `hs.st.CreateUser` + `hs.token`; run Go tests with `-p 2` locally.

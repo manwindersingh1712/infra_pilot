@@ -187,11 +187,15 @@ var envKeyRE = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*$`)
 
 const maxEnvKeyLen = 256
 
+// ValidEnvKey is the one rule for an env var name: the API checks it on write
+// and validateEnv checks it again before the worker writes the env file.
+func ValidEnvKey(k string) bool { return len(k) <= maxEnvKeyLen && envKeyRE.MatchString(k) }
+
 // validateEnv keeps the env file well-formed: one KEY=VALUE per line. Errors
 // name the key only; values can be secrets.
 func validateEnv(env map[string]string) error {
 	for _, k := range sortedKeys(env) {
-		if len(k) > maxEnvKeyLen || !envKeyRE.MatchString(k) {
+		if !ValidEnvKey(k) {
 			return fmt.Errorf("env var %q: name must match %s and be at most %d bytes", k, envKeyRE, maxEnvKeyLen)
 		}
 		v := env[k]

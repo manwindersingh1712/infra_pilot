@@ -500,8 +500,14 @@ func TestEnvKeyCharset(t *testing.T) {
 		if err := validateEnv(map[string]string{k: "v"}); err != nil {
 			t.Errorf("key %q must be accepted: %v", k, err)
 		}
+		if !ValidEnvKey(k) { // the same rule the API applies on write
+			t.Errorf("ValidEnvKey(%q) = false", k)
+		}
 	}
 	for _, k := range reject {
+		if ValidEnvKey(k) {
+			t.Errorf("ValidEnvKey(%q) = true", k)
+		}
 		err := validateEnv(map[string]string{k: "secretvalue"})
 		if err == nil {
 			t.Errorf("key %q must be rejected", k)

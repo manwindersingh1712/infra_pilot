@@ -3,25 +3,19 @@ package api
 import (
 	"errors"
 	"net/http"
-	"regexp"
 	"strings"
 	"unicode/utf8"
 
 	"infrapilot/internal/gitsrc"
+	"infrapilot/internal/runtime"
 	"infrapilot/internal/store"
 )
 
 const (
 	maskedValue  = "********"
-	maxEnvKeyLen = 256
 	maxEnvValue  = 32 << 10 // bytes; a PEM key is a few KiB
 	maxLegacyKey = 1024     // longest key a delete will look up (Node-era rows were unchecked)
 )
-
-// envKeyPattern is what the worker accepts for a variable name (the 2026-10-10
-// "relax env-var KEY validation" ruling): the API must not store a key the
-// worker would then refuse to start the container with.
-var envKeyPattern = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*$`)
 
 // publicService is the only way a service leaves the API: the repo URL goes
 // through gitsrc.RedactURL so a token in the userinfo or query never reaches a
@@ -247,7 +241,7 @@ func (s *Server) setServiceEnv(w http.ResponseWriter, r *http.Request) {
 	// line break would not deploy, and a NUL byte would make Postgres fail
 	// (500). The masked placeholder is refused so a UI that echoes a listed
 	// value back cannot overwrite a real secret.
-	if len(body.Key) > maxEnvKeyLen || !envKeyPattern.MatchString(body.Key) ||
+	if !runtime.ValidEnvKey(body.Key) ||
 		len(*body.Value) > maxEnvValue || !utf8.ValidString(*body.Value) ||
 		strings.ContainsAny(*body.Value, "\r\n\x00") || *body.Value == maskedValue {
 		writeError(w, http.StatusBadRequest, "invalid_env_var")

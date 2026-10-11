@@ -194,3 +194,9 @@ Low-severity and deferred findings. Each line: date, task, finding ID, severity,
 - VER-1 (low, pre-existing, possible CI flake): `TestRunStartsEventsUntilCancelled` (`internal/worker/outbox/publisher_test.go:469`, `status = pending`) failed once under CPU load and passed on idle re-runs. Make the test poll longer / wait on a condition instead of a fixed window.
 - SEC-1 (low, Task 11): the SSE handler must compare the exact expected `user:deployment` ticket value for the URL's deployment, re-check ownership, and have a wrong-deployment test; map non-`ErrInvalid` Redis errors to 5xx (not 401); rate limit the SSE route.
 - STAFF-2 (low): the expiry test uses a fixed 150 ms sleep (can only pass wrongly, never fail wrongly); leave.
+
+## Plan 2 Task 4 (carry-forwards; fix round 1 handles gitleaks entry, STAFF-1 tests, NewSigner empty secret)
+- Task 5 (middleware): map every `auth.Verify` error to a fixed 401 body, never echo `err.Error()` (SEC-2). Config must reject an empty/dev-default `JWT_SECRET` in production (STAFF-3). Tests in other packages need to control the clock (unexported `now` in auth); the refresh handler needs an exported expired-token sentinel so it need not import jwt.
+- Task 6 (auth endpoints): login compares against a dummy bcrypt hash for unknown emails (SEC-3 timing); register returns 400 for passwords over 72 bytes, not 500 (STAFF-2; Node silently truncated); tests for refresh rotation, reuse of a revoked token and expiry (STAFF-4); refresh TTL must match the store's `expiresAt`.
+- SEC-4 (info): access tokens carry no `iss`/`aud`; matters only if the secret is ever shared with another service.
+- Verifier: the check of a real Node-issued dev token against `auth.Verify` was NOT run (permission denied for reading the token + Node secret). The unit test covers a Node-style no-`exp` token. Run it only with the user's go-ahead (done properly at the Task 18 comparison).

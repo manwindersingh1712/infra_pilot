@@ -3,6 +3,8 @@ package tickets_test
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -53,5 +55,53 @@ func TestIssueAndRedeemOnce(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 	if _, err := short.Redeem(ctx, expiring); !errors.Is(err, tickets.ErrInvalid) {
 		t.Fatalf("expired ticket err = %v", err)
+	}
+}
+
+func TestConcurrentRedeemExactlyOneWins(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test: needs Docker")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	ctr, err := tcredis.Run(ctx, "redis:7-alpine")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ctr.Terminate(context.Background()) })
+	url, _ := ctr.ConnectionString(ctx)
+	s, err := tickets.New(url, 60*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	ticket, err := s.Issue(ctx, "user1:dep1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const n = 32
+	var wins, invalid, other atomic.Int32
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			switch _, err := s.Redeem(ctx, ticket); {
+			case err == nil:
+				wins.Add(1)
+			case errors.Is(err, tickets.ErrInvalid):
+				invalid.Add(1)
+			default:
+				other.Add(1)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	if wins.Load() != 1 || invalid.Load() != n-1 || other.Load() != 0 {
+		t.Fatalf("wins=%d invalid=%d other=%d, want 1/%d/0", wins.Load(), invalid.Load(), other.Load(), n-1)
 	}
 }

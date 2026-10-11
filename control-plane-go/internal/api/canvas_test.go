@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -280,6 +281,64 @@ func TestBulkCanvasUpdate(t *testing.T) {
 	expectStatus(t, rec, 404)
 	expectBody(t, rec, `{"error":"Project not found"}`)
 	expectStatus(t, hs.do("PUT", "/projects/a%00b/canvas", tok, map[string]any{"services": []any{}}), 404)
+}
+
+func TestBulkCanvasUpdateCapsEntries(t *testing.T) {
+	hs := newHarness(t)
+	f := testutil.Seed(t, hs.st, store.TypeNodejs)
+	tok := hs.token(f.UserID)
+	url := "/projects/" + f.ProjectID + "/canvas"
+	entries := func(n int) []map[string]any {
+		out := make([]map[string]any, n)
+		for i := range out {
+			out[i] = map[string]any{"id": fmt.Sprintf("unknown%d", i), "positionX": 1, "positionY": 1}
+		}
+		return out
+	}
+	expectStatus(t, hs.do("PUT", url, tok, map[string]any{"services": entries(500)}), 200)
+	rec := hs.do("PUT", url, tok, map[string]any{"services": entries(501)})
+	expectStatus(t, rec, 400)
+	expectBody(t, rec, `{"error":"invalid_request"}`)
+}
+
+// SEC-2 / STAFF-4: the bulk update is one transaction. A trigger that raises
+// on the third service row (marker x = 777) must undo the first two updates.
+func TestBulkCanvasUpdateIsAtomic(t *testing.T) {
+	hs := newHarness(t)
+	ctx := context.Background()
+	f := testutil.Seed(t, hs.st, store.TypeNodejs)
+	mk := func(name string) store.Service {
+		s, err := hs.st.CreateService(ctx, store.NewService{ProjectID: f.ProjectID, Name: name, ServiceType: "redis", Branch: "main"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	b, c := mk("b"), mk("c")
+	for _, q := range []string{
+		`CREATE FUNCTION test_fail_position() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'position update failed'; END $$`,
+		`CREATE TRIGGER test_fail_position BEFORE UPDATE ON "Service" FOR EACH ROW WHEN (NEW."positionX" = 777) EXECUTE FUNCTION test_fail_position()`,
+	} {
+		if _, err := pool.Exec(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DROP TRIGGER IF EXISTS test_fail_position ON "Service"`)
+		_, _ = pool.Exec(context.Background(), `DROP FUNCTION IF EXISTS test_fail_position()`)
+	})
+
+	rec := hs.do("PUT", "/projects/"+f.ProjectID+"/canvas", hs.token(f.UserID), map[string]any{"services": []map[string]any{
+		{"id": f.ServiceID, "positionX": 11, "positionY": 11},
+		{"id": b.ID, "positionX": 22, "positionY": 22},
+		{"id": c.ID, "positionX": 777, "positionY": 33},
+	}})
+	expectStatus(t, rec, 500)
+	for _, id := range []string{f.ServiceID, b.ID, c.ID} {
+		if s, _ := hs.st.GetService(ctx, id); s.PositionX != 0 || s.PositionY != 0 {
+			t.Fatalf("service %s kept a partial update: %+v", id, s)
+		}
+	}
 }
 
 func TestAutoLayout(t *testing.T) {

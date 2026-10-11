@@ -55,6 +55,9 @@ func validCoord(v float64) bool {
 	return !math.IsNaN(v) && !math.IsInf(v, 0) && math.Abs(v) <= maxCoord
 }
 
+// maxBulkPositions caps one bulk update; it bounds the transaction's size.
+const maxBulkPositions = 500
+
 // positionInput is a position as sent by a client; the pointers tell a missing
 // coordinate from zero.
 type positionInput struct {
@@ -75,7 +78,7 @@ func (s *Server) updateCanvas(w http.ResponseWriter, r *http.Request) {
 		writeDecodeError(w, err, "invalid_request")
 		return
 	}
-	if body.Services == nil {
+	if body.Services == nil || len(body.Services) > maxBulkPositions {
 		writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}

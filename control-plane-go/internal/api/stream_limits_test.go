@@ -193,7 +193,7 @@ func TestStreamWriteDeadlineDropsStalledClient(t *testing.T) {
 // a 429 never spends a ticket.
 func TestStreamRouteRateLimitDoesNotSpendTicket(t *testing.T) {
 	sf := newStreamFixture(t, func(d *Deps) { d.Stream.Burst = 2 })
-	tk := sf.ticket() // issued in-process (its own client address), not through the real socket
+	tk := sf.ticket()        // issued in-process (its own client address), not through the real socket
 	for i := 0; i < 2; i++ { // both tokens of the socket client's bucket
 		if code, _ := sf.get(t, sf.dep.ID, "garbage"); code != 401 {
 			t.Fatalf("garbage ticket status %d", code)

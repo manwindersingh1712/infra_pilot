@@ -104,7 +104,11 @@ type harness struct {
 	metrics *metrics.API
 }
 
-func newHarness(t *testing.T) *harness {
+func newHarness(t *testing.T) *harness { return newHarnessWith(t) }
+
+// newHarnessWith builds a harness and lets each option adjust the Deps before
+// the handler is constructed (for example a small AuthBurst for limiter tests).
+func newHarnessWith(t *testing.T, opts ...func(*Deps)) *harness {
 	t.Helper()
 	st := store.New(testutil.NeedDB(t, pool))
 	box, err := secrets.New(bytes.Repeat([]byte{3}, 32))
@@ -120,12 +124,16 @@ func newHarness(t *testing.T) *harness {
 		hot: &fakeHot{entries: map[string][]logs.Entry{}}, live: &fakeLive{ch: make(chan logs.Entry, 8)},
 		redis: &fakePinger{}, tickets: &fakeTickets{m: map[string]string{}}, metrics: metrics.NewAPI(),
 	}
-	hs.h = NewHandler(Deps{
+	deps := Deps{
 		Store: st, Redis: hs.redis, Signer: hs.signer, Secrets: box,
 		Logs: &logs.Aggregator{Hot: hs.hot, Warm: emptyWarm{}, Now: time.Now},
 		Live: hs.live, Tickets: hs.tickets, Metrics: hs.metrics, Log: slog.New(slog.DiscardHandler),
 		CORSOrigins: []string{"http://localhost:5173"}, DevLogin: true, AuthBurst: 1000,
-	})
+	}
+	for _, opt := range opts {
+		opt(&deps)
+	}
+	hs.h = NewHandler(deps)
 	return hs
 }
 
@@ -148,10 +156,31 @@ func (hs *harness) do(method, path, token string, body any) *httptest.ResponseRe
 		}
 		rdr = bytes.NewReader(b)
 	}
-	req := httptest.NewRequest(method, path, rdr)
+	return hs.doRaw(method, path, token, rdr, nil)
+}
+
+// doRaw sends an arbitrary body (malformed JSON, oversize, trailing data) with
+// extra request headers (Origin, X-Request-ID, Authorization, ...). A header in
+// hdr overrides the defaults, so hdr["Authorization"] beats token.
+func (hs *harness) doRaw(method, path, token string, body io.Reader, hdr map[string]string) *httptest.ResponseRecorder {
+	hs.t.Helper()
+	return hs.doFrom("192.0.2.1:1234", method, path, token, body, hdr)
+}
+
+// doFrom is doRaw with a chosen RemoteAddr (host:port), for per-IP limiter tests.
+func (hs *harness) doFrom(remoteAddr, method, path, token string, body io.Reader, hdr map[string]string) *httptest.ResponseRecorder {
+	hs.t.Helper()
+	if body == nil {
+		body = http.NoBody
+	}
+	req := httptest.NewRequest(method, path, body)
+	req.RemoteAddr = remoteAddr
 	req.Header.Set("Content-Type", "application/json")
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	for k, v := range hdr {
+		req.Header.Set(k, v)
 	}
 	rec := httptest.NewRecorder()
 	hs.h.ServeHTTP(rec, req)

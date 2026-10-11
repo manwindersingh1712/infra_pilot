@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"infrapilot/internal/auth"
 	"infrapilot/internal/metrics"
@@ -340,5 +341,45 @@ func TestRecoverRepanicsErrAbortHandler(t *testing.T) {
 	}
 	if rec.Body.Len() != 0 {
 		t.Fatalf("no body may be written for an aborted handler, got %q", rec.Body.String())
+	}
+}
+
+func TestHarnessSendsHeadersThroughFullHandler(t *testing.T) {
+	hs := newHarnessWith(t, func(d *Deps) { d.AuthBurst = 2 })
+	rec := hs.doRaw("GET", "/healthz", "", nil, map[string]string{
+		"Origin": "http://localhost:5173", "X-Request-ID": "trace-42",
+	})
+	expectStatus(t, rec, 200)
+	if rec.Header().Get("X-Request-ID") != "trace-42" ||
+		rec.Header().Get("Access-Control-Allow-Origin") != "http://localhost:5173" {
+		t.Fatalf("headers %v", rec.Header())
+	}
+	rec = hs.doFrom("198.51.100.7:9", "GET", "/healthz", "", strings.NewReader("{not json"), map[string]string{"Origin": "https://evil.test"})
+	expectStatus(t, rec, 200)
+	if rec.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Fatal("unlisted origin got ACAO")
+	}
+}
+
+func TestRateLimitRefillsAfterSixSeconds(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	l := newIPLimiter(2)
+	l.now = func() time.Time { return now }
+	if !l.allow("10.0.0.1") || !l.allow("10.0.0.1") {
+		t.Fatal("burst of 2 must pass")
+	}
+	if l.allow("10.0.0.1") {
+		t.Fatal("third request inside the burst window must be limited")
+	}
+	now = now.Add(5 * time.Second)
+	if l.allow("10.0.0.1") {
+		t.Fatal("no token after 5s")
+	}
+	now = now.Add(1 * time.Second)
+	if !l.allow("10.0.0.1") {
+		t.Fatal("one token after 6s")
+	}
+	if l.allow("10.0.0.1") {
+		t.Fatal("only one token refilled")
 	}
 }

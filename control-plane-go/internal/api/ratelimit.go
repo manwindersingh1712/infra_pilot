@@ -16,6 +16,7 @@ type ipLimiter struct {
 	burst   int
 	clients map[string]*client
 	pruned  time.Time
+	now     func() time.Time // injectable for tests
 }
 
 type client struct {
@@ -24,13 +25,13 @@ type client struct {
 }
 
 func newIPLimiter(burst int) *ipLimiter {
-	return &ipLimiter{burst: burst, clients: map[string]*client{}, pruned: time.Now()}
+	return &ipLimiter{burst: burst, clients: map[string]*client{}, pruned: time.Now(), now: time.Now}
 }
 
 func (l *ipLimiter) allow(ip string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	now := time.Now()
+	now := l.now()
 	if now.Sub(l.pruned) > time.Minute {
 		for k, c := range l.clients {
 			if now.Sub(c.seen) > 10*time.Minute {
@@ -45,7 +46,7 @@ func (l *ipLimiter) allow(ip string) bool {
 		l.clients[ip] = c
 	}
 	c.seen = now
-	return c.lim.Allow()
+	return c.lim.AllowN(now, 1)
 }
 
 // wrap rejects requests over the limit with 429. The client IP is the TCP

@@ -110,3 +110,22 @@ type OutboxEvent struct {
 	Payload  []byte
 	Attempts int
 }
+
+// Env var names the worker generates for a managed service's password. The
+// env API refuses to write or delete them (see ReservedEnvKey).
+const (
+	RedisPasswordEnv = "REDIS_PASSWORD"
+	MongoPasswordEnv = "MONGO_INITDB_ROOT_PASSWORD" // #nosec G101 -- an env var name, not a credential
+)
+
+// ReservedEnvKey reports whether key holds the generated password of a managed
+// service of the given type. Non-managed services may use the same names.
+func ReservedEnvKey(serviceType, key string) bool {
+	switch serviceType {
+	case TypeRedis:
+		return key == RedisPasswordEnv
+	case TypeMongoDB:
+		return key == MongoPasswordEnv
+	}
+	return false
+}

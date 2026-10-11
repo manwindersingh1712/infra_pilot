@@ -468,3 +468,38 @@ func TestConcurrentDeletesQueueOneTeardown(t *testing.T) {
 		t.Fatalf("codes %v, outbox %v", got, outboxEvents(t))
 	}
 }
+
+// SEC-1 / STAFF-1: the worker generates the managed password and keeps it in
+// the env table; the API must not let a caller overwrite or drop it.
+func TestManagedPasswordKeysAreReserved(t *testing.T) {
+	hs := newHarness(t)
+	ctx := context.Background()
+	for _, c := range []struct{ typ, key string }{
+		{store.TypeRedis, "REDIS_PASSWORD"}, {store.TypeMongoDB, "MONGO_INITDB_ROOT_PASSWORD"},
+	} {
+		f := testutil.Seed(t, hs.st, c.typ)
+		tok := hs.token(f.UserID)
+		base := "/services/" + f.ServiceID + "/env"
+		if _, err := hs.st.UpsertEnvVar(ctx, f.ServiceID, c.key, "generated"); err != nil {
+			t.Fatal(err)
+		}
+		rec := hs.do("POST", base, tok, map[string]any{"key": c.key, "value": "attacker"})
+		expectStatus(t, rec, 400)
+		expectBody(t, rec, `{"error":"reserved_env_var"}`)
+		rec = hs.do("DELETE", base+"/"+c.key, tok, nil)
+		expectStatus(t, rec, 400)
+		expectBody(t, rec, `{"error":"reserved_env_var"}`)
+		if raw, _ := hs.st.EnvMap(ctx, f.ServiceID); raw[c.key] != "generated" {
+			t.Fatalf("%s: managed password changed: %q", c.typ, raw[c.key])
+		}
+		// Other keys on a managed service stay writable.
+		expectStatus(t, hs.do("POST", base, tok, map[string]any{"key": "OTHER", "value": "v"}), 200)
+	}
+	// The same names are ordinary on a non-managed service.
+	f := testutil.Seed(t, hs.st, store.TypeNodejs)
+	base := "/services/" + f.ServiceID + "/env"
+	for _, key := range []string{"REDIS_PASSWORD", "MONGO_INITDB_ROOT_PASSWORD"} {
+		expectStatus(t, hs.do("POST", base, hs.token(f.UserID), map[string]any{"key": key, "value": "mine"}), 200)
+		expectStatus(t, hs.do("DELETE", base+"/"+key, hs.token(f.UserID), nil), 200)
+	}
+}

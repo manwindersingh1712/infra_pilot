@@ -31,7 +31,7 @@ type ManagedImage struct {
 
 var Managed = map[string]ManagedImage{
 	store.TypeRedis: {
-		Image: "redis:7-alpine", Port: 6379, PasswordEnv: "REDIS_PASSWORD",
+		Image: "redis:7-alpine", Port: 6379, PasswordEnv: store.RedisPasswordEnv,
 		// The password is expanded inside the container, so it never appears
 		// in `docker inspect` output or the host's process list.
 		Cmd:     []string{"sh", "-c", `exec redis-server --dir /data --requirepass "$REDIS_PASSWORD"`},
@@ -42,7 +42,7 @@ var Managed = map[string]ManagedImage{
 		CapAdd: []string{"DAC_OVERRIDE"},
 	},
 	store.TypeMongoDB: { // #nosec G101 -- PasswordEnv is an env var name, not a credential
-		Image: "mongo:7", Port: 27017, PasswordEnv: "MONGO_INITDB_ROOT_PASSWORD",
+		Image: "mongo:7", Port: 27017, PasswordEnv: store.MongoPasswordEnv,
 		Env:     map[string]string{"MONGO_INITDB_ROOT_USERNAME": "admin"},
 		DataDir: "/data/db",
 		Tmpfs:   []string{"/data/configdb"},

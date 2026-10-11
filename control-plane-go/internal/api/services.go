@@ -252,6 +252,10 @@ func (s *Server) setServiceEnv(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if store.ReservedEnvKey(svc.ServiceType, body.Key) {
+		writeError(w, http.StatusBadRequest, "reserved_env_var")
+		return
+	}
 	enc, err := s.Secrets.Encrypt(*body.Value)
 	if err != nil {
 		s.internalError(w, r, err)
@@ -269,6 +273,10 @@ func (s *Server) setServiceEnv(w http.ResponseWriter, r *http.Request) {
 func (s *Server) deleteServiceEnv(w http.ResponseWriter, r *http.Request) {
 	svc, ok := s.ownedService(w, r)
 	if !ok {
+		return
+	}
+	if store.ReservedEnvKey(svc.ServiceType, r.PathValue("key")) {
+		writeError(w, http.StatusBadRequest, "reserved_env_var")
 		return
 	}
 	// Node-era rows may hold keys the write path now refuses, so the delete is

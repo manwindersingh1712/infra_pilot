@@ -494,3 +494,54 @@ func TestDecodeJSONOversizeIs413WithJSONBody(t *testing.T) {
 	expectStatus(t, rec, http.StatusBadRequest)
 	expectBody(t, rec, `{"error":"invalid_request"}`)
 }
+
+func newBareHandler() http.Handler {
+	return NewHandler(Deps{Metrics: metrics.NewAPI(), Log: slog.New(slog.DiscardHandler), CORSOrigins: []string{"http://localhost:5173"}})
+}
+
+func TestSecurityHeadersOnEveryResponse(t *testing.T) {
+	h := newBareHandler()
+	preflight := httptest.NewRequest(http.MethodOptions, "/healthz", nil)
+	preflight.Header.Set("Origin", "http://localhost:5173")
+	preflight.Header.Set("Access-Control-Request-Method", "GET")
+	for name, req := range map[string]*http.Request{
+		"200":       httptest.NewRequest("GET", "/healthz", nil),
+		"404":       httptest.NewRequest("GET", "/nope", nil),
+		"405":       httptest.NewRequest("POST", "/healthz", nil),
+		"preflight": preflight,
+	} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Header().Get("X-Content-Type-Options") != "nosniff" || rec.Header().Get("Cache-Control") != "no-store" {
+			t.Errorf("%s: headers %v", name, rec.Header())
+		}
+	}
+}
+
+func TestMuxNotFoundAndMethodNotAllowedAreJSON(t *testing.T) {
+	h := newBareHandler()
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/nope", nil))
+	expectStatus(t, rec, 404)
+	expectBody(t, rec, `{"error":"not_found"}`)
+	if !strings.HasPrefix(rec.Header().Get("Content-Type"), "application/json") {
+		t.Fatalf("404 Content-Type %q", rec.Header().Get("Content-Type"))
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/healthz", nil))
+	expectStatus(t, rec, 405)
+	expectBody(t, rec, `{"error":"method_not_allowed"}`)
+	if allow := rec.Header().Get("Allow"); !strings.Contains(allow, "GET") {
+		t.Fatalf("405 must keep Allow, got %q", allow)
+	}
+	if !strings.HasPrefix(rec.Header().Get("Content-Type"), "application/json") {
+		t.Fatalf("405 Content-Type %q", rec.Header().Get("Content-Type"))
+	}
+
+	// Matched routes are untouched.
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/healthz", nil))
+	expectStatus(t, rec, 200)
+	expectBody(t, rec, `{"ok":true}`)
+}

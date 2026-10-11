@@ -210,3 +210,23 @@ func TestStreamRouteRateLimitDoesNotSpendTicket(t *testing.T) {
 		t.Fatalf("ticket was spent by the 429: %d %v", code, fr)
 	}
 }
+
+// STAFF-4: the write deadline is re-armed before every heartbeat, so an idle
+// stream outlives a write timeout shorter than the heartbeat interval.
+func TestStreamIdleSurvivesWriteTimeoutShorterThanHeartbeat(t *testing.T) {
+	sf := newStreamFixture(t, func(d *Deps) {
+		d.Stream.Heartbeat = 300 * time.Millisecond
+		d.Stream.WriteTimeout = 200 * time.Millisecond
+	})
+	resp, _ := sf.open(t, sf.ticket())
+	rd := &sseReader{t: t, rd: bufio.NewReader(resp.Body)}
+	if fr := rd.next(); fr.event != "history" {
+		t.Fatal(fr)
+	}
+	for i := 0; i < 3; i++ { // 900 ms idle, well past the 200 ms write timeout
+		fr := rd.next()
+		if len(fr.lines) != 1 || fr.lines[0] != ": ping" {
+			t.Fatalf("ping %d: %q", i, fr.lines)
+		}
+	}
+}

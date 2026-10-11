@@ -8,6 +8,7 @@ import (
 
 type HotStore interface {
 	Read(ctx context.Context, deploymentID string, count int64) ([]Entry, error)
+	ReadLatest(ctx context.Context, deploymentID string, count int64) ([]Entry, error)
 	ActiveStreams(ctx context.Context) ([]string, error)
 	ReadAfter(ctx context.Context, deploymentID, afterID string, count int64) ([]StreamEntry, error)
 	FlushCursor(ctx context.Context, deploymentID string) (string, error)
@@ -54,9 +55,13 @@ func (a *Aggregator) Query(ctx context.Context, q Query) (Result, error) {
 		q.Limit = 100
 	}
 	cutoff := a.Now().Add(-hotWindow)
+	readHot := a.Hot.Read
+	if q.Newest {
+		readHot = a.Hot.ReadLatest
+	}
 
 	if q.Start == nil || q.Start.After(cutoff) {
-		hot, err := a.Hot.Read(ctx, q.DeploymentID, int64(q.Limit))
+		hot, err := readHot(ctx, q.DeploymentID, int64(q.Limit))
 		if err != nil {
 			return Result{}, err
 		}
@@ -70,7 +75,7 @@ func (a *Aggregator) Query(ctx context.Context, q Query) (Result, error) {
 		return Result{}, err
 	}
 	if q.Start == nil || (q.End != nil && q.End.After(cutoff)) {
-		hot, err := a.Hot.Read(ctx, q.DeploymentID, int64(q.Limit))
+		hot, err := readHot(ctx, q.DeploymentID, int64(q.Limit))
 		if err != nil {
 			return Result{}, err
 		}

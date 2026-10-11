@@ -41,6 +41,13 @@ func (f *fakeHot) Read(_ context.Context, id string, count int64) ([]logs.Entry,
 	}
 	return e, nil
 }
+func (f *fakeHot) ReadLatest(_ context.Context, id string, count int64) ([]logs.Entry, error) {
+	e := f.entries[id]
+	if int64(len(e)) > count {
+		e = e[int64(len(e))-count:]
+	}
+	return e, nil
+}
 func (f *fakeHot) ActiveStreams(context.Context) ([]string, error) {
 	ids := []string{}
 	for id := range f.entries {

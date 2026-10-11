@@ -211,7 +211,7 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer stop()
-	hist, err := s.Logs.Query(ctx, logs.Query{DeploymentID: id, Limit: historyEntries})
+	hist, err := s.Logs.Query(ctx, logs.Query{DeploymentID: id, Limit: historyEntries, Newest: true})
 	if err != nil {
 		s.streamFailed(w, r, ticket, err, http.StatusInternalServerError, "internal_error")
 		return

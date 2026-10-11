@@ -30,6 +30,14 @@ func (f *fakeHot) Read(_ context.Context, id string, count int64) ([]Entry, erro
 	return e, nil
 }
 
+func (f *fakeHot) ReadLatest(_ context.Context, id string, count int64) ([]Entry, error) {
+	e := f.data[id]
+	if int64(len(e)) > count {
+		e = e[int64(len(e))-count:]
+	}
+	return e, nil
+}
+
 func (f *fakeHot) ActiveStreams(context.Context) ([]string, error) {
 	if f.activeErr != nil {
 		return nil, f.activeErr
@@ -263,5 +271,23 @@ func TestFlushLogsActiveStreamsError(t *testing.T) {
 	}
 	if strings.Contains(out, "deploymentId") {
 		t.Fatalf("activeStreams log has deploymentId: %s", out)
+	}
+}
+
+// OBS-1: Newest asks the hot tier for the newest lines (SSE history); the
+// default stays oldest-first for the HTTP pagination.
+func TestQueryNewestReadsLatestHotLines(t *testing.T) {
+	var data []Entry
+	for i := 1; i <= 5; i++ {
+		data = append(data, Entry{DeploymentID: "d", Message: string(rune('a' + i - 1)), Timestamp: "t"})
+	}
+	a := &Aggregator{Hot: newFakeHot(map[string][]Entry{"d": data}), Now: time.Now}
+	res, err := a.Query(context.Background(), Query{DeploymentID: "d", Limit: 2, Newest: true})
+	if err != nil || len(res.Logs) != 2 || res.Logs[0].Message != "d" || res.Logs[1].Message != "e" || res.Source != "redis" {
+		t.Fatalf("newest: %+v %v", res, err)
+	}
+	res, err = a.Query(context.Background(), Query{DeploymentID: "d", Limit: 2})
+	if err != nil || len(res.Logs) != 2 || res.Logs[0].Message != "a" {
+		t.Fatalf("default: %+v %v", res, err)
 	}
 }

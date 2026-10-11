@@ -35,6 +35,10 @@ type Query struct {
 	Search       string
 	Limit        int
 	Offset       int
+	// Newest makes the hot tier return its newest Limit lines (oldest first
+	// within them) instead of the first Limit; the SSE history needs the tail,
+	// the HTTP endpoint keeps the head for its pagination.
+	Newest bool
 }
 
 type ClickHouse struct{ conn driver.Conn }

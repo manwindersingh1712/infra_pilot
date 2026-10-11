@@ -77,6 +77,19 @@ func (r *Redis) Read(ctx context.Context, deploymentID string, count int64) ([]E
 	return out, nil
 }
 
+// ReadLatest returns the newest count entries, oldest first within them.
+func (r *Redis) ReadLatest(ctx context.Context, deploymentID string, count int64) ([]Entry, error) {
+	msgs, err := r.c.XRevRangeN(ctx, streamPrefix+deploymentID, "+", "-", count).Result()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Entry, len(msgs))
+	for i, m := range msgs {
+		out[len(msgs)-1-i] = toEntry(deploymentID, m)
+	}
+	return out, nil
+}
+
 // toEntry converts a stream message to an Entry. Missing fields read as ""
 // (not "<nil>"), and a missing timestamp defaults to now, as in Node's readLogs.
 func toEntry(deploymentID string, m redis.XMessage) Entry {

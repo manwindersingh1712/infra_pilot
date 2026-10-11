@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -433,6 +434,26 @@ func TestStreamHistoryAndLiveLinesAreBounded(t *testing.T) {
 	var e logs.Entry
 	if err := json.Unmarshal([]byte(rd.next().data), &e); err != nil || len(e.Message) > maxLogLineBytes+len(truncatedSuffix) {
 		t.Fatalf("live line of %d bytes (%v)", len(e.Message), err)
+	}
+}
+
+// OBS-1: with more lines than the history holds, the history is the newest
+// ones (in order), so live lines continue right after it.
+func TestStreamHistoryIsTheNewestLines(t *testing.T) {
+	sf := newStreamFixture(t)
+	var hist []logs.Entry
+	for i := 1; i <= 250; i++ {
+		hist = append(hist, logs.Entry{DeploymentID: sf.dep.ID, Source: "stdout", Message: fmt.Sprint(i), Timestamp: "t"})
+	}
+	sf.hs.hot.entries[sf.dep.ID] = hist
+	resp, _ := sf.open(t, sf.ticket())
+	rd := &sseReader{t: t, rd: bufio.NewReaderSize(resp.Body, 1<<20)}
+	var h struct{ Logs []logs.Entry }
+	if err := json.Unmarshal([]byte(rd.next().data), &h); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.Logs) != historyEntries || h.Logs[0].Message != "151" || h.Logs[historyEntries-1].Message != "250" {
+		t.Fatalf("history is %d lines, first %q", len(h.Logs), h.Logs[0].Message)
 	}
 }
 

@@ -4,7 +4,14 @@ Deleting a service hides it at once and queues a `teardown.requested` outbox eve
 
 Every teardown activity retries without limit (10 s, doubling, capped at 5 min between attempts). Only `InvalidInput` (a service id that is not a cuid) and `NotDeleted` (the service is not soft-deleted) are permanent. So a teardown that cannot finish is a Running workflow with a failing activity, not a silent failure.
 
-`:sid` below is the service id. In `psql` set it first: `\set sid 'cm...'`.
+`:sid` below is the service id. In `psql` set it first: `\set sid 'cm...'`. In the shell set it ONCE and check it before any other command (copy the id from the step 0 row; never retype it per command):
+
+```bash
+SID=cm...            # the id shown by step 0
+[[ "$SID" =~ ^[a-z0-9]{20,32}$ ]] || { echo bad id; exit 1; }
+```
+
+Every shell command below uses `"$SID"`. Never drop the `=$SID` part of a filter: `label=cp.serviceId` without a value matches every service container.
 
 ## 0. Check the service first (mandatory)
 
@@ -67,9 +74,14 @@ LIMIT 1;
 
 Only when the cause cannot be fixed (for example the service's containers cannot be removed by the worker). The service must already be soft-deleted.
 
-```
-docker rm -f $(docker ps -aq --filter label=cp.serviceId=<id>)
-rm control-plane/infra/nginx/conf.d/routes/svc-<id>.conf
+List what matches first, read it, and only then remove:
+
+```bash
+docker ps -a --filter "label=cp.serviceId=$SID"          # read this list; it must be only this service
+IDS=$(docker ps -aq --filter "label=cp.serviceId=$SID")
+[ -n "$IDS" ] && docker rm -f $IDS                        # never run rm with an empty filter or list
+ls control-plane/infra/nginx/conf.d/routes/"svc-$SID.conf"
+rm control-plane/infra/nginx/conf.d/routes/"svc-$SID.conf"
 docker exec cp_nginx nginx -s reload
 ```
 
@@ -88,12 +100,7 @@ UPDATE "Service" SET "repoUrl" = NULL WHERE "id" = :'sid' AND "deletedAt" IS NOT
 
 A managed database (MongoDB, Redis) deleted with `purgeData=false` keeps its volume `cp-vol-<serviceId>` on the server and its generated password row (encrypted). The data cannot be re-attached from Infra Pilot; an operator can recover it. A kept volume cannot be purged later by an event (the workflow id is taken by the completed run). To purge it:
 
-```
-docker volume ls --filter name=cp-vol-          # compare with live service ids
-docker volume rm cp-vol-<serviceId>             # only for a service that is deleted
-```
-
-List the volumes that are candidates (soft-deleted managed databases that still have their password row):
+1. List the candidates. Choose volumes only from this SQL list (soft-deleted managed databases that still have their password row), never by hand from `docker volume ls`:
 
 ```sql orphan-volumes
 SELECT s."id", 'cp-vol-' || s."id" AS volume, s."name", s."deletedAt" FROM "Service" s
@@ -102,14 +109,23 @@ WHERE s."deletedAt" IS NOT NULL AND s."serviceType" IN ('mongodb', 'redis')
 ORDER BY s."deletedAt";
 ```
 
-After the volume is removed, delete the kept password row. It touches only the two reserved password keys of a soft-deleted managed service:
+2. For one id from that list, run step 0, then set and check the id and remove the volume:
+
+```bash
+SID=cm...            # one id from the list above
+[[ "$SID" =~ ^[a-z0-9]{20,32}$ ]] || { echo bad id; exit 1; }
+docker volume ls --filter "name=cp-vol-$SID"              # exactly one line expected
+docker volume rm "cp-vol-$SID"                            # no -f: an in-use volume is refused
+```
+
+3. Delete the kept password row. It touches only the two reserved password keys of a soft-deleted managed service:
 
 ```sql purge-password
 DELETE FROM "EnvVar" WHERE "serviceId" = :'sid' AND "key" IN ('REDIS_PASSWORD', 'MONGO_INITDB_ROOT_PASSWORD')
   AND EXISTS (SELECT 1 FROM "Service" WHERE "id" = :'sid' AND "deletedAt" IS NOT NULL AND "serviceType" IN ('mongodb', 'redis'));
 ```
 
-Run step 0 for the id first. Never remove a volume of a live service.
+Never remove a volume of a live service.
 
 ## 6. Alert
 

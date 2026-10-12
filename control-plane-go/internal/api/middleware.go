@@ -69,7 +69,7 @@ func withCORS(origins []string, next http.Handler) http.Handler {
 		h := w.Header()
 		if allowed {
 			h.Set("Access-Control-Allow-Origin", origin)
-			h.Set("Access-Control-Expose-Headers", "X-Request-ID")
+			h.Set("Access-Control-Expose-Headers", "X-Request-ID, Retry-After")
 		}
 		h.Add("Vary", "Origin")
 		if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {

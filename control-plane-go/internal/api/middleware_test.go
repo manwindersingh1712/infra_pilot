@@ -221,6 +221,21 @@ func TestCORSRejectsNearMissOrigins(t *testing.T) {
 	}
 }
 
+func TestCORSExposesRetryAfterOnlyToListedOrigins(t *testing.T) {
+	h := withCORS([]string{"http://localhost:5173"}, okHandler())
+	for origin, want := range map[string]string{"http://localhost:5173": "X-Request-ID, Retry-After", "https://evil.test": "", "": ""} {
+		req := httptest.NewRequest(http.MethodGet, "/projects", nil)
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if got := rec.Header().Get("Access-Control-Expose-Headers"); got != want {
+			t.Errorf("origin %q: Expose-Headers %q, want %q", origin, got, want)
+		}
+	}
+}
+
 func TestCORSHeadersOnListedOrigin(t *testing.T) {
 	h := withCORS([]string{"http://localhost:5173"}, okHandler())
 	req := httptest.NewRequest(http.MethodGet, "/projects", nil)
@@ -231,7 +246,9 @@ func TestCORSHeadersOnListedOrigin(t *testing.T) {
 	if hd.Get("Access-Control-Allow-Origin") != "http://localhost:5173" {
 		t.Fatalf("ACAO %q", hd.Get("Access-Control-Allow-Origin"))
 	}
-	if hd.Get("Access-Control-Expose-Headers") != "X-Request-ID" {
+	// Retry-After must be readable by the cross-origin UI (log stream tickets
+	// answer 429 with it); nothing sensitive is exposed.
+	if hd.Get("Access-Control-Expose-Headers") != "X-Request-ID, Retry-After" {
 		t.Fatalf("Expose-Headers %q", hd.Get("Access-Control-Expose-Headers"))
 	}
 	if hd.Get("Access-Control-Allow-Credentials") != "" {

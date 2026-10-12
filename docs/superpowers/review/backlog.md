@@ -344,3 +344,9 @@ Source: `review/plan2/task-11-product.md`. The backend is fine for users; the ri
 - PROD-5: decision recorded in decisions.md 2026-10-12 (Go default keepalive + stream write deadline accepted).
 - `APP_ENV` falls back to `NODE_ENV`: a stale `NODE_ENV=development` in a deployed `.env` enables dev login; consider a startup warning naming the source. PROD-7 (hide deleted services' deployments/logs/streams) still open for Task 18.
 - Task 14 round 2 info: (a) dev mode does not validate the Host header (DNS rebinding could reach `/dev/login` from a hostile page on the developer's machine); optional Host check. (b) a host-network nginx proxying to 127.0.0.1 would re-expose dev login; docs should warn. (c) a container with `APP_ENV=development` cannot be reached through a published port (loopback bind); document. (d) VER-1 cosmetic: the dev loopback WARN is logged before the bind. (e) worker key fingerprint now has a test.
+
+## Plan 2 Task 15 (deferred)
+- **Task 16 BINDING (SEC-1):** `hooks/useLogs.ts` still has its own `getToken`/`API`; the SSE hook must obtain tickets through the shared client (token refresh, session-expired notice) and remove `socket.io-client`.
+- SEC-6 (medium, before cutover): `npm audit --omit=dev` shows 4 high + 1 moderate (react-router open-redirect advisories, socket.io-parser, ws, engine.io-client). Bump as its own task; no blind `npm audit fix`.
+- SEC-5/SEC-2 accepted. PROD-3: repo URL field has no https-only hint. PROD-7: user dropdown shows hard-coded "user@example.com" / "Free Plan". Go handler should trim the project name server-side (UI already trims).
+- Verifier did not cover: real server 5xx/429 on /auth/refresh (stubbed), natural 15-minute expiry, Web Locks fallback in a browser, Firefox/Safari, Create Service modal in the UI.

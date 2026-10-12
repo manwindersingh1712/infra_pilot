@@ -13,3 +13,9 @@ The data volume `cp-vol-<serviceId>` is kept on the server, together with ONE en
 ## Env var encryption
 
 Env var values written by the Node API are plain text. Before or at the cutover run `migrate encrypt-env` once to encrypt them: stop the Node API, back up the database and `ENV_ENCRYPTION_KEY`, `--dry-run` (expect `suspect=0`), `--yes` until `conflicts=0`, then a final dry run with `would_encrypt=0`. The command refuses to write when a value looks like ciphertext but does not decrypt (a wrong key, or a plain value starting with `enc:v1:`). Full steps, exit codes and how to resolve suspect rows: `docs/superpowers/runbook/encrypt-env.md`.
+
+## API behind nginx: TRUSTED_PROXIES
+
+Set `TRUSTED_PROXIES` to the address of the nginx container, for example `TRUSTED_PROXIES=172.18.0.5` (one IP or CIDR; comma-separate several). Without it the API keys its rate limits by the TCP peer, so behind nginx every client shares one login, refresh and log-stream bucket. List only the nginx address, not the Docker network's subnet: any other container on a listed subnet could send a forged `X-Forwarded-For` and get a fresh bucket. The nginx route for the API must set `proxy_set_header X-Forwarded-For $remote_addr;` (Plan 2 Task 18). Default: empty.
+
+With `APP_ENV=development` the API binds `127.0.0.1` only, because `POST /dev/login` is enabled and needs no credentials. Any other value binds all interfaces.

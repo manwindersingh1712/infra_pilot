@@ -56,7 +56,7 @@ const CODE_MESSAGES: Record<string, string> = {
   reserved_env_var: "That variable name is reserved by the platform. Choose another name.",
   request_too_large: "That request was too large.",
   too_many_requests: "Too many requests. Wait a moment and try again.",
-  too_many_streams: "You have 5 log streams open; close one and this panel will reconnect.",
+  too_many_streams: "Your log streams may be at the limit (5 per account). Close other log panels, or wait a few minutes: this panel keeps retrying.",
   invalid_ticket: "The log stream link expired. Reopen the logs.",
   purge_choice_required: "Choose whether to keep or delete the service's data before deleting it.",
   invalid_purge_data: "That data-deletion choice was not valid. Reload the page and try again.",

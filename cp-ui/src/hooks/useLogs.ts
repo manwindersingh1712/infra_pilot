@@ -1,16 +1,18 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { API_BASE, apiFetch, getToken } from "../lib/api";
 import {
-  FAILED_OPENS_BEFORE_HINT, TOO_MANY_STREAMS_MESSAGE, appendLive, backoffDelay, classifyTicketError, endDelay,
-  latestMs, mergeHistory, parseEndEvent, parseHistoryEvent, parseLogEvent,
-  type LogEntry, type LogMeta,
+  BAD_TICKET_MESSAGE, OPEN_FAILED_MESSAGE, TOO_MANY_STREAMS_MESSAGE, attemptsAfterClose, backoffDelay,
+  bufferAppend, bufferMerge, bufferReset, classifyTicketError, initialMode, latestMs, newBuffer, nextFailedOpens,
+  parseEndEvent, parseHistoryEvent, parseLogEvent, parseTicketResponse, planAfterEnd, restartDelay, showCapHint,
+  visibleAction, type LogEntry, type LogMeta,
 } from "../lib/logStream";
 
 export type { LogEntry } from "../lib/logStream";
 
 // live: the stream is open. reconnecting: trying again (it never gives up).
-// disconnected: terminal, the deployment no longer exists or the session ended.
-export type LogStatus = "live" | "reconnecting" | "disconnected";
+// paused: the tab is in the background and holds no stream. disconnected:
+// terminal, the deployment no longer exists or the session ended.
+export type LogStatus = "live" | "reconnecting" | "paused" | "disconnected";
 
 interface UseLogsOptions {
   deploymentId: string;
@@ -18,20 +20,23 @@ interface UseLogsOptions {
 
 // A tab hidden this long closes its stream (it reopens when the tab is shown).
 const HIDDEN_CLOSE_MS = 5 * 60_000;
-// A tab hidden this long may hold a dead connection (sleep, network change):
-// reconnect when it comes back instead of trusting the old socket.
-const HIDDEN_STALE_MS = 30_000;
 
 // Streams a deployment's logs over Server-Sent Events. Every connection uses a
 // fresh one-time ticket obtained through the shared API client (EventSource
 // cannot send the Authorization header). The server sends one "history" event,
 // then a "log" event per line, and "end" before it closes the stream itself.
+// The decisions (backoff, what to do after `end`, visibility, the cap hint)
+// are pure functions in lib/logStream.ts; this hook only wires them to the
+// browser.
 export function useLogs({ deploymentId }: UseLogsOptions) {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [meta, setMeta] = useState<LogMeta | null>(null);
   const [status, setStatus] = useState<LogStatus>("reconnecting");
   const [everConnected, setEverConnected] = useState(false);
+  const [canRetry, setCanRetry] = useState(true);
+  const [cleared, setCleared] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const buffer = useRef(newBuffer());
   // Lines at or before this time were cleared by the user and stay gone when a
   // later history event brings them back.
   const clearedUpTo = useRef(-Infinity);
@@ -43,26 +48,32 @@ export function useLogs({ deploymentId }: UseLogsOptions) {
 
     let closed = false; // unmounted or deploymentId changed
     let terminal = false; // stop retrying until the user presses Retry
-    let paused = false; // tab hidden for a long time: stream closed on purpose
+    let paused = false; // tab in the background: no stream on purpose
     let connected = false; // a stream is open right now
     let firstHistory = true;
     let attempts = 0;
-    let failedOpens = 0;
+    let failedOpens = 0; // consecutive opens refused after a granted ticket
     let generation = 0; // bumped per connection attempt; stale async work checks it
     let source: EventSource | null = null;
+    let openedAt = 0;
+    let lastSilentAt = -Infinity;
+    let lastRestartAt = -Infinity;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let hiddenTimer: ReturnType<typeof setTimeout> | undefined;
+    let restartTimer: ReturnType<typeof setTimeout> | undefined;
     let hiddenAt = 0;
     let ticketAbort: AbortController | null = null;
 
     // A new deployment starts from nothing.
     clearedUpTo.current = -Infinity;
     newest.current = -Infinity;
+    bufferReset(buffer.current);
     // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional reset of the previous deployment's state when deploymentId changes
     setLogs([]);
     setMeta(null);
     setError(null);
-    setStatus("reconnecting");
+    setCleared(false);
+    setCanRetry(true);
     setEverConnected(false);
 
     const path = `/logs/deployments/${encodeURIComponent(deploymentId)}`;
@@ -79,7 +90,7 @@ export function useLogs({ deploymentId }: UseLogsOptions) {
     function schedule(delayMs: number) {
       if (closed || terminal || paused) return;
       clearTimeout(retryTimer);
-      retryTimer = setTimeout(() => void connect(), delayMs);
+      retryTimer = setTimeout(() => void connect(false), delayMs);
     }
 
     // Counts as one failed attempt and waits with capped, jittered backoff.
@@ -89,26 +100,44 @@ export function useLogs({ deploymentId }: UseLogsOptions) {
       schedule(delay);
     }
 
-    async function connect() {
+    // The open stream (if any) closed on its own: forget old failures only if it was healthy.
+    function noteClosed() {
+      attempts = attemptsAfterClose(attempts, connected ? Date.now() - openedAt : 0);
+      connected = false;
+    }
+
+    // replace: keep the current stream (if any) until a new ticket is in hand
+    // and the new stream is created; a failure then leaves the old one alone.
+    async function connect(replace: boolean) {
       if (closed || terminal || paused) return;
       clearTimeout(retryTimer);
-      stopStream();
+      if (replace && source) {
+        generation += 1;
+        ticketAbort?.abort();
+      } else {
+        stopStream();
+      }
       const mine = generation;
       const abort = new AbortController();
       ticketAbort = abort;
 
-      let ticket: string;
+      let ticket: string | null;
       try {
         // Right before EventSource, through the shared client: an expired
         // access token refreshes here, and a dead session signs the user out.
-        ({ ticket } = await apiFetch<{ ticket: string }>(`${path}/stream-ticket`, { method: "POST", signal: abort.signal }));
+        ticket = parseTicketResponse(
+          await apiFetch<unknown>(`${path}/stream-ticket`, { method: "POST", signal: abort.signal })
+        );
       } catch (err) {
         if (closed || mine !== generation) return; // superseded or unmounted: say nothing
+        if (replace && source) return; // the old stream still works
+        failedOpens = nextFailedOpens(failedOpens, "ticket_failed");
         connected = false;
         const outcome = classifyTicketError(err);
         setError(outcome.message);
         if (outcome.kind === "terminal") {
           terminal = true;
+          setCanRetry(outcome.canRetry);
           setStatus("disconnected");
           return;
         }
@@ -118,19 +147,40 @@ export function useLogs({ deploymentId }: UseLogsOptions) {
       }
       // A late ticket never opens a stream after unmount, a newer attempt, or a pause.
       if (closed || mine !== generation) return;
+      if (ticket === null) {
+        failedOpens = nextFailedOpens(failedOpens, "ticket_failed");
+        if (replace && source) return;
+        setError(BAD_TICKET_MESSAGE);
+        setStatus("reconnecting");
+        scheduleBackoff();
+        return;
+      }
 
-      const es = new EventSource(`${API_BASE}${path}/stream?ticket=${encodeURIComponent(ticket)}`);
+      let es: EventSource;
+      try {
+        es = new EventSource(`${API_BASE}${path}/stream?ticket=${encodeURIComponent(ticket)}`);
+      } catch {
+        failedOpens = nextFailedOpens(failedOpens, "ticket_failed");
+        if (replace && source) return;
+        setError(OPEN_FAILED_MESSAGE);
+        setStatus("reconnecting");
+        scheduleBackoff();
+        return;
+      }
+      const old = source;
       source = es;
+      old?.close();
       let opened = false;
-      let openedAt = 0;
 
       es.onopen = () => {
         if (source !== es) return;
         opened = true;
         openedAt = Date.now();
         connected = true;
-        attempts = 0;
-        failedOpens = 0;
+        failedOpens = nextFailedOpens(failedOpens, "opened");
+        // `attempts` is not reset here: it resets only when a stream has stayed
+        // open long enough (attemptsAfterClose), so a server that accepts and
+        // immediately ends streams keeps growing the backoff.
         setStatus("live");
         setEverConnected(true);
         setError(null);
@@ -143,14 +193,14 @@ export function useLogs({ deploymentId }: UseLogsOptions) {
         // without ever fetching a new one. We reconnect ourselves instead.
         es.close();
         source = null;
-        connected = false;
+        noteClosed();
         if (closed) return;
         setStatus("reconnecting");
         if (!opened) {
-          failedOpens += 1;
-          // EventSource hides the HTTP status. Several refused opens in a row
-          // while tickets are granted usually mean the per-user stream cap.
-          if (failedOpens >= FAILED_OPENS_BEFORE_HINT) setError(TOO_MANY_STREAMS_MESSAGE);
+          // EventSource hides the HTTP status. Several consecutive refused
+          // opens while tickets are granted may mean the per-user stream cap.
+          failedOpens = nextFailedOpens(failedOpens, "refused");
+          if (showCapHint(failedOpens)) setError(TOO_MANY_STREAMS_MESSAGE);
         }
         scheduleBackoff();
       };
@@ -165,9 +215,10 @@ export function useLogs({ deploymentId }: UseLogsOptions) {
           // a long session is not cut to 100 lines, Clear is not undone and
           // scroll position is not lost.
           firstHistory = false;
-          setLogs(data.logs);
-        } else {
-          setLogs((prev) => mergeHistory(prev, data.logs, clearedUpTo.current));
+          bufferReset(buffer.current, data.logs);
+          setLogs(buffer.current.entries);
+        } else if (bufferMerge(buffer.current, data.logs, clearedUpTo.current)) {
+          setLogs(buffer.current.entries);
         }
         if (data.meta) setMeta(data.meta);
       });
@@ -177,43 +228,70 @@ export function useLogs({ deploymentId }: UseLogsOptions) {
         const entry = parseLogEvent((ev as MessageEvent<string>).data);
         if (!entry) return;
         newest.current = latestMs([entry], newest.current);
-        setLogs((prev) => appendLive(prev, entry));
+        if (bufferAppend(buffer.current, entry)) setLogs(buffer.current.entries);
       });
 
       es.addEventListener("end", (ev) => {
         if (source !== es) return;
         const reason = parseEndEvent((ev as MessageEvent<string>).data);
+        const now = Date.now();
+        const plan = planAfterEnd({
+          reason,
+          msSinceOpen: now - openedAt,
+          msSinceLastSilent: now - lastSilentAt,
+          attempts: attemptsAfterClose(attempts, now - openedAt),
+          rand: Math.random(),
+        });
+        attempts = attemptsAfterClose(attempts, now - openedAt);
         es.close();
         source = null;
         connected = false;
-        // An `end` right after opening is not the 1 h cap; back off instead of
-        // hammering the server in a tight loop.
-        if (reason === "max_duration" && Date.now() - openedAt > 1000) {
+        if (plan.silent) {
           // The routine 1 h cap: reopen at once and silently (the badge keeps
           // saying Live and no attempt is counted).
-          schedule(endDelay(reason, 0));
-          return;
+          lastSilentAt = now;
+        } else {
+          setStatus("reconnecting");
         }
-        setStatus("reconnecting");
-        attempts += 1;
-        schedule(endDelay(reason, Math.random()));
+        if (plan.countAttempt) attempts += 1;
+        schedule(plan.delayMs);
       });
     }
 
-    // Reconnect now, forgetting earlier failures (online, tab visible, Retry).
-    function restart() {
+    // Reconnect, forgetting earlier failures (online, tab visible, Retry).
+    // Spaced at least MIN_RESTART_GAP_MS apart: calls inside the gap are
+    // coalesced into one restart when it ends.
+    function restart(replace = false) {
       if (closed) return;
+      if (restartTimer !== undefined) return;
+      const wait = restartDelay(Date.now(), lastRestartAt);
+      if (wait > 0) {
+        restartTimer = setTimeout(() => {
+          restartTimer = undefined;
+          restart(replace);
+        }, wait);
+        return;
+      }
+      lastRestartAt = Date.now();
       terminal = false;
       paused = false;
       attempts = 0;
       failedOpens = 0;
-      if (!connected) setStatus("reconnecting");
-      void connect();
+      if (!connected && !replace) setStatus("reconnecting");
+      void connect(replace);
     }
     reconnectNow.current = () => {
       setError(null);
+      setCanRetry(true);
       restart();
     };
+
+    function pause() {
+      paused = true;
+      clearTimeout(retryTimer);
+      stopStream();
+      setStatus("paused");
+    }
 
     function onOnline() {
       if (!paused && !terminal && !connected) restart();
@@ -223,28 +301,33 @@ export function useLogs({ deploymentId }: UseLogsOptions) {
       if (document.visibilityState === "hidden") {
         hiddenAt = Date.now();
         clearTimeout(hiddenTimer);
-        hiddenTimer = setTimeout(() => {
-          paused = true;
-          clearTimeout(retryTimer);
-          stopStream();
-        }, HIDDEN_CLOSE_MS);
+        hiddenTimer = setTimeout(pause, HIDDEN_CLOSE_MS);
         return;
       }
       clearTimeout(hiddenTimer);
-      if (terminal) return;
-      const wasAway = hiddenAt > 0 ? Date.now() - hiddenAt : 0;
+      const msAway = hiddenAt > 0 ? Date.now() - hiddenAt : 0;
       hiddenAt = 0;
-      if (paused || !connected || wasAway > HIDDEN_STALE_MS) restart();
+      const action = visibleAction({ terminal, paused, connected, msAway });
+      if (action !== "none") restart(action === "replace");
     }
 
     window.addEventListener("online", onOnline);
     document.addEventListener("visibilitychange", onVisibility);
-    void connect();
+    if (initialMode(document.visibilityState) === "paused") {
+      // Opened in the background: no ticket, no stream until the tab is shown.
+      paused = true;
+      hiddenAt = Date.now();
+      setStatus("paused");
+    } else {
+      setStatus("reconnecting");
+      void connect(false);
+    }
 
     return () => {
       closed = true;
       clearTimeout(retryTimer);
       clearTimeout(hiddenTimer);
+      clearTimeout(restartTimer);
       window.removeEventListener("online", onOnline);
       document.removeEventListener("visibilitychange", onVisibility);
       stopStream();
@@ -254,10 +337,12 @@ export function useLogs({ deploymentId }: UseLogsOptions) {
 
   const clearLogs = useCallback(() => {
     clearedUpTo.current = newest.current;
-    setLogs([]);
+    bufferReset(buffer.current);
+    setLogs(buffer.current.entries);
+    setCleared(true);
   }, []);
 
   const retry = useCallback(() => reconnectNow.current(), []);
 
-  return { logs, meta, status, everConnected, isConnected: status === "live", error, clearLogs, retry };
+  return { logs, meta, status, everConnected, canRetry, cleared, isConnected: status === "live", error, clearLogs, retry };
 }

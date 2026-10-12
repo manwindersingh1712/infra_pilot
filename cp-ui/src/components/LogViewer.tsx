@@ -1,5 +1,6 @@
 import { useRef, useEffect } from "react";
 import { useLogs, type LogEntry, type LogStatus } from "../hooks/useLogs";
+import { emptyStateText, entryKey } from "../lib/logStream";
 
 interface LogViewerProps {
   deploymentId: string;
@@ -20,6 +21,7 @@ const sourceLabels: Record<LogEntry["source"], string> = {
 const badges: Record<LogStatus, { label: string; color: string; rgb: string }> = {
   live: { label: "Live", color: "#22c55e", rgb: "34,197,94" },
   reconnecting: { label: "Reconnecting…", color: "#f59e0b", rgb: "245,158,11" },
+  paused: { label: "Paused", color: "#9ca3af", rgb: "156,163,175" },
   disconnected: { label: "Disconnected", color: "#ef4444", rgb: "239,68,68" },
 };
 
@@ -52,7 +54,7 @@ function formatTimestamp(timestamp: string): string {
 }
 
 export function LogViewer({ deploymentId }: LogViewerProps) {
-  const { logs, meta, status, everConnected, error, clearLogs, retry } = useLogs({ deploymentId });
+  const { logs, meta, status, everConnected, canRetry, cleared, error, clearLogs, retry } = useLogs({ deploymentId });
   const badge = badges[status];
   const badgeLabel = status === "reconnecting" && !everConnected ? "Connecting…" : badge.label;
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -117,7 +119,7 @@ export function LogViewer({ deploymentId }: LogViewerProps) {
           )}
         </div>
         <div style={{ display: "flex", gap: 8 }}>
-          {status !== "live" && (
+          {(status === "reconnecting" || status === "disconnected") && canRetry && (
             <button onClick={retry} style={headerButton} onMouseEnter={hoverOn} onMouseLeave={hoverOff}>
               Retry
             </button>
@@ -165,12 +167,12 @@ export function LogViewer({ deploymentId }: LogViewerProps) {
               textAlign: "center",
             }}
           >
-            No logs yet. Deploy a service to see logs here.
+            {emptyStateText(status, cleared)}
           </div>
         ) : (
-          logs.map((log, index) => (
+          logs.map((log) => (
             <div
-              key={index}
+              key={entryKey(log)}
               style={{
                 display: "flex",
                 padding: "2px 16px",

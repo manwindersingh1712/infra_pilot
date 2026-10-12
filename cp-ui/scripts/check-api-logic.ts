@@ -4,8 +4,11 @@ import { refreshSession, withStorageLock, type RefreshCallResult, type RefreshDe
 import { isValidProjectName } from "../src/lib/projectName.ts";
 import { ApiError, humanizeApiError, parseErrorCode, parseRetryAfter, SESSION_EXPIRED_MESSAGE } from "../src/lib/errors.ts";
 import {
-  appendLive, backoffDelay, classifyTicketError, endDelay, latestMs, mergeHistory, parseEndEvent, parseHistoryEvent,
-  parseLogEvent, type LogEntry,
+  DEFAULT_RATE_LIMIT_WAIT_S, FAILED_OPENS_BEFORE_HINT, HIDDEN_STALE_MS, MAX_LINES, MIN_RESTART_GAP_MS, STABLE_MS,
+  TOO_MANY_STREAMS_MESSAGE, attemptsAfterClose, backoffDelay, bufferAppend, bufferMerge, bufferReset,
+  classifyTicketError, emptyStateText, endDelay, entryKey, initialMode, latestMs, newBuffer, nextFailedOpens,
+  parseEndEvent, parseHistoryEvent, parseLogEvent, parseTicketResponse, planAfterEnd, restartDelay, showCapHint,
+  visibleAction, type LogEntry,
 } from "../src/lib/logStream.ts";
 
 let passed = 0;
@@ -354,74 +357,241 @@ await check("parseLogEvent / parseHistoryEvent ignore malformed payloads", () =>
   assert.deepEqual(parseHistoryEvent('{"logs":[],"meta":{"source":"clickhouse"}}')?.meta, { source: "clickhouse" });
 });
 
-await check("mergeHistory: dedupes on timestamp+message, keeps time order, keeps the user's lines", () => {
-  const prev = [entry(T(1), "a"), entry(T(2), "b"), entry(T(5), "e")];
-  const merged = mergeHistory(prev, [entry(T(2), "b"), entry(T(3), "c"), entry(T(6), "f")]);
-  assert.deepEqual(merged.map((l) => l.message), ["a", "b", "c", "e", "f"]);
-  // same timestamp, different message is a different line; same message at another time too
-  const m2 = mergeHistory([entry(T(1), "x")], [entry(T(1), "y"), entry(T(2), "x")]);
-  assert.deepEqual(m2.map((l) => l.message), ["x", "y", "x"]);
-  // duplicates inside the incoming list collapse
-  assert.equal(mergeHistory([], [entry(T(1), "d"), entry(T(1), "d")]).length, 1);
-  // equal timestamps keep arrival order
-  assert.deepEqual(mergeHistory([entry(T(1), "p")], [entry(T(1), "q"), entry(T(1), "r")]).map((l) => l.message), ["p", "q", "r"]);
-  // more history than the server's 100 lines survives: nothing is dropped
+const msgs = (b: { entries: LogEntry[] }) => b.entries.map((l) => l.message);
+const bufWith = (es: LogEntry[], max = MAX_LINES) => {
+  const b = newBuffer(max);
+  bufferReset(b, es);
+  return b;
+};
+const keysMatch = (b: { entries: LogEntry[]; keys: Set<string> }) =>
+  b.keys.size === b.entries.length && b.entries.every((e) => b.keys.has(entryKey(e)));
+
+await check("bufferMerge: dedupes on timestamp+message, keeps time order, keeps the user's lines", () => {
+  const b = bufWith([entry(T(1), "a"), entry(T(2), "b"), entry(T(5), "e")]);
+  assert.equal(bufferMerge(b, [entry(T(2), "b"), entry(T(3), "c"), entry(T(6), "f")]), true);
+  assert.deepEqual(msgs(b), ["a", "b", "c", "e", "f"]);
+  const b2 = bufWith([entry(T(1), "x")]);
+  bufferMerge(b2, [entry(T(1), "y"), entry(T(2), "x")]);
+  assert.deepEqual(msgs(b2), ["x", "y", "x"]);
+  const b3 = newBuffer();
+  bufferMerge(b3, [entry(T(1), "d"), entry(T(1), "d")]);
+  assert.equal(b3.entries.length, 1);
+  const b4 = bufWith([entry(T(1), "p")]);
+  bufferMerge(b4, [entry(T(1), "q"), entry(T(1), "r")]);
+  assert.deepEqual(msgs(b4), ["p", "q", "r"]);
   const big = Array.from({ length: 500 }, (_, i) => entry(T(i), `m${i}`));
-  assert.equal(mergeHistory(big, big.slice(-100)).length, 500);
+  const b5 = bufWith(big);
+  assert.equal(bufferMerge(b5, big.slice(-100)), false);
+  assert.equal(b5.entries.length, 500);
+  assert.ok(keysMatch(b));
 });
 
-await check("mergeHistory: no change returns the same array; Clear is not undone", () => {
-  const prev = [entry(T(1), "a")];
-  assert.equal(mergeHistory(prev, [entry(T(1), "a")]), prev);
-  assert.equal(mergeHistory(prev, []), prev);
-  const cleared = mergeHistory([], [entry(T(1), "a"), entry(T(2), "b"), entry(T(3), "c")], Date.parse(T(2)));
-  assert.deepEqual(cleared.map((l) => l.message), ["c"], "lines at or before the clear point stay gone");
-  assert.equal(mergeHistory([], [entry(T(1), "a")], Date.parse(T(1)) - 1).length, 1);
+await check("bufferMerge: no change keeps the same array; Clear is not undone", () => {
+  const b = bufWith([entry(T(1), "a")]);
+  const before = b.entries;
+  assert.equal(bufferMerge(b, [entry(T(1), "a")]), false);
+  assert.equal(bufferMerge(b, []), false);
+  assert.equal(b.entries, before);
+  const c = newBuffer();
+  bufferMerge(c, [entry(T(1), "a"), entry(T(2), "b"), entry(T(3), "c")], Date.parse(T(2)));
+  assert.deepEqual(msgs(c), ["c"], "lines at or before the clear point stay gone");
+  const d = newBuffer();
+  bufferMerge(d, [entry(T(1), "a")], Date.parse(T(1)) - 1);
+  assert.equal(d.entries.length, 1);
 });
 
-await check("mergeHistory: unparseable timestamps are kept in arrival order", () => {
-  const m = mergeHistory([entry("bad", "a")], [entry(T(1), "b"), entry("worse", "c")], Date.parse(T(0)));
-  assert.deepEqual(m.map((l) => l.message), ["a", "b", "c"]);
-  // a good line older than a good line already shown, with an unparseable one between
-  const m2 = mergeHistory([entry(T(5), "a"), entry("bad", "m"), entry(T(6), "z")], [entry(T(1), "b")]);
-  assert.deepEqual(m2.map((l) => l.message), ["a", "m", "z", "b"], "no sorting when a timestamp is unparseable");
+await check("bufferMerge: unparseable timestamps are kept in arrival order", () => {
+  const b = bufWith([entry("bad", "a")]);
+  bufferMerge(b, [entry(T(1), "b"), entry("worse", "c")], Date.parse(T(0)));
+  assert.deepEqual(msgs(b), ["a", "b", "c"]);
+  const m = bufWith([entry(T(5), "a"), entry("bad", "m"), entry(T(6), "z")]);
+  bufferMerge(m, [entry(T(1), "b")]);
+  assert.deepEqual(msgs(m), ["a", "m", "z", "b"], "no sorting when a timestamp is unparseable");
 });
 
-await check("appendLive and latestMs", () => {
-  const prev = [entry(T(1), "a")];
-  assert.equal(appendLive(prev, entry(T(1), "a")), prev);
-  assert.equal(appendLive(prev, entry(T(1), "b")).length, 2);
-  assert.equal(appendLive(prev, entry(T(2), "a")).length, 2);
+await check("bufferAppend: dedupes in O(1), replaces the array on change only", () => {
+  const b = bufWith([entry(T(1), "a")]);
+  const before = b.entries;
+  assert.equal(bufferAppend(b, entry(T(1), "a")), false);
+  assert.equal(b.entries, before, "a duplicate leaves the array alone");
+  assert.equal(bufferAppend(b, entry(T(1), "b")), true);
+  assert.notEqual(b.entries, before, "a change gives React a new array");
+  assert.equal(before.length, 1, "the old array is not mutated");
+  assert.equal(bufferAppend(b, entry(T(2), "a")), true);
+  assert.deepEqual(msgs(b), ["a", "b", "a"]);
+  assert.ok(keysMatch(b));
+});
+
+await check("buffer cap: oldest lines drop, order kept, key set stays in step", () => {
+  const b = newBuffer(3);
+  for (let i = 1; i <= 5; i++) bufferAppend(b, entry(T(i), `l${i}`));
+  assert.deepEqual(msgs(b), ["l3", "l4", "l5"]);
+  assert.ok(keysMatch(b));
+  // a dropped line is new again (it is not remembered)...
+  assert.equal(bufferAppend(b, entry(T(1), "l1")), true);
+  assert.deepEqual(msgs(b), ["l4", "l5", "l1"]);
+  assert.ok(keysMatch(b));
+  // ...and the cap holds for merges, keeping the NEWEST lines
+  const m = bufWith([entry(T(10), "j"), entry(T(11), "k")], 3);
+  bufferMerge(m, [entry(T(1), "old"), entry(T(12), "l"), entry(T(13), "m")]);
+  assert.deepEqual(msgs(m), ["k", "l", "m"]);
+  assert.ok(keysMatch(m));
+  // bufferReset caps and dedupes too
+  const r = newBuffer(2);
+  bufferReset(r, [entry(T(1), "a"), entry(T(1), "a"), entry(T(2), "b"), entry(T(3), "c")]);
+  assert.deepEqual(msgs(r), ["b", "c"]);
+  assert.ok(keysMatch(r));
+  const dup = newBuffer(10);
+  bufferReset(dup, [entry(T(1), "a"), entry(T(1), "a"), entry(T(2), "b")]);
+  assert.deepEqual(msgs(dup), ["a", "b"], "a history event with a repeated line keeps one");
+  assert.ok(keysMatch(dup));
+  assert.equal(newBuffer().max, 5000);
+  assert.equal(MAX_LINES, 5000);
+  // a long run never exceeds the cap
+  const big = newBuffer(50);
+  for (let i = 0; i < 400; i++) bufferAppend(big, entry(T(i), `n${i}`));
+  assert.equal(big.entries.length, 50);
+  assert.equal(big.keys.size, 50);
+});
+
+await check("latestMs", () => {
   assert.equal(latestMs([]), -Infinity);
   assert.equal(latestMs([entry(T(3), "x"), entry(T(9), "y"), entry("bad", "z")]), Date.parse(T(9)));
   assert.equal(latestMs([entry(T(3), "x")], Date.parse(T(50))), Date.parse(T(50)));
 });
 
-await check("classifyTicketError: 404 and expired session are terminal, the rest keep reconnecting", () => {
+await check("planAfterEnd: max_duration is silent only for a stream that lived long enough", () => {
+  const base = { reason: "max_duration" as const, msSinceOpen: 3_600_000, msSinceLastSilent: Infinity, attempts: 0, rand: 0.5 };
+  assert.deepEqual(planAfterEnd(base), { delayMs: 0, silent: true, countAttempt: false });
+  assert.deepEqual(planAfterEnd({ ...base, msSinceOpen: STABLE_MS }), { delayMs: 0, silent: true, countAttempt: false });
+  const quick = planAfterEnd({ ...base, msSinceOpen: STABLE_MS - 1 });
+  assert.equal(quick.silent, false);
+  assert.equal(quick.countAttempt, true);
+  assert.ok(quick.delayMs >= 500, "a quick end never reconnects at 0 ms");
+  // a silent reconnect less than 10 s ago also backs off
+  const again = planAfterEnd({ ...base, msSinceLastSilent: STABLE_MS - 1 });
+  assert.equal(again.silent, false);
+  assert.ok(again.delayMs >= 500);
+  assert.equal(planAfterEnd({ ...base, msSinceLastSilent: STABLE_MS }).silent, true);
+  // the backoff grows with the attempt count, to the 30 s cap
+  assert.equal(planAfterEnd({ ...base, msSinceOpen: 0, attempts: 3, rand: 1 }).delayMs, backoffDelay(3, 1));
+  assert.equal(planAfterEnd({ ...base, msSinceOpen: 0, attempts: 40, rand: 1 }).delayMs, 30_000);
+});
+
+await check("planAfterEnd: shutdown waits 1-3 s, never less than the backoff, and counts", () => {
+  const sd = { reason: "shutdown" as const, msSinceOpen: 3_600_000, msSinceLastSilent: Infinity, attempts: 0 };
+  for (const rand of [0, 0.5, 1]) {
+    const p = planAfterEnd({ ...sd, rand });
+    assert.equal(p.silent, false);
+    assert.equal(p.countAttempt, true);
+    assert.ok(p.delayMs >= 1_000 && p.delayMs <= 3_000, String(p.delayMs));
+  }
+  assert.equal(planAfterEnd({ ...sd, rand: 0 }).delayMs, 1_000);
+  assert.equal(planAfterEnd({ ...sd, rand: 1 }).delayMs, 3_000);
+  assert.equal(planAfterEnd({ ...sd, attempts: 5, rand: 0 }).delayMs, 15_000, "backoff wins when larger");
+  assert.equal(planAfterEnd({ ...sd, msSinceOpen: 0, rand: 0 }).delayMs, 1_000, "even a quick shutdown end is not silent");
+});
+
+await check("attemptsAfterClose forgets failures only after a healthy stream", () => {
+  assert.equal(attemptsAfterClose(7, STABLE_MS), 0);
+  assert.equal(attemptsAfterClose(7, 3_600_000), 0);
+  assert.equal(attemptsAfterClose(7, STABLE_MS - 1), 7);
+  assert.equal(attemptsAfterClose(7, 0), 7);
+  assert.equal(attemptsAfterClose(0, 5), 0);
+});
+
+await check("cap hint counts only consecutive refused opens", () => {
+  let n = 0;
+  for (const ev of ["refused", "refused"] as const) n = nextFailedOpens(n, ev);
+  assert.equal(n, 2);
+  assert.equal(showCapHint(n), false);
+  assert.equal(showCapHint(nextFailedOpens(n, "refused")), true, "the third refusal in a row shows it");
+  assert.equal(nextFailedOpens(2, "ticket_failed"), 0, "a ticket failure breaks the run");
+  assert.equal(nextFailedOpens(2, "opened"), 0, "an open breaks the run");
+  assert.equal(nextFailedOpens(0, "refused"), 1);
+  // refused, ticket failure, refused, refused: never reaches the hint
+  n = 0;
+  for (const ev of ["refused", "ticket_failed", "refused", "refused"] as const) n = nextFailedOpens(n, ev);
+  assert.equal(showCapHint(n), false);
+  assert.equal(FAILED_OPENS_BEFORE_HINT, 3);
+  assert.equal(showCapHint(FAILED_OPENS_BEFORE_HINT - 1), false);
+  assert.equal(showCapHint(FAILED_OPENS_BEFORE_HINT), true);
+  assert.match(TOO_MANY_STREAMS_MESSAGE, /may be at the limit \(5 per account\)/);
+  assert.match(TOO_MANY_STREAMS_MESSAGE, /keeps retrying/);
+});
+
+await check("hook transitions: initial mode, visibility, restart spacing", () => {
+  assert.equal(initialMode("hidden"), "paused");
+  assert.equal(initialMode("visible"), "connect");
+  const v = { terminal: false, paused: false, connected: true, msAway: 0 };
+  assert.equal(visibleAction(v), "none");
+  assert.equal(visibleAction({ ...v, msAway: HIDDEN_STALE_MS }), "none");
+  assert.equal(visibleAction({ ...v, msAway: HIDDEN_STALE_MS + 1 }), "replace");
+  assert.equal(visibleAction({ ...v, connected: false }), "restart");
+  assert.equal(visibleAction({ ...v, paused: true }), "restart");
+  assert.equal(visibleAction({ ...v, paused: true, msAway: 5 }), "restart");
+  assert.equal(visibleAction({ ...v, terminal: true, paused: true, connected: false, msAway: 10 ** 9 }), "none");
+  assert.equal(restartDelay(10_000, -Infinity), 0);
+  assert.equal(restartDelay(10_000, 9_500), 500);
+  assert.equal(restartDelay(10_000, 9_000), 0);
+  assert.equal(restartDelay(10_000, 10_000), MIN_RESTART_GAP_MS);
+  assert.equal(restartDelay(10_000, 1_000), 0);
+});
+
+await check("parseTicketResponse and emptyStateText", () => {
+  assert.equal(parseTicketResponse({ ticket: "abc" }), "abc");
+  assert.equal(parseTicketResponse({ ticket: "" }), null);
+  assert.equal(parseTicketResponse({}), null);
+  assert.equal(parseTicketResponse(undefined), null);
+  assert.equal(parseTicketResponse(null), null);
+  assert.equal(parseTicketResponse({ ticket: 5 }), null);
+  assert.equal(parseTicketResponse([]), null);
+  assert.equal(parseTicketResponse("abc"), null);
+  assert.match(emptyStateText("paused", false), /Paused/);
+  assert.match(emptyStateText("reconnecting", false), /Waiting for the log stream/);
+  assert.match(emptyStateText("disconnected", false), /No logs to show/);
+  assert.match(emptyStateText("live", true), /Logs cleared/);
+  assert.match(emptyStateText("live", false), /No logs yet/);
+  assert.match(emptyStateText("reconnecting", true), /Waiting/, "status wins over cleared while not live");
+});
+
+await check("classifyTicketError: 404 is terminal without Retry, expired session is terminal, the rest keep reconnecting", () => {
   const gone = classifyTicketError(new ApiError(404, "deployment not found"));
   assert.equal(gone.kind, "terminal");
+  assert.equal(gone.kind === "terminal" && gone.canRetry, false);
   assert.match(gone.message, /no longer exists/);
-  assert.equal(classifyTicketError(new ApiError(401, "session_expired")).kind, "terminal");
+  const exp = classifyTicketError(new ApiError(401, "session_expired"));
+  assert.equal(exp.kind, "terminal");
+  assert.equal(exp.kind === "terminal" && exp.canRetry, true);
   for (const e of [new ApiError(0, "network_error"), new ApiError(500, "internal_error"), new ApiError(503, "refresh_unavailable"), new ApiError(401, "invalid_ticket"), new TypeError("x")]) {
     const o = classifyTicketError(e);
     assert.equal(o.kind, "retry", String(e));
     assert.equal(o.kind === "retry" && o.minDelayMs, 0);
     assert.ok(o.message.length > 0);
+    assert.doesNotMatch(o.message, /try again/i, "the panel retries by itself: " + o.message);
   }
-  assert.equal(classifyTicketError(new ApiError(0, "network_error")).message, humanizeApiError(new ApiError(0, "network_error")));
+  assert.match(classifyTicketError(new ApiError(0, "network_error")).message, /keeps retrying/);
+  for (const e of [new ApiError(400, "invalid_request"), new ApiError(503, ""), new ApiError(502, ""), new ApiError(0, ""), new Error("x")]) {
+    const o = classifyTicketError(e);
+    assert.equal(o.kind, "retry");
+    assert.match(o.message, /retry/i, "every retry message says the panel retries: " + o.message);
+    assert.doesNotMatch(o.message, /try again/i);
+  }
 });
 
-await check("classifyTicketError: 429 honours Retry-After, clamped to 1-60 s", () => {
+await check("classifyTicketError: 429 honours Retry-After, clamped to 1-60 s, 30 s when missing", () => {
   const ms = (e: ApiError) => {
     const o = classifyTicketError(e);
     assert.equal(o.kind, "retry");
+    assert.doesNotMatch(o.message, /try again/i);
     return o.kind === "retry" ? o.minDelayMs : -1;
   };
   assert.equal(ms(new ApiError(429, "too_many_requests", 12)), 12_000);
   assert.equal(ms(new ApiError(429, "too_many_requests", 0)), 1_000);
   assert.equal(ms(new ApiError(429, "too_many_requests", 100_000)), 60_000);
-  assert.equal(ms(new ApiError(429, "too_many_requests")), 5_000);
-  assert.match(classifyTicketError(new ApiError(429, "too_many_streams", 5)).message, /5 log streams/);
+  assert.equal(ms(new ApiError(429, "too_many_requests")), 30_000);
+  assert.equal(DEFAULT_RATE_LIMIT_WAIT_S, 30);
+  assert.match(classifyTicketError(new ApiError(429, "too_many_streams", 5)).message, /limit/);
 });
 
 console.log(`ok: ${passed} checks passed`);

@@ -33,9 +33,13 @@ await check("humanizeApiError maps every documented code", () => {
     "invalid_env_var", "request_too_large", "too_many_requests", "too_many_streams", "invalid_ticket",
     "purge_choice_required", "invalid_purge_data",
   ];
+  // A dropped code would fall back to the status text, so compare against
+  // the fallback of an unmapped code with the same status (418 has no entry).
+  const fallback = humanizeApiError(new ApiError(418, "zzz_unmapped"));
   for (const c of codes) {
-    const m = humanizeApiError(new ApiError(400, c));
+    const m = humanizeApiError(new ApiError(418, c));
     assert.ok(m.length > 10 && !m.includes(c), `${c} -> ${m}`);
+    assert.notEqual(m, fallback, `${c} has no message of its own`);
   }
 });
 
@@ -209,16 +213,69 @@ await check("storage lock serialises concurrent holders", async () => {
 await check("storage lock: a dead holder expires", async () => {
   const st = memStorage();
   st.setItem("cp_refresh_lock", `dead|${Date.now() - 1}`);
+  let ownerInside = "";
+  // waitMs is long: falling through after the wait would not hold the lock.
+  await withStorageLock(st, async () => void (ownerInside = st.getItem("cp_refresh_lock") ?? ""), {
+    id: "me",
+    waitMs: 5_000,
+    settleMs: 5,
+    pollMs: 5,
+  });
+  assert.match(ownerInside, /^me\|/, "the dead holder's claim was replaced by ours before fn ran");
+  assert.equal(st.m.size, 0, "lock released");
+});
+
+await check("storage lock: a claim overwritten during the settle window is not held", async () => {
+  const st = memStorage();
+  let raced = false;
+  const racy = {
+    getItem: st.getItem,
+    removeItem: st.removeItem,
+    // The other tab's write lands right after ours, the way two tabs that
+    // check the key in the same instant end up writing back to back.
+    setItem: (k: string, v: string) => {
+      st.setItem(k, v);
+      if (!raced && v.startsWith("me|")) {
+        raced = true;
+        st.setItem(k, `other|${Date.now() + 80}`);
+      }
+    },
+  };
+  const t0 = Date.now();
+  let startedAfter = -1;
+  await withStorageLock(racy, async () => void (startedAfter = Date.now() - t0), { id: "me", waitMs: 5_000, settleMs: 5, pollMs: 5 });
+  assert.ok(startedAfter >= 70, `fn ran ${startedAfter} ms in, while the other tab's claim was live`);
+});
+
+await check("storage lock: does not remove a key another tab took over during fn", async () => {
+  const st = memStorage();
+  await withStorageLock(
+    st,
+    async () => {
+      st.setItem("cp_refresh_lock", `other|${Date.now() + 60_000}`);
+    },
+    { id: "me", settleMs: 5, pollMs: 5 }
+  );
+  assert.match(st.getItem("cp_refresh_lock") ?? "", /^other\|/);
+});
+
+await check("storage lock: an absurd expiry from storage is treated as expired", async () => {
+  const st = memStorage();
+  st.setItem("cp_refresh_lock", `evil|${Date.now() + 10 * 365 * 86_400_000}`);
+  const t0 = Date.now();
   let ran = false;
-  await withStorageLock(st, async () => void (ran = true), { id: "me", settleMs: 5, pollMs: 5 });
+  // ttl 60 ms: the far-future claim must be treated as expiring within 60 ms.
+  await withStorageLock(st, async () => void (ran = true), { id: "me", ttlMs: 60, waitMs: 5_000, settleMs: 5, pollMs: 5 });
   assert.ok(ran);
+  assert.ok(Date.now() - t0 < 1_000, "did not wait out the forged expiry");
+  assert.equal(st.m.size, 0, "acquired (and released) the lock rather than falling through");
 });
 
 await check("storage lock: runs anyway after waitMs and leaves the other holder's claim", async () => {
   const st = memStorage();
   st.setItem("cp_refresh_lock", `other|${Date.now() + 60_000}`);
   let ran = false;
-  await withStorageLock(st, async () => void (ran = true), { id: "me", waitMs: 30, settleMs: 5, pollMs: 5 });
+  await withStorageLock(st, async () => void (ran = true), { id: "me", ttlMs: 120_000, waitMs: 30, settleMs: 5, pollMs: 5 });
   assert.ok(ran);
   assert.match(st.getItem("cp_refresh_lock") ?? "", /^other\|/);
 });

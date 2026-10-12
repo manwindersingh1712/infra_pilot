@@ -23,15 +23,14 @@ type Nginx struct {
 }
 
 var (
-	nonAlnum    = regexp.MustCompile(`[^a-zA-Z0-9]`)
-	serviceIDRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
-	hostnameRE  = regexp.MustCompile(`^[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)*$`)
+	nonAlnum   = regexp.MustCompile(`[^a-zA-Z0-9]`)
+	hostnameRE = regexp.MustCompile(`^[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)*$`)
 )
 
 // checkRoute guards the values that become a file name and nginx directives
 // (SEC-1 T18): the service ID is a hostname label, the base domain a hostname.
 func checkRoute(serviceID, baseDomain, containerName string) error {
-	if !serviceIDRE.MatchString(serviceID) {
+	if !ValidServiceID(serviceID) {
 		return fmt.Errorf("invalid service id %q", serviceID)
 	}
 	if !hostnameRE.MatchString(baseDomain) {

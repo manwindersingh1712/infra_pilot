@@ -33,6 +33,9 @@ server {
 }
 `
 
+// testSvc has the shape of the cuids the API generates (runtime.ValidServiceID).
+const testSvc = "cm1a2b3c4d5e6f7g8h9i0j1k2"
+
 func TestRenderRouteMatchesNodeOutput(t *testing.T) {
 	if got := RenderRoute("svc-1", "localhost", "cp-dep1", 3000); got != wantRoute {
 		t.Fatalf("got:\n%s", got)
@@ -44,11 +47,11 @@ func TestUpsertRouteWritesFileAndReloads(t *testing.T) {
 	r := &testutil.FakeRunner{}
 	n := Nginx{R: r, RoutesDir: dir, Container: "cp_nginx", BaseDomain: "localhost", Port: "80"}
 
-	if err := n.UpsertRoute(context.Background(), "svc-1", "cp-dep1", 3000); err != nil {
+	if err := n.UpsertRoute(context.Background(), testSvc, "cp-dep1", 3000); err != nil {
 		t.Fatal(err)
 	}
-	b, err := os.ReadFile(filepath.Join(dir, "svc-svc-1.conf"))
-	if err != nil || string(b) != wantRoute {
+	b, err := os.ReadFile(filepath.Join(dir, "svc-"+testSvc+".conf"))
+	if err != nil || string(b) != RenderRoute(testSvc, "localhost", "cp-dep1", 3000) {
 		t.Fatalf("file = %q err=%v", b, err)
 	}
 	if cmds := r.Commands(); len(cmds) != 1 || cmds[0] != "docker exec cp_nginx nginx -s reload" {
@@ -72,9 +75,9 @@ func TestUpsertRouteRejectsBadInput(t *testing.T) {
 		{"svc newline", "a\nb", "cp-dep1", "localhost"},
 		{"svc upper dot", "A.b", "cp-dep1", "localhost"},
 		{"svc empty", "", "cp-dep1", "localhost"},
-		{"container space", "svc-1", "x y", "localhost"},
-		{"domain semicolon", "svc-1", "cp-dep1", "bad;domain"},
-		{"domain empty", "svc-1", "cp-dep1", ""},
+		{"container space", testSvc, "x y", "localhost"},
+		{"domain semicolon", testSvc, "cp-dep1", "bad;domain"},
+		{"domain empty", testSvc, "cp-dep1", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -111,14 +114,14 @@ func TestUpsertRouteLeavesNoTempFiles(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "routes")
 	n := Nginx{R: &testutil.FakeRunner{}, RoutesDir: dir, Container: "cp_nginx", BaseDomain: "localhost", Port: "80"}
 	for range 2 { // a second upsert replaces the existing file
-		if err := n.UpsertRoute(context.Background(), "svc-1", "cp-dep1", 3000); err != nil {
+		if err := n.UpsertRoute(context.Background(), testSvc, "cp-dep1", 3000); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if got := routeFiles(t, dir); len(got) != 1 || got[0] != "svc-svc-1.conf" {
+	if got := routeFiles(t, dir); len(got) != 1 || got[0] != "svc-"+testSvc+".conf" {
 		t.Fatalf("files = %v", got)
 	}
-	fi, err := os.Stat(filepath.Join(dir, "svc-svc-1.conf"))
+	fi, err := os.Stat(filepath.Join(dir, "svc-"+testSvc+".conf"))
 	if err != nil || fi.Mode().Perm() != 0o644 {
 		t.Fatalf("mode = %v err=%v", fi.Mode(), err)
 	}
@@ -129,17 +132,17 @@ func TestUpsertRouteLeavesNoTempFiles(t *testing.T) {
 func TestUpsertRouteReplacesFileAtomically(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "routes")
 	n := Nginx{R: &testutil.FakeRunner{}, RoutesDir: dir, Container: "cp_nginx", BaseDomain: "localhost", Port: "80"}
-	if err := n.UpsertRoute(context.Background(), "svc-1", "cp-dep1", 3000); err != nil {
+	if err := n.UpsertRoute(context.Background(), testSvc, "cp-dep1", 3000); err != nil {
 		t.Fatal(err)
 	}
 	old := filepath.Join(t.TempDir(), "old.conf")
-	if err := os.Link(filepath.Join(dir, "svc-svc-1.conf"), old); err != nil {
+	if err := os.Link(filepath.Join(dir, "svc-"+testSvc+".conf"), old); err != nil {
 		t.Fatal(err)
 	}
-	if err := n.UpsertRoute(context.Background(), "svc-1", "cp-dep2", 3000); err != nil {
+	if err := n.UpsertRoute(context.Background(), testSvc, "cp-dep2", 3000); err != nil {
 		t.Fatal(err)
 	}
-	if b, _ := os.ReadFile(old); string(b) != wantRoute {
+	if b, _ := os.ReadFile(old); string(b) != RenderRoute(testSvc, "localhost", "cp-dep1", 3000) {
 		t.Fatalf("old file rewritten in place: %q", b)
 	}
 }
@@ -152,7 +155,7 @@ func failingReload() *testutil.FakeRunner {
 
 func checkReloadErr(t *testing.T, err error) {
 	t.Helper()
-	if !errors.Is(err, errReload) || !strings.Contains(err.Error(), "svc-1") {
+	if !errors.Is(err, errReload) || !strings.Contains(err.Error(), testSvc) {
 		t.Fatalf("err = %v", err)
 	}
 }
@@ -162,7 +165,7 @@ func TestUpsertRouteReloadFailureRemovesNewFile(t *testing.T) {
 	r := failingReload()
 	n := Nginx{R: r, RoutesDir: dir, Container: "cp_nginx", BaseDomain: "localhost", Port: "80"}
 
-	checkReloadErr(t, n.UpsertRoute(context.Background(), "svc-1", "cp-dep1", 3000))
+	checkReloadErr(t, n.UpsertRoute(context.Background(), testSvc, "cp-dep1", 3000))
 	if got := routeFiles(t, dir); len(got) != 0 {
 		t.Fatalf("files = %v", got)
 	}
@@ -174,14 +177,14 @@ func TestUpsertRouteReloadFailureRemovesNewFile(t *testing.T) {
 func TestUpsertRouteReloadFailureRestoresOldFile(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "routes")
 	n := Nginx{R: &testutil.FakeRunner{}, RoutesDir: dir, Container: "cp_nginx", BaseDomain: "localhost", Port: "80"}
-	if err := n.UpsertRoute(context.Background(), "svc-1", "cp-dep1", 3000); err != nil {
+	if err := n.UpsertRoute(context.Background(), testSvc, "cp-dep1", 3000); err != nil {
 		t.Fatal(err)
 	}
 
 	n.R = failingReload()
-	checkReloadErr(t, n.UpsertRoute(context.Background(), "svc-1", "cp-dep2", 4000))
-	b, err := os.ReadFile(filepath.Join(dir, "svc-svc-1.conf"))
-	if err != nil || string(b) != wantRoute {
+	checkReloadErr(t, n.UpsertRoute(context.Background(), testSvc, "cp-dep2", 4000))
+	b, err := os.ReadFile(filepath.Join(dir, "svc-"+testSvc+".conf"))
+	if err != nil || string(b) != RenderRoute(testSvc, "localhost", "cp-dep1", 3000) {
 		t.Fatalf("file = %q err=%v", b, err)
 	}
 	if got := routeFiles(t, dir); len(got) != 1 {
@@ -196,8 +199,8 @@ func TestUpsertRouteMkdirFailure(t *testing.T) {
 	}
 	r := &testutil.FakeRunner{}
 	n := Nginx{R: r, RoutesDir: filepath.Join(file, "routes"), Container: "cp_nginx", BaseDomain: "localhost", Port: "80"}
-	err := n.UpsertRoute(context.Background(), "svc-1", "cp-dep1", 3000)
-	if err == nil || !strings.Contains(err.Error(), "svc-1") {
+	err := n.UpsertRoute(context.Background(), testSvc, "cp-dep1", 3000)
+	if err == nil || !strings.Contains(err.Error(), testSvc) {
 		t.Fatalf("err = %v", err)
 	}
 	if cmds := r.Commands(); len(cmds) != 0 {
@@ -250,5 +253,29 @@ func TestRemoveRouteReloadFailureIsReported(t *testing.T) {
 	n.R = failingReload()
 	if err := n.RemoveRoute(context.Background(), vsvc); err == nil || !strings.Contains(err.Error(), "reload") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// SEC-10: UpsertRoute and RemoveRoute accept exactly the same ids, so a route
+// that was written can always be removed.
+func TestUpsertRouteAndRemoveRouteAcceptTheSameIDs(t *testing.T) {
+	for _, id := range []string{
+		testSvc, "abcdefghij0123456789", "abcdefghij0123456789abcdefghij01", // valid: 20 and 32 chars
+		"svc-1", "my-service-with-dashes-1234", "CM1A2B3C4D5E6F7G8H9I0J1K2", // dashes, uppercase
+		"short", "abcdefghij012345678", "abcdefghij0123456789abcdefghij012", // too short, 19, 33
+		"", "../etc/passwd", "a.b", "abcdefghij0123456789\n",
+	} {
+		dir := filepath.Join(t.TempDir(), "routes")
+		n := Nginx{R: &testutil.FakeRunner{}, RoutesDir: dir, Container: "cp_nginx", BaseDomain: "localhost", Port: "80"}
+		upErr := n.UpsertRoute(context.Background(), id, "cp-dep1", 3000)
+		rmErr := n.RemoveRoute(context.Background(), id)
+		if (upErr == nil) != ValidServiceID(id) || (rmErr == nil) != ValidServiceID(id) {
+			t.Errorf("id %q: upsert err=%v remove err=%v valid=%v", id, upErr, rmErr, ValidServiceID(id))
+		}
+		if upErr == nil {
+			if _, err := os.Stat(filepath.Join(dir, "svc-"+id+".conf")); !os.IsNotExist(err) {
+				t.Errorf("id %q: route written by Upsert was not removable by RemoveRoute (%v)", id, err)
+			}
+		}
 	}
 }

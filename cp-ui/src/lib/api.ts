@@ -24,15 +24,22 @@ export function clearSession(): void {
 
 const NOTICE_KEY = "cp_notice";
 
-// takeSessionNotice returns (once) the message left by a forced sign-out, for
-// the login page to show.
-export function takeSessionNotice(): string | null {
+// readSessionNotice returns the message left by a forced sign-out, for the
+// login page to show. It has no side effects (safe in a state initializer);
+// the page calls clearSessionNotice() from an effect so it shows only once.
+export function readSessionNotice(): string | null {
   try {
-    const v = sessionStorage.getItem(NOTICE_KEY);
-    sessionStorage.removeItem(NOTICE_KEY);
-    return v;
+    return sessionStorage.getItem(NOTICE_KEY);
   } catch {
     return null;
+  }
+}
+
+export function clearSessionNotice(): void {
+  try {
+    sessionStorage.removeItem(NOTICE_KEY);
+  } catch {
+    // storage blocked: nothing to clear
   }
 }
 

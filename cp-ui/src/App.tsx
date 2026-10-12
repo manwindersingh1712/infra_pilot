@@ -11,7 +11,7 @@ import { ProjectsPage } from "./pages/ProjectsPage";
 import { ProjectCanvasPage } from "./pages/ProjectCanvasPage";
 import { LandingPage } from "./pages/LandingPage";
 import logoSvg from "./assets/logo.svg";
-import { ApiError, apiFetch, getToken, humanizeApiError, logout as endSession, setSession, takeSessionNotice } from "./lib/api";
+import { ApiError, apiFetch, getToken, humanizeApiError, clearSessionNotice, logout as endSession, readSessionNotice, setSession } from "./lib/api";
 
 function useIsMobile() {
   const [isMobile, setIsMobile] = useState(false);
@@ -108,7 +108,12 @@ function LoginPage() {
   const navigate = useNavigate();
   const { login } = useAuth();
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(() => takeSessionNotice());
+  const [error, setError] = useState<string | null>(() => readSessionNotice());
+  // Show the notice once: forget it after the first render (idempotent, so
+  // StrictMode running the effect twice is harmless).
+  useEffect(() => {
+    clearSessionNotice();
+  }, []);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 

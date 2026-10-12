@@ -1,4 +1,4 @@
-import { ApiError, parseErrorCode, SESSION_EXPIRED_MESSAGE } from "./errors";
+import { ApiError, parseErrorCode, parseRetryAfter, SESSION_EXPIRED_MESSAGE } from "./errors";
 import { refreshSession, withStorageLock, type RefreshDeps, type RefreshOutcome } from "./refresh";
 
 export { ApiError, humanizeApiError, SESSION_EXPIRED_MESSAGE } from "./errors";
@@ -129,7 +129,7 @@ export async function apiFetch<T>(path: string, opts: RequestInit = {}): Promise
     res = await send(path, opts);
     if (res.status === 401) expireSession();
   }
-  if (!res.ok) throw new ApiError(res.status, parseErrorCode(await res.text()));
+  if (!res.ok) throw new ApiError(res.status, parseErrorCode(await res.text()), parseRetryAfter(res.headers.get("Retry-After")));
   const text = await res.text();
   return (text ? JSON.parse(text) : undefined) as T;
 }

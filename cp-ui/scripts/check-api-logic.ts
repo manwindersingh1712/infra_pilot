@@ -2,7 +2,11 @@
 import assert from "node:assert/strict";
 import { refreshSession, withStorageLock, type RefreshCallResult, type RefreshDeps } from "../src/lib/refresh.ts";
 import { isValidProjectName } from "../src/lib/projectName.ts";
-import { ApiError, humanizeApiError, parseErrorCode, SESSION_EXPIRED_MESSAGE } from "../src/lib/errors.ts";
+import { ApiError, humanizeApiError, parseErrorCode, parseRetryAfter, SESSION_EXPIRED_MESSAGE } from "../src/lib/errors.ts";
+import {
+  appendLive, backoffDelay, classifyTicketError, endDelay, latestMs, mergeHistory, parseEndEvent, parseHistoryEvent,
+  parseLogEvent, type LogEntry,
+} from "../src/lib/logStream.ts";
 
 let passed = 0;
 function check(name: string, fn: () => void | Promise<void>): Promise<void> {
@@ -278,6 +282,146 @@ await check("storage lock: runs anyway after waitMs and leaves the other holder'
   await withStorageLock(st, async () => void (ran = true), { id: "me", ttlMs: 120_000, waitMs: 30, settleMs: 5, pollMs: 5 });
   assert.ok(ran);
   assert.match(st.getItem("cp_refresh_lock") ?? "", /^other\|/);
+});
+
+// ---- logStream.ts
+const entry = (t: string, m: string, source: LogEntry["source"] = "stdout"): LogEntry => ({ deploymentId: "d", source, message: m, timestamp: t });
+const T = (s: number) => new Date(Date.UTC(2026, 0, 1, 0, 0, s)).toISOString();
+
+await check("parseRetryAfter accepts whole seconds only", () => {
+  assert.equal(parseRetryAfter("5"), 5);
+  assert.equal(parseRetryAfter(" 30 "), 30);
+  assert.equal(parseRetryAfter(null), undefined);
+  assert.equal(parseRetryAfter("Wed, 21 Oct 2026 07:28:00 GMT"), undefined);
+  assert.equal(parseRetryAfter("-1"), undefined);
+  assert.equal(parseRetryAfter("1.5"), undefined);
+  assert.equal(parseRetryAfter(""), undefined);
+  assert.equal(new ApiError(429, "too_many_streams", 7).retryAfter, 7);
+  assert.equal(new ApiError(500, "x").retryAfter, undefined);
+});
+
+await check("backoffDelay grows, stays within [ceiling/2, ceiling], is capped at 30 s and jittered", () => {
+  assert.equal(backoffDelay(0, 0), 500);
+  assert.equal(backoffDelay(0, 1), 1000);
+  assert.equal(backoffDelay(1, 1), 2000);
+  assert.equal(backoffDelay(2, 1), 4000);
+  assert.equal(backoffDelay(4, 1), 16000);
+  assert.equal(backoffDelay(5, 1), 30000);
+  assert.equal(backoffDelay(50, 1), 30000);
+  assert.equal(backoffDelay(1000, 0), 15000);
+  assert.equal(backoffDelay(3, 0), 4000);
+  assert.ok(backoffDelay(3, 0.25) < backoffDelay(3, 0.75), "jitter spreads the delay");
+  for (let a = 0; a < 40; a++) for (const r of [0, 0.3, 0.999]) {
+    const d = backoffDelay(a, r);
+    assert.ok(d > 0 && d <= 30000, `attempt ${a}: ${d}`);
+  }
+  assert.equal(backoffDelay(-3, 1), 1000, "negative attempt behaves like 0");
+  assert.equal(backoffDelay(2, 7), 4000, "rand above 1 is clamped");
+  assert.equal(backoffDelay(2, -7), 2000, "rand below 0 is clamped");
+});
+
+await check("endDelay: max_duration is immediate, shutdown waits 1-3 s", () => {
+  assert.equal(endDelay("max_duration", 0.9), 0);
+  assert.equal(endDelay("shutdown", 0), 1000);
+  assert.equal(endDelay("shutdown", 1), 3000);
+  assert.equal(endDelay("shutdown", 0.5), 2000);
+});
+
+await check("parseEndEvent: only max_duration is routine; junk counts as shutdown", () => {
+  assert.equal(parseEndEvent('{"reason":"max_duration"}'), "max_duration");
+  assert.equal(parseEndEvent('{"reason":"shutdown"}'), "shutdown");
+  assert.equal(parseEndEvent('{"reason":"other"}'), "shutdown");
+  assert.equal(parseEndEvent("not json"), "shutdown");
+  assert.equal(parseEndEvent(undefined), "shutdown");
+  assert.equal(parseEndEvent("null"), "shutdown");
+});
+
+await check("parseLogEvent / parseHistoryEvent ignore malformed payloads", () => {
+  assert.deepEqual(parseLogEvent(JSON.stringify(entry(T(1), "hi"))), entry(T(1), "hi"));
+  assert.equal(parseLogEvent("{oops"), null);
+  assert.equal(parseLogEvent("null"), null);
+  assert.equal(parseLogEvent("[]"), null);
+  assert.equal(parseLogEvent(JSON.stringify({ message: 1, timestamp: "x", source: "stdout" })), null);
+  assert.equal(parseLogEvent(JSON.stringify({ message: "m", timestamp: "x", source: "weird" })), null);
+  assert.equal(parseLogEvent(42), null);
+  const h = parseHistoryEvent(JSON.stringify({ logs: [entry(T(1), "a"), { bad: true }, entry(T(2), "b")], meta: { source: "redis", totalCount: 9 } }));
+  assert.deepEqual(h?.logs.map((l) => l.message), ["a", "b"]);
+  assert.deepEqual(h?.meta, { source: "redis", totalCount: 9 });
+  assert.equal(parseHistoryEvent("{}"), null);
+  assert.equal(parseHistoryEvent("{oops"), null);
+  assert.equal(parseHistoryEvent('{"logs":"x"}'), null);
+  assert.equal(parseHistoryEvent('{"logs":[],"meta":{"source":"nope"}}')?.meta, null);
+  assert.deepEqual(parseHistoryEvent('{"logs":[],"meta":{"source":"clickhouse"}}')?.meta, { source: "clickhouse" });
+});
+
+await check("mergeHistory: dedupes on timestamp+message, keeps time order, keeps the user's lines", () => {
+  const prev = [entry(T(1), "a"), entry(T(2), "b"), entry(T(5), "e")];
+  const merged = mergeHistory(prev, [entry(T(2), "b"), entry(T(3), "c"), entry(T(6), "f")]);
+  assert.deepEqual(merged.map((l) => l.message), ["a", "b", "c", "e", "f"]);
+  // same timestamp, different message is a different line; same message at another time too
+  const m2 = mergeHistory([entry(T(1), "x")], [entry(T(1), "y"), entry(T(2), "x")]);
+  assert.deepEqual(m2.map((l) => l.message), ["x", "y", "x"]);
+  // duplicates inside the incoming list collapse
+  assert.equal(mergeHistory([], [entry(T(1), "d"), entry(T(1), "d")]).length, 1);
+  // equal timestamps keep arrival order
+  assert.deepEqual(mergeHistory([entry(T(1), "p")], [entry(T(1), "q"), entry(T(1), "r")]).map((l) => l.message), ["p", "q", "r"]);
+  // more history than the server's 100 lines survives: nothing is dropped
+  const big = Array.from({ length: 500 }, (_, i) => entry(T(i), `m${i}`));
+  assert.equal(mergeHistory(big, big.slice(-100)).length, 500);
+});
+
+await check("mergeHistory: no change returns the same array; Clear is not undone", () => {
+  const prev = [entry(T(1), "a")];
+  assert.equal(mergeHistory(prev, [entry(T(1), "a")]), prev);
+  assert.equal(mergeHistory(prev, []), prev);
+  const cleared = mergeHistory([], [entry(T(1), "a"), entry(T(2), "b"), entry(T(3), "c")], Date.parse(T(2)));
+  assert.deepEqual(cleared.map((l) => l.message), ["c"], "lines at or before the clear point stay gone");
+  assert.equal(mergeHistory([], [entry(T(1), "a")], Date.parse(T(1)) - 1).length, 1);
+});
+
+await check("mergeHistory: unparseable timestamps are kept in arrival order", () => {
+  const m = mergeHistory([entry("bad", "a")], [entry(T(1), "b"), entry("worse", "c")], Date.parse(T(0)));
+  assert.deepEqual(m.map((l) => l.message), ["a", "b", "c"]);
+  // a good line older than a good line already shown, with an unparseable one between
+  const m2 = mergeHistory([entry(T(5), "a"), entry("bad", "m"), entry(T(6), "z")], [entry(T(1), "b")]);
+  assert.deepEqual(m2.map((l) => l.message), ["a", "m", "z", "b"], "no sorting when a timestamp is unparseable");
+});
+
+await check("appendLive and latestMs", () => {
+  const prev = [entry(T(1), "a")];
+  assert.equal(appendLive(prev, entry(T(1), "a")), prev);
+  assert.equal(appendLive(prev, entry(T(1), "b")).length, 2);
+  assert.equal(appendLive(prev, entry(T(2), "a")).length, 2);
+  assert.equal(latestMs([]), -Infinity);
+  assert.equal(latestMs([entry(T(3), "x"), entry(T(9), "y"), entry("bad", "z")]), Date.parse(T(9)));
+  assert.equal(latestMs([entry(T(3), "x")], Date.parse(T(50))), Date.parse(T(50)));
+});
+
+await check("classifyTicketError: 404 and expired session are terminal, the rest keep reconnecting", () => {
+  const gone = classifyTicketError(new ApiError(404, "deployment not found"));
+  assert.equal(gone.kind, "terminal");
+  assert.match(gone.message, /no longer exists/);
+  assert.equal(classifyTicketError(new ApiError(401, "session_expired")).kind, "terminal");
+  for (const e of [new ApiError(0, "network_error"), new ApiError(500, "internal_error"), new ApiError(503, "refresh_unavailable"), new ApiError(401, "invalid_ticket"), new TypeError("x")]) {
+    const o = classifyTicketError(e);
+    assert.equal(o.kind, "retry", String(e));
+    assert.equal(o.kind === "retry" && o.minDelayMs, 0);
+    assert.ok(o.message.length > 0);
+  }
+  assert.equal(classifyTicketError(new ApiError(0, "network_error")).message, humanizeApiError(new ApiError(0, "network_error")));
+});
+
+await check("classifyTicketError: 429 honours Retry-After, clamped to 1-60 s", () => {
+  const ms = (e: ApiError) => {
+    const o = classifyTicketError(e);
+    assert.equal(o.kind, "retry");
+    return o.kind === "retry" ? o.minDelayMs : -1;
+  };
+  assert.equal(ms(new ApiError(429, "too_many_requests", 12)), 12_000);
+  assert.equal(ms(new ApiError(429, "too_many_requests", 0)), 1_000);
+  assert.equal(ms(new ApiError(429, "too_many_requests", 100_000)), 60_000);
+  assert.equal(ms(new ApiError(429, "too_many_requests")), 5_000);
+  assert.match(classifyTicketError(new ApiError(429, "too_many_streams", 5)).message, /5 log streams/);
 });
 
 console.log(`ok: ${passed} checks passed`);

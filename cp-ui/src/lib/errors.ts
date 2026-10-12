@@ -3,16 +3,26 @@
 
 // ApiError carries the HTTP status and the machine code the API sends as
 // {"error": "<code>"}. status 0 means the request never got a response.
+// retryAfter is the Retry-After header in whole seconds, when the server sent one.
 export class ApiError extends Error {
   status: number;
   code: string;
+  retryAfter?: number;
 
-  constructor(status: number, code: string) {
+  constructor(status: number, code: string, retryAfter?: number) {
     super(code ? `${status}: ${code}` : String(status));
     this.name = "ApiError";
     this.status = status;
     this.code = code;
+    this.retryAfter = retryAfter;
   }
+}
+
+// parseRetryAfter reads a Retry-After header given as delta-seconds. HTTP
+// dates and anything else yield undefined (the caller uses its own backoff).
+export function parseRetryAfter(header: string | null): number | undefined {
+  if (header === null || !/^\d{1,6}$/.test(header.trim())) return undefined;
+  return Number(header.trim());
 }
 
 // parseErrorCode extracts the "error" string from a response body. Anything
@@ -46,7 +56,7 @@ const CODE_MESSAGES: Record<string, string> = {
   reserved_env_var: "That variable name is reserved by the platform. Choose another name.",
   request_too_large: "That request was too large.",
   too_many_requests: "Too many requests. Wait a moment and try again.",
-  too_many_streams: "Too many log streams are open. Close another logs panel and try again.",
+  too_many_streams: "You have 5 log streams open; close one and this panel will reconnect.",
   invalid_ticket: "The log stream link expired. Reopen the logs.",
   purge_choice_required: "Choose whether to keep or delete the service's data before deleting it.",
   invalid_purge_data: "That data-deletion choice was not valid. Reload the page and try again.",

@@ -436,9 +436,15 @@ func NewLimits(memory, cpus string, pids int) (Limits, error) {
 // ErrInvalidSpec and name keys, never values.
 func (s RunSpec) Validate() error { return s.validate() }
 
-// RemoveVolume deletes a named volume; a missing volume is not an error. The
-// name is validated like every other docker argument.
+// RemoveVolume deletes the data volume cp-vol-<serviceId>; a missing volume is
+// not an error. Any other name is refused without running docker.
 func (d Docker) RemoveVolume(ctx context.Context, name string) error {
+	// Only a service data volume (cp-vol-<serviceId>) may be removed here, so a
+	// bug elsewhere can never name another volume (cp_pgdata, a registry volume).
+	id, ok := strings.CutPrefix(name, "cp-vol-")
+	if !ok || !ValidServiceID(id) {
+		return fmt.Errorf("refusing to remove volume %q: not a service data volume", name)
+	}
 	if err := checkName("volume", name); err != nil {
 		return err
 	}
@@ -457,7 +463,7 @@ var containerIDRE = regexp.MustCompile(`^[0-9a-f]{12,64}$`)
 // It catches containers that no Deployment row points at (a deploy cancelled
 // after the container started). Idempotent.
 func (d Docker) RemoveServiceContainers(ctx context.Context, serviceID string) error {
-	if !serviceIDRE.MatchString(serviceID) {
+	if !ValidServiceID(serviceID) {
 		return fmt.Errorf("invalid service id %q", serviceID)
 	}
 	out, err := d.R.Run(ctx, "", "docker", "ps", "-a", "-q", "--filter", "label=cp.serviceId="+serviceID)

@@ -218,11 +218,11 @@ func TestRemoveRouteDeletesFileAndReloads(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "routes")
 	r := &testutil.FakeRunner{}
 	n := Nginx{R: r, RoutesDir: dir, Container: "cp_nginx", BaseDomain: "localhost", Port: "80"}
-	if err := n.UpsertRoute(context.Background(), "svc-1", "cp-dep1", 3000); err != nil {
+	if err := n.UpsertRoute(context.Background(), vsvc, "cp-dep1", 3000); err != nil {
 		t.Fatal(err)
 	}
 	for range 2 { // the second call finds no file and still succeeds
-		if err := n.RemoveRoute(context.Background(), "svc-1"); err != nil {
+		if err := n.RemoveRoute(context.Background(), vsvc); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -244,11 +244,11 @@ func TestRemoveRouteRejectsBadServiceID(t *testing.T) {
 func TestRemoveRouteReloadFailureIsReported(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "routes")
 	n := Nginx{R: &testutil.FakeRunner{}, RoutesDir: dir, Container: "cp_nginx", BaseDomain: "localhost", Port: "80"}
-	if err := n.UpsertRoute(context.Background(), "svc-1", "cp-dep1", 3000); err != nil {
+	if err := n.UpsertRoute(context.Background(), vsvc, "cp-dep1", 3000); err != nil {
 		t.Fatal(err)
 	}
 	n.R = failingReload()
-	if err := n.RemoveRoute(context.Background(), "svc-1"); err == nil || !strings.Contains(err.Error(), "reload") {
+	if err := n.RemoveRoute(context.Background(), vsvc); err == nil || !strings.Contains(err.Error(), "reload") {
 		t.Fatalf("err = %v", err)
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
 
+	"infrapilot/internal/runtime"
 	"infrapilot/internal/store"
 )
 
@@ -165,7 +166,7 @@ func parseTeardownPayload(payload []byte) (in TeardownInput, odd string, err err
 			if err := dec.Decode(&id); err != nil {
 				return in, "", errors.New("serviceId is not a string")
 			}
-			if !serviceIDPattern.MatchString(id) {
+			if !runtime.ValidServiceID(id) {
 				return in, "", fmt.Errorf("serviceId %q is not a cuid", clip(id, 40))
 			}
 			in.ServiceID = id

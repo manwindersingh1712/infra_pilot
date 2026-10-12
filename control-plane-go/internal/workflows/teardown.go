@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
-	"regexp"
 	"time"
 
 	enumspb "go.temporal.io/api/enums/v1"
@@ -17,6 +16,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"infrapilot/internal/metrics"
+	"infrapilot/internal/runtime"
 	"infrapilot/internal/store"
 )
 
@@ -30,13 +30,11 @@ type TeardownInput struct {
 	PurgeData bool   `json:"purgeData"`
 }
 
-// serviceIDPattern matches the cuids the API generates. The id goes into a
-// container label filter, a volume name, a route file name and a host path, so
-// nothing else may through (the starter and both activities check it).
-var serviceIDPattern = regexp.MustCompile(`^[a-z0-9]{20,32}$`)
-
+// checkServiceID admits only cuid-shaped ids (runtime.ValidServiceID): the id
+// goes into a container label filter, a volume name, a route file name and a
+// host path.
 func checkServiceID(id string) error {
-	if !serviceIDPattern.MatchString(id) {
+	if !runtime.ValidServiceID(id) {
 		return temporal.NewNonRetryableApplicationError("invalid service id", "InvalidInput", nil)
 	}
 	return nil

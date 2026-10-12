@@ -116,7 +116,7 @@ func (n Nginx) upsertRoute(ctx context.Context, serviceID, containerName string,
 // idempotent: a missing file is not an error, and nginx is reloaded anyway, so
 // a retry after a failed reload still takes the route out of service.
 func (n Nginx) RemoveRoute(ctx context.Context, serviceID string) error {
-	if !serviceIDRE.MatchString(serviceID) {
+	if !ValidServiceID(serviceID) {
 		return fmt.Errorf("invalid service id %q", serviceID)
 	}
 	path := filepath.Join(n.RoutesDir, "svc-"+serviceID+".conf")

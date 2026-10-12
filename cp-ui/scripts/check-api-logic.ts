@@ -11,6 +11,12 @@ import {
   visibleAction, type LogEntry,
 } from "../src/lib/logStream.ts";
 
+import {
+  DELETE_CLOSED, DELETING_NOTICE, beginDelete, buildConnectionRows, buildConnectionUrl, cancelDelete,
+  classifyDeleteError, connectedServiceNames, deletePath, failDelete, openDelete, passwordEnvKey,
+  pickConnectionDeployment,
+} from "../src/lib/serviceActions.ts";
+
 let passed = 0;
 function check(name: string, fn: () => void | Promise<void>): Promise<void> {
   return Promise.resolve(fn()).then(
@@ -592,6 +598,112 @@ await check("classifyTicketError: 429 honours Retry-After, clamped to 1-60 s, 30
   assert.equal(ms(new ApiError(429, "too_many_requests")), 30_000);
   assert.equal(DEFAULT_RATE_LIMIT_WAIT_S, 30);
   assert.match(classifyTicketError(new ApiError(429, "too_many_streams", 5)).message, /limit/);
+});
+
+// ---- serviceActions.ts
+await check("pickConnectionDeployment: newest deployed and not stopped", () => {
+  const d = (status: string, createdAt: string, stoppedAt: string | null = null) => ({ status, stoppedAt, hostPort: null, createdAt });
+  assert.equal(pickConnectionDeployment([]), null);
+  assert.equal(pickConnectionDeployment([d("failed", "2026-01-03T00:00:00Z")]), null);
+  const stopped = d("deployed", "2026-01-02T00:00:00Z", "2026-01-02T01:00:00Z");
+  assert.equal(pickConnectionDeployment([d("failed", "2026-01-03T00:00:00Z"), stopped]), null);
+  const live = d("deployed", "2026-01-01T00:00:00Z");
+  assert.equal(pickConnectionDeployment([d("failed", "2026-01-03T00:00:00Z"), stopped, live]), live);
+  const newer = d("deployed", "2026-01-04T00:00:00Z");
+  assert.equal(pickConnectionDeployment([live, newer, stopped]), newer, "order of the input does not matter");
+  assert.equal(pickConnectionDeployment([d("building", "2026-01-05T00:00:00Z")]), null);
+});
+
+await check("buildConnectionUrl percent-encodes the password", () => {
+  assert.equal(buildConnectionUrl("redis", "svc-a", 6379, "p@ss:w/rd#?"), "redis://:p%40ss%3Aw%2Frd%23%3F@svc-a:6379");
+  assert.equal(buildConnectionUrl("mongodb", "svc-a", 27017, "a b"), "mongodb://admin:a%20b@svc-a:27017/?authSource=admin");
+  assert.equal(buildConnectionUrl("redis", "svc-a", 6379, ""), "redis://:@svc-a:6379");
+});
+
+await check("buildConnectionRows: host, user, password states and Local URL only with a host port", () => {
+  const by = (rows: ReturnType<typeof buildConnectionRows>, f: string) => rows.find((r) => r.field === f)?.value;
+  const redis = buildConnectionRows("redis", "abc", null, "s3cr@t");
+  assert.deepEqual(redis.map((r) => r.field), ["host", "port", "password", "url"]);
+  assert.equal(by(redis, "host"), "svc-abc");
+  assert.equal(by(redis, "port"), "6379");
+  assert.equal(by(redis, "url"), "redis://:s3cr%40t@svc-abc:6379");
+  const mongo = buildConnectionRows("mongodb", "abc", 20001, "pw");
+  assert.deepEqual(mongo.map((r) => r.field), ["host", "port", "user", "password", "url", "local"]);
+  assert.equal(by(mongo, "port"), "27017");
+  assert.equal(by(mongo, "user"), "admin");
+  assert.equal(by(mongo, "local"), "mongodb://admin:pw@localhost:20001/?authSource=admin");
+  assert.equal(by(redis, "password"), "s3cr@t");
+  assert.equal(by(buildConnectionRows("redis", "abc", null, null), "password"), "Loading…");
+  assert.equal(by(buildConnectionRows("redis", "abc", null, ""), "password"), "Not available");
+  assert.equal(buildConnectionRows("redis", "abc", 0, "x").some((r) => r.field === "local"), false);
+  assert.equal(passwordEnvKey("redis"), "REDIS_PASSWORD");
+  assert.equal(passwordEnvKey("mongodb"), "MONGO_INITDB_ROOT_PASSWORD");
+});
+
+await check("delete dialog: managed databases need an explicit choice", () => {
+  const open = openDelete();
+  for (const t of ["redis", "mongodb"]) {
+    const none = beginDelete(open, t, null);
+    assert.equal(none.send, false);
+    assert.equal(none.state, open);
+    const purge = beginDelete(open, t, "purge");
+    assert.deepEqual([purge.send, purge.purgeData], [true, true]);
+    assert.deepEqual(purge.state, { phase: "pending", purgeData: true });
+    const keep = beginDelete(open, t, "keep");
+    assert.deepEqual([keep.send, keep.purgeData], [true, false]);
+  }
+  const app = beginDelete(open, "nodejs", null);
+  assert.deepEqual([app.send, app.purgeData], [true, false]);
+  assert.equal(beginDelete(open, "nodejs", "purge").purgeData, false, "a stateless service never purges");
+});
+
+await check("delete dialog: no second request while pending, cancel is blocked while pending", () => {
+  const pending = beginDelete(openDelete(), "redis", "keep").state;
+  const again = beginDelete(pending, "redis", "purge");
+  assert.equal(again.send, false);
+  assert.equal(again.state, pending);
+  assert.equal(beginDelete(DELETE_CLOSED, "nodejs", null).send, false);
+  assert.equal(cancelDelete(pending), pending);
+  assert.deepEqual(cancelDelete(openDelete()), DELETE_CLOSED);
+  assert.deepEqual(failDelete(pending, "boom"), { phase: "confirm", error: "boom" });
+  assert.equal(failDelete(DELETE_CLOSED, "boom"), DELETE_CLOSED);
+  const retry = beginDelete(failDelete(pending, "boom"), "redis", "keep");
+  assert.equal(retry.send, true, "after an error the user can try again");
+});
+
+await check("classifyDeleteError: 404 is success, the rest is readable", () => {
+  assert.deepEqual(classifyDeleteError(new ApiError(404, "service_not_found")), { kind: "done" });
+  assert.deepEqual(classifyDeleteError(new ApiError(404, "")), { kind: "done" });
+  const msg = (e: unknown) => {
+    const o = classifyDeleteError(e);
+    assert.equal(o.kind, "error");
+    return o.kind === "error" ? o.message : "";
+  };
+  assert.match(msg(new ApiError(400, "purge_choice_required")), /delete the data or keep it/);
+  assert.match(msg(new ApiError(400, "invalid_purge_data")), /not valid/);
+  assert.equal(msg(new ApiError(401, "session_expired")), SESSION_EXPIRED_MESSAGE);
+  assert.match(msg(new ApiError(500, "internal_error")), /went wrong/);
+  assert.match(msg(new ApiError(0, "network_error")), /reach the server/);
+  assert.match(msg(new TypeError("x")), /reach the server/);
+});
+
+await check("deletePath sends a literal boolean and encodes the id", () => {
+  assert.equal(deletePath("abc", true), "/services/abc?purgeData=true");
+  assert.equal(deletePath("abc", false), "/services/abc?purgeData=false");
+  assert.equal(deletePath("a/b?c", false), "/services/a%2Fb%3Fc?purgeData=false");
+  assert.match(DELETING_NOTICE, /^Deleting/);
+  assert.doesNotMatch(DELETING_NOTICE, /Deleted/);
+});
+
+await check("connectedServiceNames: both directions, once each, never itself", () => {
+  const services = [{ id: "a", name: "A" }, { id: "b", name: "B" }, { id: "c", name: "C" }, { id: "d", name: "D" }];
+  const conns = [
+    { sourceId: "a", targetId: "b" }, { sourceId: "c", targetId: "a" }, { sourceId: "a", targetId: "b" },
+    { sourceId: "c", targetId: "d" }, { sourceId: "a", targetId: "a" },
+  ];
+  assert.deepEqual(connectedServiceNames("a", services, conns), ["B", "C"]);
+  assert.deepEqual(connectedServiceNames("d", services, conns), ["C"]);
+  assert.deepEqual(connectedServiceNames("b", services, []), []);
 });
 
 console.log(`ok: ${passed} checks passed`);

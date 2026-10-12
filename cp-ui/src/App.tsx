@@ -553,6 +553,7 @@ function SignupPage() {
           <input
             type="text"
             placeholder="John Doe"
+            maxLength={100}
             value={name}
             onChange={(e) => setName(e.target.value)}
             style={{
@@ -591,6 +592,7 @@ function SignupPage() {
           </label>
           <input
             type="email"
+            maxLength={254}
             placeholder="john@doe.com"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
@@ -630,7 +632,7 @@ function SignupPage() {
           </label>
           <input
             type="password"
-            placeholder="8 to 72 characters"
+            placeholder="At least 8 characters"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             style={{

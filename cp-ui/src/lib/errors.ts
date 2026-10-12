@@ -31,12 +31,14 @@ export function parseErrorCode(body: string): string {
 
 export const SESSION_EXPIRED_MESSAGE = "Your session expired, please sign in again.";
 
+const NOT_FOUND_MESSAGE = "That item no longer exists. Reload the page.";
+
 // Messages by server code. The Go API mostly sends snake_case codes but still
 // sends a few sentences ("Project not found"); both are keyed here.
 const CODE_MESSAGES: Record<string, string> = {
-  invalid_request: "That request was not valid. Check what you entered and try again.",
+  invalid_request: "That request was not valid. Check what you entered (names up to 100 characters, emails up to 254) and try again.",
   password_too_short: "Password must be at least 8 characters.",
-  password_too_long: "Password must be at most 72 bytes (72 characters if they are all plain letters and digits).",
+  password_too_long: "Password is too long (the limit is 72 bytes; accented or non-Latin characters take more than one byte).",
   invalid_repo_url: "Enter a public https:// repository URL. SSH and file URLs are not supported.",
   service_not_found: "That service no longer exists.",
   invalid_env_var:
@@ -57,7 +59,8 @@ const CODE_MESSAGES: Record<string, string> = {
   network_error: "Cannot reach the server. Check your connection and try again.",
   unavailable: "The service is temporarily unavailable. Try again in a moment.",
   internal_error: "Something went wrong on our side. Try again in a moment.",
-  not_found: "Not found.",
+  not_found: NOT_FOUND_MESSAGE,
+  "repoUrl required for docker/nodejs/nextjs/react services": "Enter the repository URL for this service type.",
   "Project not found": "That project no longer exists.",
   "Service not found": "That service no longer exists.",
   "Connection not found": "That connection no longer exists.",
@@ -68,7 +71,7 @@ const STATUS_MESSAGES: Record<number, string> = {
   0: CODE_MESSAGES.network_error,
   400: CODE_MESSAGES.invalid_request,
   401: SESSION_EXPIRED_MESSAGE,
-  404: "Not found.",
+  404: NOT_FOUND_MESSAGE,
   413: CODE_MESSAGES.request_too_large,
   429: CODE_MESSAGES.too_many_requests,
   500: CODE_MESSAGES.internal_error,

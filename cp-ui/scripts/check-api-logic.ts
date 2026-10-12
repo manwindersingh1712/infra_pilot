@@ -45,7 +45,7 @@ await check("humanizeApiError maps every documented code", () => {
 
 await check("humanizeApiError status fallbacks", () => {
   assert.equal(humanizeApiError(new ApiError(401, "")), SESSION_EXPIRED_MESSAGE);
-  assert.match(humanizeApiError(new ApiError(404, "")), /not found/i);
+  assert.match(humanizeApiError(new ApiError(404, "")), /no longer exists/i);
   assert.match(humanizeApiError(new ApiError(429, "")), /too many/i);
   assert.match(humanizeApiError(new ApiError(503, "")), /unavailable/i);
   assert.match(humanizeApiError(new ApiError(500, "")), /went wrong/i);

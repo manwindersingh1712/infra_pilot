@@ -73,14 +73,11 @@ func (s *Store) EnvMap(ctx context.Context, serviceID string) (map[string]string
 	return m, nil
 }
 
-// ListUnencryptedEnvVars returns env vars still stored in plain text.
-func (s *Store) ListUnencryptedEnvVars(ctx context.Context) ([]EnvVar, error) {
+// ListEnvVarsAfter returns up to limit env vars (every service, deleted ones
+// included) whose id sorts after afterID, in id order. Keyset paging lets
+// encrypt-env walk the table in short reads without holding any lock.
+func (s *Store) ListEnvVarsAfter(ctx context.Context, afterID string, limit int) ([]EnvVar, error) {
 	rows, err := s.db.Query(ctx,
-		`SELECT `+envCols+` FROM "EnvVar" WHERE "value" NOT LIKE 'enc:v1:%' ORDER BY "createdAt"`)
+		`SELECT `+envCols+` FROM "EnvVar" WHERE "id" > $1 ORDER BY "id" ASC LIMIT $2`, afterID, limit)
 	return collect(rows, err, scanEnvVar)
-}
-
-func (s *Store) SetEnvVarValue(ctx context.Context, id, value string) error {
-	_, err := s.db.Exec(ctx, `UPDATE "EnvVar" SET "value" = $2 WHERE "id" = $1`, id, value)
-	return err
 }

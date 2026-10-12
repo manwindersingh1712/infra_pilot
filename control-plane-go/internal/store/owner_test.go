@@ -66,20 +66,33 @@ func TestOwnerScopedServicesAndDeployments(t *testing.T) {
 	}
 }
 
-func TestUnencryptedEnvVars(t *testing.T) {
+func TestListEnvVarsAfterPagesByID(t *testing.T) {
 	st, ctx := newStore(t), context.Background()
 	f := testutil.Seed(t, st, store.TypeNodejs)
-	st.UpsertEnvVar(ctx, f.ServiceID, "PLAIN", "x")
-	st.UpsertEnvVar(ctx, f.ServiceID, "DONE", "enc:v1:abc")
-
-	plain, err := st.ListUnencryptedEnvVars(ctx)
-	if err != nil || len(plain) != 1 || plain[0].Key != "PLAIN" {
-		t.Fatalf("plain %+v err %v", plain, err)
+	for _, k := range []string{"A", "B", "C", "D", "E"} {
+		if _, err := st.UpsertEnvVar(ctx, f.ServiceID, k, "v"); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := st.SetEnvVarValue(ctx, plain[0].ID, "enc:v1:def"); err != nil {
-		t.Fatal(err)
+	var seen []string
+	after := ""
+	for {
+		page, err := st.ListEnvVarsAfter(ctx, after, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page) == 0 {
+			break
+		}
+		for _, v := range page {
+			if v.ID <= after {
+				t.Fatalf("id %s not after %s", v.ID, after)
+			}
+			seen = append(seen, v.Key)
+			after = v.ID
+		}
 	}
-	if plain, _ := st.ListUnencryptedEnvVars(ctx); len(plain) != 0 {
-		t.Fatalf("still plain: %+v", plain)
+	if len(seen) != 5 {
+		t.Fatalf("saw %v", seen)
 	}
 }

@@ -6,6 +6,16 @@ Every teardown activity retries without limit (10 s, doubling, capped at 5 min b
 
 `:sid` below is the service id. In `psql` set it first: `\set sid 'cm...'`.
 
+## 0. Check the service first (mandatory)
+
+Before any other step that names a service, run this and read the row:
+
+```sql inspect-service
+SELECT "id", "name", "serviceType", "deletedAt" FROM "Service" WHERE "id" = :'sid';
+```
+
+`deletedAt` must be a timestamp and the name and type must be the service you mean. No row, or a NULL `deletedAt`, means the id is wrong or the service is live: stop. Every destructive or restart statement below also carries a soft-delete guard, so a mistyped id for a live service changes nothing (`0` rows affected), but do not rely on that alone.
+
 ## 1. Find stuck teardowns
 
 Temporal UI (http://localhost:8233), Workflows, advanced query:
@@ -22,7 +32,7 @@ WorkflowId STARTS_WITH "teardown-" AND ExecutionStatus IN ("Failed", "Terminated
 
 Permanently rejected events never reach Temporal. List them:
 
-```sql
+```sql dead-outbox
 SELECT "id", "payload"->>'serviceId' AS service, "attempts", "lastError", "createdAt"
 FROM "OutboxEvent"
 WHERE "type" = 'teardown.requested' AND "status" = 'dead'
@@ -46,11 +56,12 @@ INSERT INTO "OutboxEvent" ("id", "type", "payload", "status", "attempts")
 SELECT 'rt' || md5(random()::text || clock_timestamp()::text), "type", "payload", 'pending', 0
 FROM "OutboxEvent"
 WHERE "type" = 'teardown.requested' AND "payload"->>'serviceId' = :'sid'
+  AND EXISTS (SELECT 1 FROM "Service" WHERE "id" = :'sid' AND "deletedAt" IS NOT NULL)
 ORDER BY "createdAt" DESC
 LIMIT 1;
 ```
 
-`INSERT 0 1` means a row was queued. `INSERT 0 0` means the service never had a teardown event (it was not deleted through the API). If a Running workflow is already there, the new event is a no-op (the starter treats "already started" as success).
+`INSERT 0 1` means a row was queued. `INSERT 0 0` means the service never had a teardown event (it was not deleted through the API), or it is not soft-deleted (wrong id: go back to step 0). If a Running workflow is already there, the new event is a no-op (the starter treats "already started" as success).
 
 ## 4. Last resort: clean up by hand
 
@@ -62,11 +73,14 @@ rm control-plane/infra/nginx/conf.d/routes/svc-<id>.conf
 docker exec cp_nginx nginx -s reload
 ```
 
-Then scrub the rows (env vars, connections, repo URL) with the restart in step 3, or by hand:
+Then scrub the rows (env vars, connections, repo URL) with the restart in step 3, or by hand. A managed database keeps its generated password row here (section 5 removes it when you purge the volume); the statements change nothing for a service that is not soft-deleted:
 
-```sql
-DELETE FROM "EnvVar" WHERE "serviceId" = :'sid';
-DELETE FROM "ServiceConnection" WHERE "sourceId" = :'sid' OR "targetId" = :'sid';
+```sql scrub-rows
+DELETE FROM "EnvVar" e WHERE e."serviceId" = :'sid'
+  AND EXISTS (SELECT 1 FROM "Service" s WHERE s."id" = e."serviceId" AND s."deletedAt" IS NOT NULL
+    AND NOT (s."serviceType" IN ('mongodb', 'redis') AND e."key" IN ('REDIS_PASSWORD', 'MONGO_INITDB_ROOT_PASSWORD')));
+DELETE FROM "ServiceConnection" WHERE ("sourceId" = :'sid' OR "targetId" = :'sid')
+  AND EXISTS (SELECT 1 FROM "Service" WHERE "id" = :'sid' AND "deletedAt" IS NOT NULL);
 UPDATE "Service" SET "repoUrl" = NULL WHERE "id" = :'sid' AND "deletedAt" IS NOT NULL;
 ```
 
@@ -79,11 +93,23 @@ docker volume ls --filter name=cp-vol-          # compare with live service ids
 docker volume rm cp-vol-<serviceId>             # only for a service that is deleted
 ```
 
-```sql
-DELETE FROM "EnvVar" WHERE "serviceId" = :'sid';   -- the kept password row
+List the volumes that are candidates (soft-deleted managed databases that still have their password row):
+
+```sql orphan-volumes
+SELECT s."id", 'cp-vol-' || s."id" AS volume, s."name", s."deletedAt" FROM "Service" s
+WHERE s."deletedAt" IS NOT NULL AND s."serviceType" IN ('mongodb', 'redis')
+  AND EXISTS (SELECT 1 FROM "EnvVar" e WHERE e."serviceId" = s."id" AND e."key" IN ('REDIS_PASSWORD', 'MONGO_INITDB_ROOT_PASSWORD'))
+ORDER BY s."deletedAt";
 ```
 
-Check first that the id is a deleted service: `SELECT "deletedAt" FROM "Service" WHERE "id" = :'sid';` must return a timestamp. Never remove a volume of a live service.
+After the volume is removed, delete the kept password row. It touches only the two reserved password keys of a soft-deleted managed service:
+
+```sql purge-password
+DELETE FROM "EnvVar" WHERE "serviceId" = :'sid' AND "key" IN ('REDIS_PASSWORD', 'MONGO_INITDB_ROOT_PASSWORD')
+  AND EXISTS (SELECT 1 FROM "Service" WHERE "id" = :'sid' AND "deletedAt" IS NOT NULL AND "serviceType" IN ('mongodb', 'redis'));
+```
+
+Run step 0 for the id first. Never remove a volume of a live service.
 
 ## 6. Alert
 

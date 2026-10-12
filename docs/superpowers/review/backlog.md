@@ -325,3 +325,9 @@ Source: `review/plan2/task-11-product.md`. The backend is fine for users; the ri
 - Verifier observation: `nextAttemptAt` is `TIMESTAMP(3)` and rounds up, so a new outbox row is not claimable for ~1 ms after insert (only affects tests that tick immediately).
 - `ALLOW_DUPLICATE_FAILED_ONLY` also restarts after Terminated, Canceled and TimedOut; the real-Temporal test covers only Failed, Completed and Running.
 - Release note (SEC-11): a managed database deleted with `purgeData=false` keeps its volume and ONE encrypted password row for operator recovery; it cannot be re-attached from the UI; re-creating the service gives a new id and an empty volume.
+
+## Plan 2 Task 12, closed (round 3 reviews clean)
+- SEC-12 (info, runbook): in zsh `docker rm -f $IDS` does not word-split, so with two or more matching containers it fails safe (nothing wrong removed) but does not work: pipe the id list through `xargs` (or use an array); the `exit 1` in the SID check closes an interactive terminal: use `return`/a subshell in the doc.
+- Verifier: make the shipped e2e "live service" have an in-flight deploy and assert the deploy stays Running after a forged teardown (today only proven in a scratch copy).
+- Release note could repeat the retention-window caveat (a kept volume can only not be purged by a late event while the completed `teardown-<id>` workflow is inside the Temporal retention window).
+- Dev-environment: disk/Docker incident of 2026-10-12 is recorded in START-HERE (go build cache regrows quickly with -race test runs: check `df` before long sessions).

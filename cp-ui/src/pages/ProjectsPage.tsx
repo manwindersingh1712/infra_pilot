@@ -2,14 +2,12 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import logoSvg from "../assets/logo.svg";
 import { apiFetch, humanizeApiError, logout } from "../lib/api";
+import { isValidProjectName, PROJECT_NAME_MAX } from "../lib/projectName";
 
 interface Project {
   id: string;
   name: string;
   createdAt: string;
-  _count?: {
-    services: number;
-  };
 }
 
 export function ProjectsPage() {
@@ -19,6 +17,7 @@ export function ProjectsPage() {
   const [error, setError] = useState<string | null>(null);
   const [newProjectName, setNewProjectName] = useState("");
   const [isCreating, setIsCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showUserDropdown, setShowUserDropdown] = useState(false);
 
@@ -39,21 +38,32 @@ export function ProjectsPage() {
   }
 
   async function createProject() {
-    if (!newProjectName.trim()) return;
+    if (isCreating || !isValidProjectName(newProjectName)) return;
     setIsCreating(true);
+    setCreateError(null);
     try {
       await apiFetch("/projects", {
         method: "POST",
-        body: JSON.stringify({ name: newProjectName }),
+        body: JSON.stringify({ name: newProjectName.trim() }),
       });
       setNewProjectName("");
       setShowCreateModal(false);
       await loadProjects();
     } catch (err) {
-      setError(humanizeApiError(err));
+      // Shown inside the dialog so the user keeps what they typed.
+      setCreateError(
+        humanizeApiError(err, {
+          invalid_request: "Project name must be 2-100 characters.",
+        })
+      );
     } finally {
       setIsCreating(false);
     }
+  }
+
+  function openCreateModal() {
+    setCreateError(null);
+    setShowCreateModal(true);
   }
 
   function handleLogout() {
@@ -138,7 +148,7 @@ export function ProjectsPage() {
 
         <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
           <button
-            onClick={() => setShowCreateModal(true)}
+            onClick={openCreateModal}
             style={{
               padding: "8px 16px",
               background: "linear-gradient(135deg, #8b5cf6, #7c3aed)",
@@ -416,15 +426,6 @@ export function ProjectsPage() {
                     >
                       {project.name}
                     </h3>
-                    <p
-                      style={{
-                        margin: "4px 0 0 0",
-                        fontSize: "13px",
-                        color: "#6b7280",
-                      }}
-                    >
-                      {project._count?.services ?? 0} services
-                    </p>
                   </div>
                 </div>
                 <p style={{ margin: 0, fontSize: "12px", color: "#6b7280" }}>
@@ -490,7 +491,7 @@ export function ProjectsPage() {
             </p>
 
             <button
-              onClick={() => setShowCreateModal(true)}
+              onClick={openCreateModal}
               style={{
                 padding: "12px 24px",
                 background: "linear-gradient(135deg, #8b5cf6, #7c3aed)",
@@ -569,8 +570,12 @@ export function ProjectsPage() {
               type="text"
               placeholder="Project name..."
               value={newProjectName}
-              onChange={(e) => setNewProjectName(e.target.value)}
+              onChange={(e) => {
+                setNewProjectName(e.target.value);
+                setCreateError(null);
+              }}
               onKeyDown={(e) => e.key === "Enter" && createProject()}
+              maxLength={PROJECT_NAME_MAX}
               autoFocus
               style={{
                 width: "100%",
@@ -581,10 +586,35 @@ export function ProjectsPage() {
                 fontSize: "14px",
                 color: "#fff",
                 outline: "none",
-                marginBottom: "24px",
+                marginBottom: "8px",
                 boxSizing: "border-box",
               }}
             />
+            <div
+              style={{
+                fontSize: "12px",
+                color: "#6b7280",
+                marginBottom: createError ? "12px" : "24px",
+              }}
+            >
+              2-100 characters
+            </div>
+            {createError && (
+              <div
+                role="alert"
+                style={{
+                  background: "rgba(239,68,68,0.1)",
+                  color: "#ef4444",
+                  padding: "10px 12px",
+                  borderRadius: "8px",
+                  marginBottom: "24px",
+                  fontSize: "13px",
+                  border: "1px solid rgba(239,68,68,0.2)",
+                }}
+              >
+                {createError}
+              </div>
+            )}
 
             <div style={{ display: "flex", gap: "12px" }}>
               <button
@@ -604,7 +634,7 @@ export function ProjectsPage() {
               </button>
               <button
                 onClick={createProject}
-                disabled={isCreating || !newProjectName.trim()}
+                disabled={isCreating || !isValidProjectName(newProjectName)}
                 style={{
                   flex: 1,
                   padding: "12px",
@@ -613,10 +643,10 @@ export function ProjectsPage() {
                   border: "none",
                   borderRadius: "8px",
                   cursor:
-                    isCreating || !newProjectName.trim()
+                    isCreating || !isValidProjectName(newProjectName)
                       ? "not-allowed"
                       : "pointer",
-                  opacity: isCreating || !newProjectName.trim() ? 0.6 : 1,
+                  opacity: isCreating || !isValidProjectName(newProjectName) ? 0.6 : 1,
                   fontWeight: 500,
                   fontSize: "14px",
                 }}

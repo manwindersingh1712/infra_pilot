@@ -1,6 +1,7 @@
 // Run: node scripts/check-api-logic.ts   (Node 22.18+; no test framework needed)
 import assert from "node:assert/strict";
 import { refreshSession, withStorageLock, type RefreshCallResult, type RefreshDeps } from "../src/lib/refresh.ts";
+import { isValidProjectName } from "../src/lib/projectName.ts";
 import { ApiError, humanizeApiError, parseErrorCode, SESSION_EXPIRED_MESSAGE } from "../src/lib/errors.ts";
 
 let passed = 0;
@@ -60,6 +61,18 @@ await check("humanizeApiError tolerates sentences and never leaks raw JSON", () 
 
 await check("humanizeApiError overrides win", () => {
   assert.equal(humanizeApiError(new ApiError(400, "invalid_request"), { invalid_request: "X" }), "X");
+});
+
+await check("project name validity uses the trimmed length", () => {
+  assert.equal(isValidProjectName(""), false);
+  assert.equal(isValidProjectName("a"), false);
+  assert.equal(isValidProjectName("  a  "), false);
+  assert.equal(isValidProjectName("   "), false);
+  assert.equal(isValidProjectName("ab"), true);
+  assert.equal(isValidProjectName("  ab  "), true);
+  assert.equal(isValidProjectName("x".repeat(100)), true);
+  assert.equal(isValidProjectName("x".repeat(101)), false);
+  assert.equal(isValidProjectName("\u{1F600}".repeat(100)), true, "code points, not UTF-16 units");
 });
 
 // ---- refresh.ts

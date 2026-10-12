@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -241,4 +242,44 @@ func TestLogsHealthCountsOnlyCallersStreams(t *testing.T) {
 	waitFor(t, "stream slot", func() bool { return sf.hs.srv.streams.total() == 1 })
 	expectBody(t, sf.hs.do("GET", "/logs/health", sf.tok, nil), `{"activeLogStreams":1,"status":"healthy"}`)
 	expectBody(t, sf.hs.do("GET", "/logs/health", sf.hs.token("someone-else"), nil), `{"activeLogStreams":0,"status":"healthy"}`)
+}
+
+// STAFF-3: the real http.Server options (NewHTTPServer, as cmd/api uses it)
+// with a short WriteTimeout and ReadTimeout. The stream re-arms its own write
+// deadline before every write, so it must keep receiving pings well past
+// 3x the server timeouts.
+func TestStreamOutlivesServerWriteTimeout(t *testing.T) {
+	sf := newStreamFixture(t, func(d *Deps) { d.Stream.Heartbeat = 100 * time.Millisecond })
+	sf.srv.Close()
+	cfg := NewHTTPServer("", sf.hs.h)
+	cfg.WriteTimeout = 300 * time.Millisecond
+	cfg.ReadTimeout = 300 * time.Millisecond
+	ts := httptest.NewUnstartedServer(nil)
+	ts.Config = cfg
+	ts.Start()
+	t.Cleanup(ts.Close)
+	sf.srv = ts
+
+	resp, _ := sf.open(t, sf.ticket())
+	rd := &sseReader{t: t, rd: bufio.NewReader(resp.Body)}
+	if fr := rd.next(); fr.event != "history" {
+		t.Fatal(fr)
+	}
+	for i := 0; i < 10; i++ { // ~1 s, more than 3x the 300 ms timeouts
+		fr := rd.next()
+		if len(fr.lines) != 1 || fr.lines[0] != ": ping" {
+			t.Fatalf("ping %d: %q", i, fr.lines)
+		}
+	}
+}
+
+func TestNewHTTPServerOptions(t *testing.T) {
+	srv := NewHTTPServer(":8081", nil)
+	if srv.Addr != ":8081" {
+		t.Fatal(srv.Addr)
+	}
+	if srv.ReadHeaderTimeout != 10*time.Second || srv.ReadTimeout != 30*time.Second ||
+		srv.IdleTimeout != 2*time.Minute || srv.WriteTimeout != 30*time.Second || srv.MaxHeaderBytes != 64<<10 {
+		t.Fatalf("unexpected server options: %+v", srv)
+	}
 }

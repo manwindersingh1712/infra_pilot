@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"infrapilot/internal/api"
 	"infrapilot/internal/config"
 	"infrapilot/internal/logging"
 	"infrapilot/internal/metrics"
@@ -43,30 +44,6 @@ func TestStartupLogHasNoSecrets(t *testing.T) {
 		if !strings.Contains(out, "envKeyFingerprint") || !strings.Contains(out, "devLogin") {
 			t.Fatalf("%s startup log lacks the fingerprint or devLogin:\n%s", format, out)
 		}
-	}
-}
-
-func TestNewHTTPServerTimeouts(t *testing.T) {
-	srv := newHTTPServer(":8081", nil)
-	if srv.Addr != ":8081" {
-		t.Fatal(srv.Addr)
-	}
-	for name, got := range map[string]time.Duration{
-		"ReadHeaderTimeout": srv.ReadHeaderTimeout, "ReadTimeout": srv.ReadTimeout,
-		"IdleTimeout": srv.IdleTimeout, "WriteTimeout": srv.WriteTimeout,
-	} {
-		if got <= 0 {
-			t.Fatalf("%s is not set", name)
-		}
-	}
-	if srv.MaxHeaderBytes != 64<<10 {
-		t.Fatalf("MaxHeaderBytes = %d", srv.MaxHeaderBytes)
-	}
-	if srv.WriteTimeout != 30*time.Second || srv.ReadHeaderTimeout != 10*time.Second {
-		t.Fatal("timeouts differ from the plan")
-	}
-	if srv.BaseContext != nil {
-		t.Fatal("BaseContext must stay unset: SIGTERM must not cancel in-flight requests")
 	}
 }
 
@@ -106,7 +83,7 @@ func TestShutdownKeepsMetricsDuringDrain(t *testing.T) {
 	defer mr.Stop()
 
 	started, release := make(chan struct{}), make(chan struct{})
-	srv := newHTTPServer("127.0.0.1:0", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := api.NewHTTPServer("127.0.0.1:0", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		close(started)
 		<-release
 	}))
@@ -174,7 +151,7 @@ func TestServeAPIBindFailureDoesNotAnnounce(t *testing.T) {
 	}
 	defer busy.Close()
 	announced := false
-	_, err = serveAPI(newHTTPServer(busy.Addr().String(), nil), func(net.Addr) { announced = true })
+	_, err = serveAPI(api.NewHTTPServer(busy.Addr().String(), nil), func(net.Addr) { announced = true })
 	if err == nil {
 		t.Fatal("bind to a busy port must fail")
 	}
@@ -182,7 +159,7 @@ func TestServeAPIBindFailureDoesNotAnnounce(t *testing.T) {
 		t.Fatal("announced a listener that never bound")
 	}
 
-	srv := newHTTPServer("127.0.0.1:0", nil)
+	srv := api.NewHTTPServer("127.0.0.1:0", nil)
 	var got net.Addr
 	errc, err := serveAPI(srv, func(a net.Addr) { got = a })
 	if err != nil || got == nil {

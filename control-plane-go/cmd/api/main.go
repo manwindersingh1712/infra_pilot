@@ -56,20 +56,6 @@ func listenAddr(devLogin bool, port string) string {
 	return ":" + port
 }
 
-// newHTTPServer builds the API server. WriteTimeout covers ordinary routes;
-// the log stream extends its own write deadline per request.
-func newHTTPServer(addr string, h http.Handler) *http.Server {
-	return &http.Server{
-		Addr:              addr,
-		Handler:           h,
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		IdleTimeout:       2 * time.Minute,
-		WriteTimeout:      30 * time.Second,
-		MaxHeaderBytes:    64 << 10,
-	}
-}
-
 // metricsRun is the metrics listener. It runs on its own context, not the
 // signal context, so /metrics stays up while in-flight requests drain.
 type metricsRun struct {
@@ -190,7 +176,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	if cfg.IsDevelopment() {
 		logger.Warn("dev login is enabled: POST /dev/login needs no credentials, binding loopback only", "addr", addr)
 	}
-	srv := newHTTPServer(addr, handler)
+	srv := api.NewHTTPServer(addr, handler)
 
 	errc, err := serveAPI(srv, func(a net.Addr) { logStartup(logger, cfg, a.String()) })
 	if err != nil {

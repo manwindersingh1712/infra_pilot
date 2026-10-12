@@ -193,3 +193,18 @@ func jsonErrors(mux *http.ServeMux) http.Handler {
 		mux.ServeHTTP(w, r)
 	})
 }
+
+// NewHTTPServer builds the API http.Server. WriteTimeout covers ordinary
+// routes; the log stream extends its own write deadline per write, so it
+// outlives WriteTimeout (TestStreamOutlivesServerWriteTimeout).
+func NewHTTPServer(addr string, h http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           h,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+		WriteTimeout:      30 * time.Second,
+		MaxHeaderBytes:    64 << 10,
+	}
+}

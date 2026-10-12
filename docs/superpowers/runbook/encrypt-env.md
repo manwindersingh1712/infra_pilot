@@ -69,9 +69,11 @@ A "suspect" value starts with `enc:v1:` but does not decrypt with the current ke
 
 ## Output reference
 
-`pre-check: scanned= plain= already_encrypted= suspect= too_large=` is the read-only pass that always runs first. The final line `scanned= encrypted= already_encrypted= suspect= too_large= conflicts= errors=` is the result (`would_encrypt=` instead of `encrypted=` in a dry run). Output holds counts and service ids only, never a key name or a value.
+`pre-check: scanned= plain= already_encrypted= already_encrypted_large= suspect= too_large=` is the read-only pass that always runs first. The final line `scanned= encrypted= already_encrypted= already_encrypted_large= suspect= too_large= conflicts= errors=` is the result (`would_encrypt=` instead of `encrypted=` in a dry run). Output holds counts and service ids only, never a key name or a value.
 
-`too_large` rows are values over 8 MiB: they are not read, not changed and listed by service id. The API accepts 32 KiB, so these are Node-era oddities; look at them by hand. Because they stay in plain text, the command exits 1 when `too_large>0` (after finishing every other row); the last error line names the service ids. Delete or re-save those variables through the API, then run again.
+The size cap (8 MiB) applies to the PLAINTEXT. A plain value up to 8 MiB is encrypted, even though its `enc:v1:` ciphertext is about a third bigger (a 7 MiB value becomes about 9.4 MiB) and so is over the cap on later runs. On a later run such an oversize value that starts with `enc:v1:` is counted as `already_encrypted_large`: it is never loaded and NOT decrypt-verified (assumed to be ciphertext; a wrong key cannot be detected on it, and it counts neither as `already_encrypted` nor as `suspect` for the wrong-key guard). It does not make the run fail. `already_encrypted_large` is printed in the pre-check, the summary and a note line.
+
+`too_large` rows are plain (not `enc:v1:`-prefixed) values over 8 MiB: they are not read, not changed and listed by service id. The API accepts 32 KiB, so these are Node-era oddities; look at them by hand. Because they stay in plain text, the command exits 1 when `too_large>0` (after finishing every other row); the last error line names the service ids. Delete or re-save those variables through the API, then run again.
 
 ## Memory
 

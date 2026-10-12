@@ -213,3 +213,38 @@ func TestListEnvVarsAfterByteBudgetIgnoresTooLarge(t *testing.T) {
 		t.Fatalf("got %v want %v", got, want)
 	}
 }
+
+// An oversize value is classified by a server-side prefix check: one starting
+// with enc:v1: is EncryptedLarge, any other is TooLarge; neither is ever read
+// (Value stays empty). A prefixed value within the cap comes back whole.
+func TestListEnvVarsAfterClassifiesOversizeByPrefix(t *testing.T) {
+	st, ctx := newStore(t), context.Background()
+	f := testutil.Seed(t, st, store.TypeNodejs)
+	for k, v := range map[string]string{
+		"PLAIN_BIG": strings.Repeat("p", 40),
+		"ENC_BIG":   "enc:v1:" + strings.Repeat("A", 40),
+		"ENC_SMALL": "enc:v1:AAA",
+		"ENC_AT":    "enc:v1:" + strings.Repeat("B", 13), // exactly 20 bytes
+		"NEAR":      "enc:v2:" + strings.Repeat("C", 40), // not the prefix
+	} {
+		if _, err := st.UpsertEnvVar(ctx, f.ServiceID, k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page, err := st.ListEnvVarsAfter(ctx, "", 10, 20, 1<<30)
+	if err != nil || len(page) != 5 {
+		t.Fatalf("%v %v", page, err)
+	}
+	for _, v := range page {
+		wantTL, wantEL, wantVal := false, false, true
+		switch v.Key {
+		case "PLAIN_BIG", "NEAR":
+			wantTL, wantVal = true, false
+		case "ENC_BIG":
+			wantEL, wantVal = true, false
+		}
+		if v.TooLarge != wantTL || v.EncryptedLarge != wantEL || (v.Value != "") != wantVal {
+			t.Fatalf("%s: %+v", v.Key, v)
+		}
+	}
+}

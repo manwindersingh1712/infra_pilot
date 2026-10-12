@@ -79,7 +79,10 @@ func (s *Store) EnvMap(ctx context.Context, serviceID string) (map[string]string
 //
 // A value longer than maxValueBytes (bytes, not characters) is not read from
 // the database: the row comes back with Value "" and TooLarge true (and weighs
-// nothing below).
+// nothing below). If that value starts with enc:v1: (checked on the server,
+// only the 7-byte prefix is looked at) the row is flagged EncryptedLarge
+// instead of TooLarge: the cap is on plaintext, and the ciphertext of a plain
+// value near the cap is about a third bigger than the cap.
 //
 // A page also stops once the summed sizes of its values would pass
 // maxBatchBytes, so memory per page is bounded by that budget, not by
@@ -90,22 +93,22 @@ func (s *Store) EnvMap(ctx context.Context, serviceID string) (map[string]string
 func (s *Store) ListEnvVarsAfter(ctx context.Context, afterID string, limit, maxValueBytes, maxBatchBytes int) ([]EnvVar, error) {
 	rows, err := s.db.Query(ctx,
 		`WITH page AS (
-		     SELECT "id", octet_length("value") AS n FROM "EnvVar" WHERE "id" > $1 ORDER BY "id" ASC LIMIT $2
+		     SELECT "id", octet_length("value") AS n, substr("value", 1, 7) = 'enc:v1:' AS p FROM "EnvVar" WHERE "id" > $1 ORDER BY "id" ASC LIMIT $2
 		 ), sized AS (
-		     SELECT "id", n,
+		     SELECT "id", n, p,
 		            SUM(CASE WHEN n > $3 THEN 0 ELSE n END) OVER (ORDER BY "id") AS cum,
 		            ROW_NUMBER() OVER (ORDER BY "id") AS rn
 		     FROM page
 		 )
 		 SELECT e."id", e."serviceId", e."key",
 		        CASE WHEN s.n > $3 THEN '' ELSE e."value" END,
-		        s.n > $3, e."createdAt"
+		        s.n > $3 AND NOT s.p, s.n > $3 AND s.p, e."createdAt"
 		 FROM sized s JOIN "EnvVar" e ON e."id" = s."id"
 		 WHERE s.cum <= $4 OR s.rn = 1
 		 ORDER BY e."id" ASC`, afterID, limit, maxValueBytes, maxBatchBytes)
 	return collect(rows, err, func(row pgx.Row) (EnvVar, error) {
 		var e EnvVar
-		err := row.Scan(&e.ID, &e.ServiceID, &e.Key, &e.Value, &e.TooLarge, &e.CreatedAt.Time)
+		err := row.Scan(&e.ID, &e.ServiceID, &e.Key, &e.Value, &e.TooLarge, &e.EncryptedLarge, &e.CreatedAt.Time)
 		return e, noRows(err)
 	})
 }

@@ -1153,11 +1153,93 @@ func TestEncryptEnvInterruptedCountIsExact(t *testing.T) {
 
 // The usage text of encrypt-env names every flag.
 func TestEncryptEnvUsageShowsAllFlags(t *testing.T) {
-	connect := func(context.Context, string) (*pgxpool.Pool, func(), error) { return nil, func() {}, errors.New("must not connect") }
+	connect := func(context.Context, string) (*pgxpool.Pool, func(), error) {
+		return nil, func() {}, errors.New("must not connect")
+	}
 	for _, args := range [][]string{{"--bogus"}, {"extra"}} {
 		err := runEncryptEnv(context.Background(), args, goodKeyEnv(nil), connect, &bytes.Buffer{})
 		if err == nil || !strings.Contains(err.Error(), "migrate encrypt-env [--dry-run] [--yes] [--allow-suspect]") {
 			t.Fatalf("args=%v err=%v", args, err)
 		}
+	}
+}
+
+// The cap applies to the PLAINTEXT. A 7 MiB plain value is encrypted (its
+// ciphertext is about 9.4 MiB, over the cap) and a later run is a clean no-op:
+// the oversize enc:v1: row is already_encrypted_large, not too_large.
+func TestEncryptEnvCiphertextOverCapIsNotTooLarge(t *testing.T) {
+	st, f, box := setup(t)
+	put(t, st, f.ServiceID, "SEVEN", strings.Repeat("s", 7<<20))
+	put(t, st, f.ServiceID, "SMALL", "s")
+	res, out, err := doEncrypt(t, st, box, encryptOptions{})
+	if err != nil || res.Encrypted != 2 || res.TooLarge != 0 {
+		t.Fatalf("first run res=%+v err=%v out=%q", res, err, out)
+	}
+	ct := raw(t, st, f.ServiceID)["SEVEN"]
+	if !secrets.IsEncrypted(ct) || len(ct) <= defaultMaxValueBytes {
+		t.Fatalf("test premise: ciphertext len %d should exceed the cap", len(ct))
+	}
+	for _, dry := range []bool{false, true} {
+		res, out, err = doEncrypt(t, st, box, encryptOptions{DryRun: dry})
+		if err != nil || exitCode(err) != 0 || res.TooLarge != 0 || res.Encrypted != 0 || res.AlreadyEncrypted != 1 || res.AlreadyEncryptedLarge != 1 || res.Scanned != 2 {
+			t.Fatalf("dry=%v res=%+v err=%v out=%q", dry, res, err, out)
+		}
+		if !strings.Contains(out, "already_encrypted_large=1") || !strings.Contains(out, "too_large=0") {
+			t.Fatalf("out=%q", out)
+		}
+	}
+	if raw(t, st, f.ServiceID)["SEVEN"] != ct {
+		t.Fatal("oversize ciphertext was rewritten")
+	}
+}
+
+// A plain value over the cap stays too_large (exit 1) and is never encrypted.
+func TestEncryptEnvPlain9MiBStaysTooLarge(t *testing.T) {
+	st, f, box := setup(t)
+	put(t, st, f.ServiceID, "NINE", strings.Repeat("n", 9<<20))
+	res, _, err := doEncrypt(t, st, box, encryptOptions{})
+	if exitCode(err) != 1 || res.TooLarge != 1 || res.Encrypted != 0 || res.AlreadyEncryptedLarge != 0 {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+	if secrets.IsEncrypted(raw(t, st, f.ServiceID)["NINE"]) {
+		t.Fatal("9 MiB plain value was encrypted")
+	}
+}
+
+// An oversize enc:v1: value is counted, never loaded and never decrypt-verified,
+// and it counts neither as ok nor as suspect for the wrong-key guard: with a
+// wrong key and plain rows present it must not make the run proceed or refuse.
+func TestEncryptEnvOversizePrefixedIsUnverifiedAndNeutral(t *testing.T) {
+	st, f, box := setup(t)
+	// Garbage that starts with the prefix: if it were loaded it would be suspect.
+	put(t, st, f.ServiceID, "LARGE", "enc:v1:"+strings.Repeat("!", 200))
+	put(t, st, f.ServiceID, "PLAIN", "p")
+	var loaded int
+	res, out, err := doEncrypt(t, st, box, encryptOptions{MaxValueBytes: 100, afterRead: func(b []store.EnvVar) {
+		for _, v := range b {
+			if v.EncryptedLarge && v.Value != "" {
+				loaded++
+			}
+		}
+	}})
+	if err != nil || loaded != 0 || res.Suspect != 0 || res.AlreadyEncrypted != 0 || res.AlreadyEncryptedLarge != 1 || res.Encrypted != 1 {
+		t.Fatalf("res=%+v err=%v loaded=%d out=%q", res, err, loaded, out)
+	}
+	if !strings.Contains(out, "already_encrypted_large=1") || !strings.Contains(out, "NOT loaded or decrypt-verified") {
+		t.Fatalf("out=%q", out)
+	}
+	// Wrong-key guard: one real ciphertext of ANOTHER key (suspect) + large prefixed
+	// + plain => still refused as wrong key; the large row does not count as ok.
+	st2, f2, box2 := setup(t)
+	other, _ := newBox(t, 7).Encrypt("v")
+	put(t, st2, f2.ServiceID, "OTHER", other)
+	put(t, st2, f2.ServiceID, "LARGE", "enc:v1:"+strings.Repeat("!", 200))
+	put(t, st2, f2.ServiceID, "PLAIN", "p")
+	_, _, err = doEncrypt(t, st2, box2, encryptOptions{MaxValueBytes: 100})
+	if !errors.Is(err, errWrongKey) {
+		t.Fatalf("err=%v", err)
+	}
+	if raw(t, st2, f2.ServiceID)["PLAIN"] != "p" {
+		t.Fatal("wrote under a wrong key")
 	}
 }

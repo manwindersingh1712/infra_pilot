@@ -78,8 +78,12 @@ type EnvVar struct {
 	Value     string    `json:"value"`
 	CreatedAt Timestamp `json:"createdAt"`
 	// TooLarge is set only by ListEnvVarsAfter: the value was over the size cap
-	// and Value is empty.
+	// and Value is empty. Not set for an oversize value that starts with enc:v1:.
 	TooLarge bool `json:"-"`
+	// EncryptedLarge is set only by ListEnvVarsAfter: the value was over the size
+	// cap and starts with enc:v1: (ciphertext of a large plaintext). Value is
+	// empty and the row was not decrypt-verified.
+	EncryptedLarge bool `json:"-"`
 }
 
 type Deployment struct {

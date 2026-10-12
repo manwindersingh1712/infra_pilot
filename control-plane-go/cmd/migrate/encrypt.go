@@ -64,7 +64,9 @@ func targetOf(raw string) string {
 
 const (
 	defaultEncryptBatch = 50
-	// defaultMaxValueBytes caps one value (the API accepts 32 KiB; Node-era rows may be larger).
+	// defaultMaxValueBytes caps one PLAINTEXT value (the API accepts 32 KiB; Node-era
+	// rows may be larger). An oversize value that starts with enc:v1: is ciphertext
+	// (about 4/3 of its plaintext) and is counted as already_encrypted_large.
 	defaultMaxValueBytes = 8 << 20
 	// defaultMaxBatchBytes caps the summed value sizes of one read batch, so
 	// peak memory is about this, not batch x defaultMaxValueBytes.
@@ -102,11 +104,15 @@ type encryptResult struct {
 	Scanned          int // rows read
 	Encrypted        int // rows rewritten (dry run: rows that would be)
 	AlreadyEncrypted int // enc:v1: rows that decrypt with the current key
-	TooLarge         int // values over MaxValueBytes: skipped unread, left as they are
-	Plain            int // plain-text rows seen by the read-only pre-pass
-	Suspect          int // enc:v1: rows that do NOT decrypt: left alone, see below
-	Conflicts        int // rows edited between read and write: left alone, a re-run picks them up
-	Errors           int // rows whose update failed
+	// AlreadyEncryptedLarge counts oversize enc:v1: rows (ciphertext of a large
+	// plaintext). They are never loaded and NOT decrypt-verified, and they are
+	// included in neither AlreadyEncrypted nor Suspect.
+	AlreadyEncryptedLarge int
+	TooLarge              int // values over MaxValueBytes: skipped unread, left as they are
+	Plain                 int // plain-text rows seen by the read-only pre-pass
+	Suspect               int // enc:v1: rows that do NOT decrypt: left alone, see below
+	Conflicts             int // rows edited between read and write: left alone, a re-run picks them up
+	Errors                int // rows whose update failed
 }
 
 // encryptEnv encrypts every plain-text env var value in place.
@@ -184,6 +190,8 @@ func encryptEnv(ctx context.Context, st *store.Store, box *secrets.Box, opt encr
 		for _, v := range page {
 			pre.Scanned++
 			switch {
+			case v.EncryptedLarge:
+				pre.AlreadyEncryptedLarge++
 			case v.TooLarge:
 				pre.TooLarge++
 				tooLargeServices[v.ServiceID] = true
@@ -199,8 +207,8 @@ func encryptEnv(ctx context.Context, st *store.Store, box *secrets.Box, opt encr
 			}
 		}
 	}
-	fmt.Fprintf(out, "pre-check: scanned=%d plain=%d already_encrypted=%d suspect=%d too_large=%d\n",
-		pre.Scanned, pre.Plain, pre.AlreadyEncrypted, pre.Suspect, pre.TooLarge)
+	fmt.Fprintf(out, "pre-check: scanned=%d plain=%d already_encrypted=%d already_encrypted_large=%d suspect=%d too_large=%d\n",
+		pre.Scanned, pre.Plain, pre.AlreadyEncrypted, pre.AlreadyEncryptedLarge, pre.Suspect, pre.TooLarge)
 	if pre.Suspect > 0 {
 		printSuspect(out, pre.Suspect, suspectServices)
 		if pre.AlreadyEncrypted == 0 && pre.Plain > 0 {
@@ -241,6 +249,10 @@ func encryptEnv(ctx context.Context, st *store.Store, box *secrets.Box, opt encr
 				return res, interrupted()
 			}
 			res.Scanned++
+			if v.EncryptedLarge {
+				res.AlreadyEncryptedLarge++
+				continue
+			}
 			if v.TooLarge {
 				res.TooLarge++
 				continue
@@ -375,10 +387,13 @@ func printSummary(out io.Writer, dry bool, r encryptResult, suspect, tooLarge ma
 	if dry {
 		label, verb = "dry run (nothing written): ", "would_encrypt"
 	}
-	fmt.Fprintf(out, "%sscanned=%d %s=%d already_encrypted=%d suspect=%d too_large=%d conflicts=%d errors=%d\n",
-		label, r.Scanned, verb, r.Encrypted, r.AlreadyEncrypted, r.Suspect, r.TooLarge, r.Conflicts, r.Errors)
+	fmt.Fprintf(out, "%sscanned=%d %s=%d already_encrypted=%d already_encrypted_large=%d suspect=%d too_large=%d conflicts=%d errors=%d\n",
+		label, r.Scanned, verb, r.Encrypted, r.AlreadyEncrypted, r.AlreadyEncryptedLarge, r.Suspect, r.TooLarge, r.Conflicts, r.Errors)
 	if r.TooLarge > 0 {
 		printIDs(out, fmt.Sprintf("warning: too_large=%d value(s) exceed the size limit and were skipped unread (still plain text if they were). Services:", r.TooLarge), tooLarge)
+	}
+	if r.AlreadyEncryptedLarge > 0 {
+		fmt.Fprintf(out, "note: already_encrypted_large=%d value(s) over the size limit start with enc:v1: and were NOT loaded or decrypt-verified (assumed to be ciphertext).\n", r.AlreadyEncryptedLarge)
 	}
 	if r.Suspect > 0 {
 		printSuspect(out, r.Suspect, suspect)

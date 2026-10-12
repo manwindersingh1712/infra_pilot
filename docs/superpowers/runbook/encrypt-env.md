@@ -15,7 +15,7 @@ Never print the key or the database URL (no `echo`, no `set -x`). `DATABASE_URL`
 ## Cutover sequence
 
 1. **Stop the Node API first**, so nothing writes plain text any more. If you cannot stop it, at least confirm that only the Go API is serving writes. A plain value written after the run stays plain (the readers accept it) but is not migrated, and the final dry run in step 6 will show it.
-2. **Back up** the database (`pg_dump`, stored off the host) and **back up `ENV_ENCRYPTION_KEY`** (password manager). Without the key every encrypted value is unreadable for good. Do not paste either into a terminal log.
+2. **Back up** the database (see "Backup commands" below; copy it off the host) and **back up `ENV_ENCRYPTION_KEY`** (password manager). Without the key every encrypted value is unreadable for good. Do not paste either into a terminal log.
    **First-run key check (mandatory).** On a database with no `enc:v1:` rows yet, a wrong `ENV_ENCRYPTION_KEY` cannot be detected by the tool: it would lock every plain value under the wrong key for good. Before the first real run, confirm the key in your shell is the SAME key the Go API and worker run with. Compare sha256 fingerprints, never the key itself (no `echo`, no `set -x`, nothing pasted into a log):
 
    ```bash
@@ -32,17 +32,32 @@ Never print the key or the database URL (no `echo`, no `set -x`). `DATABASE_URL`
 5. **Repeat step 4 until the last line no longer says `conflicts>0: run again until conflicts=0`** and the summary shows `conflicts=0 errors=0`. A run with conflicts exits 0 on purpose; a script must look at the summary, not only the exit code. If you see `errors>0` the exit code is 1: fix the cause (the line names the service id and the SQLSTATE) and run again.
 6. A final `encrypt-env --dry-run` must exit 0 and report `would_encrypt=0`, `too_large=0` and `conflicts=0`, and either `suspect=0`, or, when you used `--allow-suspect` on purpose, the final dry run must be run WITH `--allow-suspect` too (without it a dry run with suspect rows exits 1) and must show the same suspect service ids you accepted in step 3, nothing new. Anything else means a plain value was written or a row is still unresolved: go back to step 3. (`too_large>0` also makes the command exit 1, see the exit codes.)
 
+## Backup commands
+
+`pg_dump` (libpq) does not accept the `?schema=public` suffix of a Prisma-style `DATABASE_URL` (`invalid URI query parameter: "schema"`), and a URL on the command line puts the password in `ps`. So take the connection from `PG*` variables and a password file, never from the URL. The dump holds the env values (plain text for the Node-era rows), so it must be owner-only:
+
+```bash
+umask 077                                        # every file below is created owner-only (dir 700, files 600)
+mkdir -p "$HOME/infrapilot-backup"
+export PGHOST=db.example.internal PGPORT=5432 PGUSER=cp PGDATABASE=control_plane   # the values from the target: line
+export PGPASSFILE="$HOME/.pgpass-infrapilot"     # one line: host:port:database:user:password
+                                                 # (write ':' and '\' in the password as '\:' and '\\'; the file must be mode 600)
+pg_dump --format=custom --file="$HOME/infrapilot-backup/full-$(date +%Y%m%d-%H%M%S).dump"
+pg_dump --format=custom --data-only --table='"EnvVar"' --file="$HOME/infrapilot-backup/envvar-$(date +%Y%m%d-%H%M%S).dump"
+pg_restore --list "$HOME"/infrapilot-backup/envvar-*.dump | tail -3     # sanity check: lists the EnvVar table data
+```
+
+Create the password file once with `umask 077` in effect (`printf '%s\n' 'host:5432:control_plane:cp:the-password' > "$HOME/.pgpass-infrapilot"`; type the line in an editor if the password must not enter shell history). If you cannot use a password file, read the password without echo into the environment of that shell only: `read -rs PGPASSWORD; export PGPASSWORD`. Do not put it in the URL or in an argument.
+
+Keep the dumps in `$HOME/infrapilot-backup` (mode 700) or move them to encrypted storage off the host. Delete them (`shred -u` or `rm`) after sign-off, that is once the step 6 dry run passed and the Go stack has run a few days on the migrated data, and delete the password file when you no longer need it. Until then treat them like the database itself.
+
 ## Resolving suspect rows
 
 A "suspect" value starts with `enc:v1:` but does not decrypt with the current key. There are two causes.
 
 - **A Node-era plain-text value that happens to start with `enc:v1:`.** The tool cannot tell it from ciphertext, leaves it untouched and lists the service ids. Until it is fixed the Go API and worker fail to decrypt it (a deploy of that service breaks). Fix: ask the owner to re-save the value through the API (the Go API always encrypts what it receives, including values starting with `enc:v1:`). That is the only supported way to put a new value in. If the owner cannot, remove just that one variable so it can be created again through the API (never write a value from SQL). Back up first, check the service id, look at the row, and delete exactly one row in a transaction:
 
-  ```bash
-  pg_dump --table='"EnvVar"' --data-only "$DATABASE_URL" > ~/envvar-backup-$(date +%s).sql   # do not echo the URL
-  SID=cm...            # a service id from the "Services:" list; copy it, never retype it
-  [[ "$SID" =~ ^[a-z0-9]{20,32}$ ]] || { echo bad id; exit 1; }
-  ```
+  Take the backup first (see "Backup commands"; the `EnvVar`-only dump is enough here), then pick the service id and key name and check the row.
 
   ```sql suspect-row
   \set sid 'cm...'

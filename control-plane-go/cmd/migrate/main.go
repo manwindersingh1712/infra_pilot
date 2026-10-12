@@ -1,5 +1,5 @@
 // Command migrate manages the Postgres schema: `migrate up`, `migrate status`, `migrate baseline` or
-// `migrate encrypt-env [--dry-run] [--yes] [--allow-suspect]`.
+// `migrate encrypt-env [--dry-run] [--yes] [--allow-suspect] [--print-key-fingerprint]`.
 package main
 
 import (
@@ -62,7 +62,7 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	_ = godotenv.Load()
 	if len(args) != 1 {
-		return errors.New("usage: migrate up|status|baseline, or migrate encrypt-env [--dry-run] [--yes] [--allow-suspect]")
+		return errors.New("usage: migrate up|status|baseline, or migrate encrypt-env [--dry-run] [--yes] [--allow-suspect] [--print-key-fingerprint]")
 	}
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {

@@ -5,7 +5,9 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -81,4 +83,12 @@ func RandomPassword() (string, error) {
 			return p, nil
 		}
 	}
+}
+
+// Fingerprint returns the first 12 hex characters of sha256(key), a label to
+// compare two copies of a key without printing it. 48 bits of a hash of a
+// 256-bit key reveal nothing usable about the key.
+func Fingerprint(key []byte) string {
+	sum := sha256.Sum256(key)
+	return hex.EncodeToString(sum[:])[:12]
 }

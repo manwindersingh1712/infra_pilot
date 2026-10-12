@@ -5,7 +5,7 @@ The Node API stored env var values as plain text. The Go API and worker store an
 Run it from `control-plane-go/`:
 
 ```bash
-go run ./cmd/migrate encrypt-env [--dry-run] [--yes] [--allow-suspect]
+go run ./cmd/migrate encrypt-env [--dry-run] [--yes] [--allow-suspect] [--print-key-fingerprint]
 ```
 
 It reads `DATABASE_URL` and `ENV_ENCRYPTION_KEY` from the environment, and from `./.env` if one exists in the working directory (the command prints the path of the file it loaded, never its content). A stray `.env` can silently select the database: always read the `target:` line before you confirm anything. The line shows what the driver will really connect to (`host:port[,fallback host:port]/dbname`, after URL query overrides such as `?host=`, `?port=`, `?dbname=`, and `PG*` environment defaults), never the user or password. A `key=value` DSN (`host=... dbname=...`) is supported only if the `target:` line prints for it. If it says `target: (unknown target)`, a real run is refused (exit 2, with or without `--yes`; `--dry-run` still works): fix `DATABASE_URL`. A failed connection prints a fixed message with the target and the error class (for example `SQLSTATE 28P01` for a wrong password), never the driver text.
@@ -16,13 +16,15 @@ Never print the key or the database URL (no `echo`, no `set -x`). `DATABASE_URL`
 
 1. **Stop the Node API first**, so nothing writes plain text any more. If you cannot stop it, at least confirm that only the Go API is serving writes. A plain value written after the run stays plain (the readers accept it) but is not migrated, and the final dry run in step 6 will show it.
 2. **Back up** the database (see "Backup commands" below; copy it off the host) and **back up `ENV_ENCRYPTION_KEY`** (password manager). Without the key every encrypted value is unreadable for good. Do not paste either into a terminal log.
-   **First-run key check (mandatory).** On a database with no `enc:v1:` rows yet, a wrong `ENV_ENCRYPTION_KEY` cannot be detected by the tool: it would lock every plain value under the wrong key for good. Before the first real run, confirm the key in your shell is the SAME key the Go API and worker run with. Compare sha256 fingerprints, never the key itself (no `echo`, no `set -x`, nothing pasted into a log):
+   **First-run key check (mandatory).** On a database with no `enc:v1:` rows yet, a wrong `ENV_ENCRYPTION_KEY` cannot be detected by the tool: it would lock every plain value under the wrong key for good. Before the first real run, confirm that the key the tool uses is the SAME key the Go API and worker run with. Compare key fingerprints, never the key itself. The tool prints its own as the first line of every run (`key fingerprint: <12 hex>`), or alone, without touching the database:
 
    ```bash
-   printf %s "$ENV_ENCRYPTION_KEY" | shasum -a 256 | cut -c1-12      # in the shell you run encrypt-env from
+   go run ./cmd/migrate encrypt-env --print-key-fingerprint
    ```
 
-   Run the same line in the environment of the Go API or worker (same secret store, same `.env` source) and compare the 12 characters. Where you cannot, the alternative is to save one test env var through the Go API first (the database then holds an `enc:v1:` row written with the right key), run `encrypt-env --dry-run` and check that it shows `already_encrypted` greater than 0 and `suspect=0`: a wrong key would fail that row and the wrong-key guard would refuse the run.
+   The fingerprint is the first 12 hex characters of the sha256 of the DECODED 32-byte key. It is computed from the key the tool really uses (the process environment, else `./.env`: the same resolution as the run itself; the `loaded env file:` line shows when `./.env` was read), so do not hash `$ENV_ENCRYPTION_KEY` of your shell by hand. If a hand check is unavoidable: `printf %s "$ENV_ENCRYPTION_KEY" | base64 -d | shasum -a 256 | cut -c1-12` (the decoded bytes, not the base64 text). The digest `e3b0c44298fc` is the hash of the EMPTY string: it means the variable was empty or not found, not that the key matches. The tool itself refuses to start without a valid key and never prints that value.
+
+   The Go API and worker do not log a fingerprint. To compare, run the same `--print-key-fingerprint` command in the environment they run with (same secret store, same `.env` source) and compare the 12 characters. Where you cannot, the alternative is to save one test env var through the Go API first (the database then holds an `enc:v1:` row written with the right key), run `encrypt-env --dry-run` and check that it shows `already_encrypted` greater than 0 and `suspect=0`: a wrong key would fail that row and the wrong-key guard would refuse the run.
 3. `encrypt-env --dry-run`. Check ALL of these before going on:
    - `target:` is the database you mean (host:port/dbname).
    - `suspect=0`. If not, see "Resolving suspect rows" below and do not go on.
@@ -104,7 +106,7 @@ A "suspect" value starts with `enc:v1:` but does not decrypt with the current ke
 |------|---------|
 | 0 | Done (including `conflicts>0`, which needs another run). A dry run that completed with `too_large=0`. |
 | 1 | Refused or failed: suspect rows without `--allow-suspect`, the wrong-key guard, a bad key or config, a database or read error, `errors>0`, `too_large>0` (reported at the very end, after every other row was processed; a dry run too), or interrupted (SIGINT/SIGTERM). No write happens in the two refusals. |
-| 2 | A real run without `--yes`. Nothing was changed. |
+| 2 | A real run without `--yes`, or a real run whose database target is unknown (`target: (unknown target)`). Nothing was changed. |
 
 ## Output reference
 

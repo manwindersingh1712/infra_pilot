@@ -425,12 +425,13 @@ func runEncryptEnv(ctx context.Context, args []string, getenv func(string) strin
 	fs.SetOutput(io.Discard)
 	dry := fs.Bool("dry-run", false, "count what would be encrypted; write nothing")
 	yes := fs.Bool("yes", false, "confirm the real run (without it nothing is written and the exit code is 2)")
+	printFP := fs.Bool("print-key-fingerprint", false, "print the key fingerprint (12 hex chars of sha256 of the key) and exit; needs no database")
 	allowSuspect := fs.Bool("allow-suspect", false, "continue although some enc:v1: values do not decrypt (they stay untouched)")
 	if err := fs.Parse(args); err != nil {
-		return fmt.Errorf("usage: migrate encrypt-env [--dry-run] [--yes] [--allow-suspect]: %w", err)
+		return fmt.Errorf("usage: migrate encrypt-env [--dry-run] [--yes] [--allow-suspect] [--print-key-fingerprint]: %w", err)
 	}
 	if fs.NArg() != 0 {
-		return errors.New("usage: migrate encrypt-env [--dry-run] [--yes] [--allow-suspect]")
+		return errors.New("usage: migrate encrypt-env [--dry-run] [--yes] [--allow-suspect] [--print-key-fingerprint]")
 	}
 	cfg, err := config.Load(getenv)
 	if err != nil {
@@ -442,6 +443,11 @@ func runEncryptEnv(ctx context.Context, args []string, getenv func(string) strin
 	box, err := secrets.New(cfg.EnvEncryptionKey)
 	if err != nil {
 		return err
+	}
+	fp := secrets.Fingerprint(cfg.EnvEncryptionKey)
+	fmt.Fprintf(out, "key fingerprint: %s\n", fp)
+	if *printFP {
+		return nil
 	}
 	target := targetOf(cfg.DatabaseURL)
 	if target == unknownTarget && !*dry {

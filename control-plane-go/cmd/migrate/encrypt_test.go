@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1326,5 +1327,44 @@ func TestReadFailureClasses(t *testing.T) {
 		if got != "read env vars failed ("+c.want+")" || strings.Contains(got, "secretuser") {
 			t.Fatalf("%v -> %q", c.err, got)
 		}
+	}
+}
+
+// The key fingerprint is printed in every run (first lines) and alone by
+// --print-key-fingerprint, which needs no database. It resolves the key the
+// same way the tool does (getenv, i.e. env or ./.env), so it is the value to
+// compare with the Go stack. Only 12 hex chars of a hash: no key material.
+func TestKeyFingerprintOutput(t *testing.T) {
+	keyBytes := bytes.Repeat([]byte{9}, 32)
+	b64 := base64.StdEncoding.EncodeToString(keyBytes)
+	want := secrets.Fingerprint(keyBytes)
+	if len(want) != 12 || want == "e3b0c44298fc" {
+		t.Fatalf("fingerprint %q", want)
+	}
+	noConnect := func(context.Context, string) (*pgxpool.Pool, func(), error) {
+		t.Fatal("must not connect")
+		return nil, nil, errors.New("unreachable")
+	}
+	var out bytes.Buffer
+	if err := runEncryptEnv(context.Background(), []string{"--print-key-fingerprint"}, goodKeyEnv(nil), noConnect, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.String() != "key fingerprint: "+want+"\n" {
+		t.Fatalf("out=%q", out.String())
+	}
+	if strings.Contains(out.String(), b64) || strings.Contains(out.String(), hex.EncodeToString(keyBytes)) {
+		t.Fatal("key material printed")
+	}
+	// Repeatable; a bad or missing key never yields a digest (not the empty-string hash).
+	out.Reset()
+	if err := runEncryptEnv(context.Background(), []string{"--print-key-fingerprint"}, goodKeyEnv(map[string]string{"ENV_ENCRYPTION_KEY": ""}), noConnect, &out); err == nil || strings.Contains(out.String(), "fingerprint") {
+		t.Fatalf("missing key: err=%v out=%q", err, out.String())
+	}
+	// A normal run (here: the connect fails) prints the fingerprint before anything else happens.
+	out.Reset()
+	failConnect := func(context.Context, string) (*pgxpool.Pool, func(), error) { return nil, nil, errors.New("down") }
+	_ = runEncryptEnv(context.Background(), []string{"--dry-run"}, goodKeyEnv(nil), failConnect, &out)
+	if !strings.HasPrefix(out.String(), "key fingerprint: "+want+"\n") {
+		t.Fatalf("out=%q", out.String())
 	}
 }

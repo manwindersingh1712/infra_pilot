@@ -2,6 +2,9 @@ package secrets
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"strings"
 	"testing"
 )
@@ -88,6 +91,27 @@ func TestRandomPasswordStartsAlphanumeric(t *testing.T) {
 		}
 		if len(p) != 32 || p[0] == '-' || p[0] == '_' {
 			t.Fatalf("password %q must be 32 chars and not start with - or _", p)
+		}
+	}
+}
+
+func TestFingerprint(t *testing.T) {
+	key := bytes.Repeat([]byte{7}, 32)
+	fp := Fingerprint(key)
+	// sha256 of 32 bytes of 0x07, first 12 hex chars.
+	sum := sha256.Sum256(key)
+	if want := hex.EncodeToString(sum[:])[:12]; fp != want || len(fp) != 12 {
+		t.Fatalf("fp=%q want %q", fp, want)
+	}
+	if Fingerprint(key) != fp {
+		t.Fatal("not stable")
+	}
+	if Fingerprint(bytes.Repeat([]byte{8}, 32)) == fp {
+		t.Fatal("different keys, same fingerprint")
+	}
+	for _, leak := range []string{hex.EncodeToString(key), base64.StdEncoding.EncodeToString(key)} {
+		if strings.Contains(leak, fp) || strings.Contains(fp, leak) {
+			t.Fatalf("fingerprint %q shares material with the key", fp)
 		}
 	}
 }

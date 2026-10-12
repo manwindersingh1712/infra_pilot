@@ -19,3 +19,10 @@ Env var values written by the Node API are plain text. Before or at the cutover 
 Set `TRUSTED_PROXIES` to the address of the nginx container, for example `TRUSTED_PROXIES=172.18.0.5` (one IP or CIDR; comma-separate several). Without it the API keys its rate limits by the TCP peer, so behind nginx every client shares one login, refresh and log-stream bucket. List only the nginx address, not the Docker network's subnet: any other container on a listed subnet could send a forged `X-Forwarded-For` and get a fresh bucket. The nginx route for the API must set `proxy_set_header X-Forwarded-For $remote_addr;` (Plan 2 Task 18). Default: empty.
 
 With `APP_ENV=development` the API binds `127.0.0.1` only, because `POST /dev/login` is enabled and needs no credentials. Any other value binds all interfaces.
+
+## What users will notice in the UI
+
+- You are signed out once when this version is deployed; sign in again. Sessions then renew automatically, so you stay signed in past the 15-minute access-token limit.
+- Passwords must be 8 to 72 bytes (accented or non-Latin characters take more than one byte). Project names must be 2 to 100 characters.
+- Environment variable values are hidden until you click the eye icon, and hidden again (and forgotten by the page) when you hide the last one. Changes apply on the next deployment: redeploy to apply them.
+- Repository URLs must be public https:// URLs; SSH and file URLs are not supported.

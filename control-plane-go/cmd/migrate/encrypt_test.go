@@ -132,7 +132,7 @@ func TestEncryptEnvDoesNotOverwriteConcurrentEdit(t *testing.T) {
 			t.Fatalf("conflict output contains %q: %q", bad, out)
 		}
 	}
-	if !strings.Contains(out, "conflicts=1") || !strings.Contains(out, "run it again") {
+	if !strings.Contains(out, "conflicts=1") || !strings.Contains(out, "run again until conflicts=0") {
 		t.Fatalf("conflict not reported: %q", out)
 	}
 	vars := raw(t, st, f.ServiceID)
@@ -223,7 +223,11 @@ func TestEncryptEnvPrefixedPlaintextIsSkippedAndCounted(t *testing.T) {
 	otherKey, _ := newBox(t, 4).Encrypt("other")
 	put(t, st, f.ServiceID, "OTHERKEY", otherKey)
 	put(t, st, f.ServiceID, "PLAIN", "p")
-	res, out, err := doEncrypt(t, st, box, encryptOptions{})
+	// SEC-1: suspect rows need --allow-suspect, and at least one row must
+	// decrypt with this key or the run is refused as a wrong-key run.
+	good, _ := box.Encrypt("good")
+	put(t, st, f.ServiceID, "GOOD", good)
+	res, out, err := doEncrypt(t, st, box, encryptOptions{AllowSuspect: true})
 	if err != nil || res.Suspect != 2 || res.Encrypted != 1 || res.Errors != 0 {
 		t.Fatalf("res=%+v err=%v", res, err)
 	}
@@ -403,5 +407,198 @@ func TestEncryptedRowsReadBackThroughAPIAndWorker(t *testing.T) {
 	}
 	if after := raw(t, st, rf.ServiceID)["REDIS_PASSWORD"]; after != before {
 		t.Fatal("worker rewrote a valid encrypted password")
+	}
+}
+
+// checksum fingerprints the whole EnvVar table.
+func checksum(t *testing.T) string {
+	t.Helper()
+	var sum *string
+	err := pool.QueryRow(context.Background(),
+		`SELECT md5(string_agg("id" || '|' || "key" || '|' || "value", ',' ORDER BY "id")) FROM "EnvVar"`).Scan(&sum)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum == nil {
+		return "empty"
+	}
+	return *sum
+}
+
+// A wrong ENV_ENCRYPTION_KEY: rows the right key wrote do not decrypt. Nothing
+// may be written, or the plain rows would be locked under the wrong key.
+func TestEncryptEnvWrongKeyWritesNothing(t *testing.T) {
+	st, f, wrong := setup(t) // key 9 is the "wrong" one here
+	right := newBox(t, 4)
+	put(t, st, f.ServiceID, "PLAIN1", "p1")
+	put(t, st, f.ServiceID, "PLAIN2", "p2")
+	for _, k := range []string{"GO1", "GO2"} {
+		enc, _ := right.Encrypt("v-" + k)
+		put(t, st, f.ServiceID, k, enc)
+	}
+	before := checksum(t)
+	for _, allow := range []bool{false, true} {
+		res, out, err := doEncrypt(t, st, wrong, encryptOptions{AllowSuspect: allow})
+		if !errors.Is(err, errWrongKey) {
+			t.Fatalf("allow=%v: want errWrongKey, got %v", allow, err)
+		}
+		if res.Encrypted != 0 || !strings.Contains(out, "suspect=2") || !strings.Contains(out, f.ServiceID) {
+			t.Fatalf("allow=%v res=%+v out=%q", allow, res, out)
+		}
+		if checksum(t) != before {
+			t.Fatalf("allow=%v: the table changed", allow)
+		}
+	}
+	// The same table with the right key is fine.
+	if _, _, err := doEncrypt(t, st, right, encryptOptions{DryRun: true}); err != nil {
+		t.Fatalf("right key refused: %v", err)
+	}
+}
+
+// Mixed ok and suspect: refused without --allow-suspect, proceeds with it and
+// then encrypts only the plain rows.
+func TestEncryptEnvSuspectNeedsAllowFlag(t *testing.T) {
+	st, f, box := setup(t)
+	good, _ := box.Encrypt("good")
+	put(t, st, f.ServiceID, "GOOD", good)
+	put(t, st, f.ServiceID, "LOOKALIKE", "enc:v1:typed-by-a-human")
+	put(t, st, f.ServiceID, "PLAIN", "p")
+	before := checksum(t)
+
+	res, out, err := doEncrypt(t, st, box, encryptOptions{})
+	if !errors.Is(err, errSuspect) || res.Encrypted != 0 || checksum(t) != before {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+	if !strings.Contains(out, "suspect=1") || !strings.Contains(out, "--allow-suspect") || strings.Contains(out, "typed-by") {
+		t.Fatalf("out=%q", out)
+	}
+
+	res, out, err = doEncrypt(t, st, box, encryptOptions{AllowSuspect: true})
+	if err != nil || res.Encrypted != 1 || res.Suspect != 1 {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+	if !strings.Contains(out, "warning") {
+		t.Fatalf("suspect warning missing with the flag: %q", out)
+	}
+	vars := raw(t, st, f.ServiceID)
+	if vars["LOOKALIKE"] != "enc:v1:typed-by-a-human" || !secrets.IsEncrypted(vars["PLAIN"]) {
+		t.Fatalf("vars=%v", vars)
+	}
+}
+
+// Lookalike only (no row decrypts) next to plain rows is the wrong-key shape:
+// refused even with --allow-suspect.
+func TestEncryptEnvAllSuspectWithPlainRefusedEvenWithFlag(t *testing.T) {
+	st, f, box := setup(t)
+	put(t, st, f.ServiceID, "LOOKALIKE", "enc:v1:typed-by-a-human")
+	put(t, st, f.ServiceID, "PLAIN", "p")
+	before := checksum(t)
+	for _, allow := range []bool{false, true} {
+		_, out, err := doEncrypt(t, st, box, encryptOptions{AllowSuspect: allow})
+		if !errors.Is(err, errWrongKey) || checksum(t) != before {
+			t.Fatalf("allow=%v err=%v", allow, err)
+		}
+		if !strings.Contains(out, "ENV_ENCRYPTION_KEY") {
+			t.Fatalf("message does not name the key: %q", out)
+		}
+	}
+	// Without plain rows there is nothing to lock under a wrong key: allowed.
+	if _, err := pool.Exec(context.Background(), `DELETE FROM "EnvVar" WHERE "key" = 'PLAIN'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := doEncrypt(t, st, box, encryptOptions{AllowSuspect: true}); err != nil {
+		t.Fatalf("suspect-only table with the flag: %v", err)
+	}
+}
+
+func TestEncryptEnvNoEncryptedRowsProceeds(t *testing.T) {
+	st, f, box := setup(t)
+	put(t, st, f.ServiceID, "A", "a")
+	put(t, st, f.ServiceID, "B", "b")
+	res, _, err := doEncrypt(t, st, box, encryptOptions{})
+	if err != nil || res.Encrypted != 2 {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+}
+
+// --dry-run applies the same checks and never writes.
+func TestEncryptEnvDryRunAppliesSuspectChecks(t *testing.T) {
+	st, f, box := setup(t)
+	good, _ := box.Encrypt("good")
+	put(t, st, f.ServiceID, "GOOD", good)
+	put(t, st, f.ServiceID, "LOOKALIKE", "enc:v1:typed")
+	put(t, st, f.ServiceID, "PLAIN", "p")
+	before := checksum(t)
+	if _, _, err := doEncrypt(t, st, box, encryptOptions{DryRun: true}); !errors.Is(err, errSuspect) {
+		t.Fatalf("dry run did not refuse suspect rows: %v", err)
+	}
+	res, _, err := doEncrypt(t, st, box, encryptOptions{DryRun: true, AllowSuspect: true})
+	if err != nil || res.Encrypted != 1 || res.Suspect != 1 {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+	if checksum(t) != before {
+		t.Fatal("dry run wrote")
+	}
+	// Wrong key shape in a dry run.
+	if _, err := pool.Exec(context.Background(), `DELETE FROM "EnvVar" WHERE "key" = 'GOOD'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := doEncrypt(t, st, box, encryptOptions{DryRun: true, AllowSuspect: true}); !errors.Is(err, errWrongKey) {
+		t.Fatalf("dry run did not apply the wrong-key guard: %v", err)
+	}
+}
+
+func TestSuspectServiceListIsCapped(t *testing.T) {
+	ids := map[string]bool{}
+	for i := range 25 {
+		ids[fmt.Sprintf("svc%02d", i)] = true
+	}
+	var out bytes.Buffer
+	printSuspect(&out, 25, ids)
+	s := out.String()
+	if !strings.Contains(s, "svc19") || strings.Contains(s, "svc20") || !strings.Contains(s, "+5 more") {
+		t.Fatalf("out=%q", s)
+	}
+}
+
+func TestEncryptEnvConflictsLastLine(t *testing.T) {
+	st, f, box := setup(t)
+	put(t, st, f.ServiceID, "RACE", "old")
+	var once atomic.Bool
+	_, out, err := doEncrypt(t, st, box, encryptOptions{afterRead: func([]store.EnvVar) {
+		if once.CompareAndSwap(false, true) {
+			put(t, st, f.ServiceID, "RACE", "newer")
+		}
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if last := lines[len(lines)-1]; !strings.Contains(last, "conflicts>0: run again until conflicts=0") {
+		t.Fatalf("last line %q", last)
+	}
+}
+
+// The command-level flags: suspect rows are refused by default and accepted
+// with --allow-suspect.
+func TestRunEncryptEnvAllowSuspectFlag(t *testing.T) {
+	st, f, box := setup(t)
+	good, _ := box.Encrypt("good")
+	put(t, st, f.ServiceID, "GOOD", good)
+	put(t, st, f.ServiceID, "LOOKALIKE", "enc:v1:typed")
+	put(t, st, f.ServiceID, "PLAIN", "p")
+	connect := func(context.Context, string) (*pgxpool.Pool, func(), error) { return pool, func() {}, nil }
+	var out bytes.Buffer
+	if err := runEncryptEnv(context.Background(), nil, goodKeyEnv(nil), connect, &out); !errors.Is(err, errSuspect) {
+		t.Fatalf("err=%v", err)
+	}
+	if raw(t, st, f.ServiceID)["PLAIN"] != "p" {
+		t.Fatal("wrote despite suspect rows")
+	}
+	if err := runEncryptEnv(context.Background(), []string{"--allow-suspect"}, goodKeyEnv(nil), connect, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !secrets.IsEncrypted(raw(t, st, f.ServiceID)["PLAIN"]) {
+		t.Fatal("--allow-suspect did not proceed")
 	}
 }

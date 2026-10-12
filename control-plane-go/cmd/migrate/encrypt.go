@@ -16,14 +16,24 @@ import (
 	"infrapilot/internal/store"
 )
 
+var (
+	// errSuspect: enc:v1: values that do not decrypt, and --allow-suspect was not given.
+	errSuspect = errors.New("refusing to write: some enc:v1: values do not decrypt with this key (nothing was changed)")
+	// errWrongKey: every enc:v1: value fails and plain rows exist. Not overridable.
+	errWrongKey = errors.New("refusing to write: no enc:v1: value decrypts with this ENV_ENCRYPTION_KEY, so it is almost certainly the wrong key (nothing was changed)")
+)
+
 const (
 	defaultEncryptBatch = 200
 	maxListedServices   = 20
 )
 
 type encryptOptions struct {
-	DryRun    bool // count only; write nothing
-	BatchSize int  // rows per read; 0 means defaultEncryptBatch
+	DryRun bool // count only; write nothing
+	// AllowSuspect lets the run continue when some enc:v1: values do not
+	// decrypt (they are left untouched). It never overrides the wrong-key guard.
+	AllowSuspect bool
+	BatchSize    int // rows per read; 0 means defaultEncryptBatch
 
 	// afterRead runs after each batch is read and before it is written. Tests
 	// use it to simulate a user saving a value through the API in between.
@@ -36,6 +46,7 @@ type encryptResult struct {
 	Scanned          int // rows read
 	Encrypted        int // rows rewritten (dry run: rows that would be)
 	AlreadyEncrypted int // enc:v1: rows that decrypt with the current key
+	Plain            int // plain-text rows seen by the read-only pre-pass
 	Suspect          int // enc:v1: rows that do NOT decrypt: left alone, see below
 	Conflicts        int // rows edited between read and write: left alone, a re-run picks them up
 	Errors           int // rows whose update failed
@@ -62,9 +73,54 @@ func encryptEnv(ctx context.Context, st *store.Store, box *secrets.Box, opt encr
 	if batch <= 0 {
 		batch = defaultEncryptBatch
 	}
-	var res encryptResult
 	suspectServices := map[string]bool{}
+
+	// Pass 1, read-only: classify every row before anything is written, so a
+	// wrong ENV_ENCRYPTION_KEY is caught while the table is still untouched.
+	var pre encryptResult
 	after := ""
+	for {
+		page, err := st.ListEnvVarsAfter(ctx, after, batch)
+		if err != nil {
+			return pre, fmt.Errorf("read env vars: %w", err)
+		}
+		if len(page) == 0 {
+			break
+		}
+		after = page[len(page)-1].ID
+		for _, v := range page {
+			pre.Scanned++
+			switch {
+			case !secrets.IsEncrypted(v.Value):
+				pre.Plain++
+			default:
+				if _, err := box.Decrypt(v.Value); err != nil {
+					pre.Suspect++
+					suspectServices[v.ServiceID] = true
+				} else {
+					pre.AlreadyEncrypted++
+				}
+			}
+		}
+	}
+	fmt.Fprintf(out, "pre-check: scanned=%d plain=%d already_encrypted=%d suspect=%d\n",
+		pre.Scanned, pre.Plain, pre.AlreadyEncrypted, pre.Suspect)
+	if pre.Suspect > 0 {
+		printSuspect(out, pre.Suspect, suspectServices)
+		if pre.AlreadyEncrypted == 0 && pre.Plain > 0 {
+			fmt.Fprintln(out, "error: no enc:v1: value decrypts and plain rows exist: this is almost certainly the wrong ENV_ENCRYPTION_KEY. Fix the key, or re-save the odd values; --allow-suspect does not override this.")
+			return pre, errWrongKey
+		}
+		if !opt.AllowSuspect {
+			fmt.Fprintln(out, "error: resolve the suspect values (see the runbook), or re-run with --allow-suspect to encrypt only the plain rows and leave these untouched.")
+			return pre, errSuspect
+		}
+	}
+
+	// Pass 2: the write pass (or the dry-run count).
+	var res encryptResult
+	res.Plain = pre.Plain
+	after = ""
 	for {
 		page, err := st.ListEnvVarsAfter(ctx, after, batch)
 		if err != nil {
@@ -129,6 +185,21 @@ func sqlState(err error) string {
 	return "database error"
 }
 
+// printSuspect names the suspect count and at most maxListedServices service ids.
+func printSuspect(out io.Writer, n int, suspect map[string]bool) {
+	ids := make([]string, 0, len(suspect))
+	for id := range suspect {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	more := ""
+	if len(ids) > maxListedServices {
+		ids, more = ids[:maxListedServices], fmt.Sprintf(" (+%d more)", len(ids)-maxListedServices)
+	}
+	fmt.Fprintf(out, "warning: suspect=%d value(s) start with enc:v1: but do not decrypt with this key: a plain-text value that looks like ciphertext, or the wrong ENV_ENCRYPTION_KEY. They are NOT changed. Services: %v%s\n",
+		n, ids, more)
+}
+
 func printSummary(out io.Writer, dry bool, r encryptResult, suspect map[string]bool) {
 	label, verb := "", "encrypted"
 	if dry {
@@ -137,20 +208,10 @@ func printSummary(out io.Writer, dry bool, r encryptResult, suspect map[string]b
 	fmt.Fprintf(out, "%sscanned=%d %s=%d already_encrypted=%d suspect=%d conflicts=%d errors=%d\n",
 		label, r.Scanned, verb, r.Encrypted, r.AlreadyEncrypted, r.Suspect, r.Conflicts, r.Errors)
 	if r.Suspect > 0 {
-		ids := make([]string, 0, len(suspect))
-		for id := range suspect {
-			ids = append(ids, id)
-		}
-		sort.Strings(ids)
-		more := ""
-		if len(ids) > maxListedServices {
-			ids, more = ids[:maxListedServices], fmt.Sprintf(" (+%d more)", len(ids)-maxListedServices)
-		}
-		fmt.Fprintf(out, "warning: %d value(s) start with enc:v1: but do not decrypt with this key: a plain-text value that looks like ciphertext, or the wrong ENV_ENCRYPTION_KEY. They were NOT changed. Services: %v%s\n",
-			r.Suspect, ids, more)
+		printSuspect(out, r.Suspect, suspect)
 	}
 	if r.Conflicts > 0 {
-		fmt.Fprintf(out, "note: %d value(s) changed while the command ran and were left alone; run it again to pick them up\n", r.Conflicts)
+		fmt.Fprintf(out, "note: %d value(s) changed while the command ran and were left alone\nconflicts>0: run again until conflicts=0\n", r.Conflicts)
 	}
 }
 
@@ -162,6 +223,7 @@ func runEncryptEnv(ctx context.Context, args []string, getenv func(string) strin
 	fs := flag.NewFlagSet("encrypt-env", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	dry := fs.Bool("dry-run", false, "count what would be encrypted; write nothing")
+	allowSuspect := fs.Bool("allow-suspect", false, "continue although some enc:v1: values do not decrypt (they stay untouched)")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("usage: migrate encrypt-env [--dry-run]: %w", err)
 	}
@@ -184,6 +246,6 @@ func runEncryptEnv(ctx context.Context, args []string, getenv func(string) strin
 		return err
 	}
 	defer closePool()
-	_, err = encryptEnv(ctx, store.New(pool), box, encryptOptions{DryRun: *dry}, out)
+	_, err = encryptEnv(ctx, store.New(pool), box, encryptOptions{DryRun: *dry, AllowSuspect: *allowSuspect}, out)
 	return err
 }

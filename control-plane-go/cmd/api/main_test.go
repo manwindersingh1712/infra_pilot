@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -32,7 +33,7 @@ func TestStartupLogHasNoSecrets(t *testing.T) {
 	}
 	for _, format := range []string{"text", "json"} {
 		var buf bytes.Buffer
-		logStartup(logging.New(format, &buf), cfg)
+		logStartup(logging.New(format, &buf), cfg, "127.0.0.1:8080")
 		out := buf.String()
 		for _, secret := range []string{jwt, keyB64, "dbpassword-xyz", "chpass-xyz", "redispass-xyz", string(key)} {
 			if strings.Contains(out, secret) {
@@ -162,5 +163,52 @@ func TestShutdownKeepsMetricsDuringDrain(t *testing.T) {
 	if resp, err := http.DefaultClient.Do(req); err == nil {
 		resp.Body.Close()
 		t.Fatal("metrics still serving after shutdown completed")
+	}
+}
+
+// STAFF-5: "api listening" is logged only after the bind succeeded.
+func TestServeAPIBindFailureDoesNotAnnounce(t *testing.T) {
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Close()
+	announced := false
+	_, err = serveAPI(newHTTPServer(busy.Addr().String(), nil), func(net.Addr) { announced = true })
+	if err == nil {
+		t.Fatal("bind to a busy port must fail")
+	}
+	if announced {
+		t.Fatal("announced a listener that never bound")
+	}
+
+	srv := newHTTPServer("127.0.0.1:0", nil)
+	var got net.Addr
+	errc, err := serveAPI(srv, func(a net.Addr) { got = a })
+	if err != nil || got == nil {
+		t.Fatalf("err = %v, addr = %v", err, got)
+	}
+	_ = srv.Close()
+	if err := <-errc; !errors.Is(err, http.ErrServerClosed) {
+		t.Fatal(err)
+	}
+}
+
+// STAFF-5: a metrics bind failure is reported so run can end the process.
+func TestStartMetricsReportsBindFailure(t *testing.T) {
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Close()
+	mr := startMetrics(busy.Addr().String(), metrics.NewAPI().Handler(), slog.New(slog.DiscardHandler))
+	defer mr.Stop()
+	select {
+	case err := <-mr.Failed():
+		if err == nil {
+			t.Fatal("nil error")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("bind failure not reported")
 	}
 }

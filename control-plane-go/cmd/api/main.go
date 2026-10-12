@@ -4,7 +4,9 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -73,19 +75,25 @@ func newHTTPServer(addr string, h http.Handler) *http.Server {
 type metricsRun struct {
 	cancel context.CancelFunc
 	done   chan struct{}
+	failed chan error
 }
 
 func startMetrics(addr string, h http.Handler, logger *slog.Logger) *metricsRun {
 	ctx, cancel := context.WithCancel(context.Background())
-	mr := &metricsRun{cancel: cancel, done: make(chan struct{})}
+	mr := &metricsRun{cancel: cancel, done: make(chan struct{}), failed: make(chan error, 1)}
 	go func() {
 		defer close(mr.done)
 		if err := metrics.Serve(ctx, addr, h, logger); err != nil {
 			logger.Error("metrics server stopped", "err", err)
+			mr.failed <- err
 		}
 	}()
 	return mr
 }
+
+// Failed receives the error if the metrics listener could not bind or stopped
+// on its own. The API treats that as fatal, as the worker does.
+func (m *metricsRun) Failed() <-chan error { return m.failed }
 
 // Stop ends the listener and waits for it. Safe to call more than once.
 func (m *metricsRun) Stop() {
@@ -104,10 +112,23 @@ func shutdownAPI(srv *http.Server, cancelStreams func(), mr *metricsRun, timeout
 	return err
 }
 
+// serveAPI binds srv.Addr, calls onListening with the bound address, then
+// serves in the background. The returned channel receives Serve's result.
+func serveAPI(srv *http.Server, onListening func(net.Addr)) (<-chan error, error) {
+	ln, err := net.Listen("tcp", srv.Addr)
+	if err != nil {
+		return nil, err
+	}
+	onListening(ln.Addr())
+	errc := make(chan error, 1)
+	go func() { errc <- srv.Serve(ln) }()
+	return errc, nil
+}
+
 // logStartup writes the one startup line. Config redacts its secrets; the
 // encryption key appears only as its fingerprint.
-func logStartup(logger *slog.Logger, cfg config.Config) {
-	logger.Info("api listening", "port", cfg.APIPort, "devLogin", cfg.IsDevelopment(),
+func logStartup(logger *slog.Logger, cfg config.Config, addr string) {
+	logger.Info("api listening", "addr", addr, "devLogin", cfg.IsDevelopment(),
 		"envKeyFingerprint", secrets.Fingerprint(cfg.EnvEncryptionKey), "config", cfg)
 }
 
@@ -171,9 +192,10 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	}
 	srv := newHTTPServer(addr, handler)
 
-	errc := make(chan error, 1)
-	go func() { errc <- srv.ListenAndServe() }()
-	logStartup(logger, cfg)
+	errc, err := serveAPI(srv, func(a net.Addr) { logStartup(logger, cfg, a.String()) })
+	if err != nil {
+		return err
+	}
 
 	select {
 	case err := <-errc:
@@ -181,6 +203,10 @@ func run(cfg config.Config, logger *slog.Logger) error {
 			return err
 		}
 		return nil
+	case err := <-mr.Failed():
+		cancelStreams()
+		_ = srv.Close()
+		return fmt.Errorf("metrics: %w", err)
 	case <-ctx.Done():
 	}
 	logger.Info("api shutting down")

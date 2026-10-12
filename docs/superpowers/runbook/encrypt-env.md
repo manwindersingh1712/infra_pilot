@@ -55,19 +55,43 @@ Keep the dumps in `$HOME/infrapilot-backup` (mode 700) or move them to encrypted
 
 A "suspect" value starts with `enc:v1:` but does not decrypt with the current key. There are two causes.
 
-- **A Node-era plain-text value that happens to start with `enc:v1:`.** The tool cannot tell it from ciphertext, leaves it untouched and lists the service ids. Until it is fixed the Go API and worker fail to decrypt it (a deploy of that service breaks). Fix: ask the owner to re-save the value through the API (the Go API always encrypts what it receives, including values starting with `enc:v1:`). That is the only supported way to put a new value in. If the owner cannot, remove just that one variable so it can be created again through the API (never write a value from SQL). Back up first, check the service id, look at the row, and delete exactly one row in a transaction:
+- **A Node-era plain-text value that happens to start with `enc:v1:`.** The tool cannot tell it from ciphertext, leaves it untouched and lists the service ids. Until it is fixed the Go API and worker fail to decrypt it (a deploy of that service breaks). Fix: ask the owner to re-save the value through the API (the Go API always encrypts what it receives, including values starting with `enc:v1:`). That is the only supported way to put a new value in. If the owner cannot, remove just that one variable so it can be created again through the API (never write a value from SQL). Back up first, check the service id, look at the row, and delete exactly one row in a transaction.
 
   Take the backup first (see "Backup commands"; the `EnvVar`-only dump is enough here), then pick the service id and key name and check the row.
 
-  ```sql suspect-row
-  \set sid 'cm...'
-  \set k 'THE_KEY_NAME'
-  SELECT "id", "serviceId", "key", length("value") AS len FROM "EnvVar" WHERE "serviceId" = :'sid' AND "key" = :'k';   -- exactly one row, the one you mean
+  Save this as `suspect-row.sql`. It deletes only inside a transaction and fails (non-zero exit, nothing deleted) unless exactly one row matches, so it is safe with `psql -f` and non-interactive runs:
+
+  ```sql
+  -- Deletes exactly one EnvVar row (service :sid, key :k) whose value starts with enc:v1:.
+  -- Aborts with a non-zero exit status, deleting nothing, unless exactly one row matches.
+  \set ON_ERROR_STOP on
+  SELECT "id", "serviceId", "key", length("value") AS len FROM "EnvVar" WHERE "serviceId" = :'sid' AND "key" = :'k';
   BEGIN;
-  DELETE FROM "EnvVar" WHERE "serviceId" = :'sid' AND "key" = :'k' AND "value" LIKE 'enc:v1:%';
-  -- must say DELETE 1. Anything else: ROLLBACK;
-  COMMIT;
+  WITH d AS (
+    DELETE FROM "EnvVar" WHERE "serviceId" = :'sid' AND "key" = :'k' AND "value" LIKE 'enc:v1:%' RETURNING 1
+  )
+  SELECT count(*) = 1 AS ok FROM d \gset
+  \if :ok
+    COMMIT;
+    \echo deleted exactly 1 row
+  \else
+    ROLLBACK;
+    DO $$ BEGIN RAISE EXCEPTION 'expected exactly one matching row: nothing was deleted'; END $$;
+  \endif
   ```
+
+  Validate the id and key in the shell BEFORE they are passed to psql, then run it with `-v` so psql quotes the values (`:'sid'`, `:'k'`):
+
+  ```bash
+  SID=cm...            # a service id from the "Services:" list; copy it, never retype it
+  KEY=THE_KEY_NAME
+  [[ "$SID" =~ ^[a-z0-9]{20,32}$ ]]        || { echo "bad service id" >&2; exit 1; }
+  [[ "$KEY" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || { echo "bad key name" >&2; exit 1; }
+  psql -X -v ON_ERROR_STOP=1 -v sid="$SID" -v k="$KEY" -f suspect-row.sql   # uses the PG* variables of "Backup commands"
+  echo "psql exit: $?"       # 0 = one row deleted; 3 = aborted, nothing deleted
+  ```
+
+  Tested against Postgres 16: a single matching row is deleted (exit 0); a non-matching id, a value that does not start with `enc:v1:`, a hostile id and an id/key matching several rows each abort with exit 3 and leave the table unchanged.
 
   Then have the variable created again through the API and re-run the dry run.
 - **A wrong `ENV_ENCRYPTION_KEY`.** Signs: `suspect` is large, it includes rows the Go API wrote earlier, and `already_encrypted=0`. The command refuses this case on its own: if some `enc:v1:` rows exist, none of them decrypt and plain rows exist, it exits 1 without writing, and `--allow-suspect` does NOT override it. Fix the key (the one the Go API and worker run with), never the data. Writing with the wrong key would lock every plain value under it for good.

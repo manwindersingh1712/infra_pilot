@@ -64,10 +64,15 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
     loadCanvasData();
   }, [projectId]);
 
-  async function loadCanvasData() {
+  // background=true is a refresh while the page is already showing: it must
+  // not swap the page for the loader or the error screen, because that would
+  // unmount open dialogs (Create Service keeps its state across a refresh).
+  async function loadCanvasData(background = false) {
     if (!projectId) return;
-    setLoading(true);
-    setError(null);
+    if (!background) {
+      setLoading(true);
+      setError(null);
+    }
 
     try {
       // Load project name
@@ -82,13 +87,17 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
       setConnections(canvas.connections);
 
       // Auto-open create modal if no services exist
-      if (canvas.services.length === 0) {
+      if (!background && canvas.services.length === 0) {
         setIsCreateModalOpen(true);
       }
     } catch (err) {
-      setError(humanizeApiError(err));
+      if (background) {
+        setToast(`Could not refresh the canvas. ${sentence(humanizeApiError(err))}`);
+      } else {
+        setError(humanizeApiError(err));
+      }
     } finally {
-      setLoading(false);
+      if (!background) setLoading(false);
     }
   }
 
@@ -261,7 +270,7 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
       }}>
         <div style={{ color: "#ef4444", marginBottom: "16px" }}>Error: {error}</div>
         <button
-          onClick={loadCanvasData}
+          onClick={() => void loadCanvasData()}
           style={{
             padding: "10px 20px",
             background: "linear-gradient(135deg, #8b5cf6, #7c3aed)",
@@ -621,7 +630,7 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
         projectId={projectId}
         isOpen={isCreateModalOpen}
         onClose={() => setIsCreateModalOpen(false)}
-        onCreated={loadCanvasData}
+        onCreated={() => void loadCanvasData(true)}
       />
 
       {/* Service Details Panel */}

@@ -6,7 +6,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"sort"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -256,6 +258,30 @@ func encryptEnv(ctx context.Context, st *store.Store, box *secrets.Box, opt encr
 	return res, nil
 }
 
+// connectFailure replaces a connect/ping error with a fixed message, the error
+// class and the safe target. The driver text names the DB user and can echo
+// URL fragments, so it is never printed.
+func connectFailure(target string, err error) error {
+	// db.Connect's own parse errors are fixed texts without input.
+	if strings.HasPrefix(err.Error(), "parse DATABASE_URL") {
+		return errors.New(err.Error())
+	}
+	class := "connection error"
+	var netErr net.Error
+	switch {
+	case errors.Is(err, context.Canceled):
+		class = "interrupted"
+	case errors.Is(err, context.DeadlineExceeded):
+		class = "timeout"
+	case errors.As(err, &netErr):
+		class = "network error"
+	}
+	if _, ok := errors.AsType[*pgconn.PgError](err); ok {
+		class = sqlState(err)
+	}
+	return fmt.Errorf("cannot connect to the database at %s (%s); check the target, user, password and database name in DATABASE_URL", target, class)
+}
+
 func sqlState(err error) string {
 	if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok {
 		return "SQLSTATE " + pgErr.Code
@@ -334,7 +360,7 @@ func runEncryptEnv(ctx context.Context, args []string, getenv func(string) strin
 	}
 	pool, closePool, err := connect(ctx, cfg.DatabaseURL)
 	if err != nil {
-		return err
+		return connectFailure(target, err)
 	}
 	defer closePool()
 	_, err = encryptEnv(ctx, store.New(pool), box, encryptOptions{DryRun: *dry, AllowSuspect: *allowSuspect, Yes: *yes, Target: target}, out)

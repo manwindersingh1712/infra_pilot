@@ -956,3 +956,38 @@ func TestNotifyContextCancelsOnSIGTERM(t *testing.T) {
 		t.Fatal("SIGTERM did not cancel the context")
 	}
 }
+
+// Connect and ping errors from pgx name the DB user and can echo URL
+// fragments. The command prints a fixed message, the error class and the
+// safe target only.
+func TestRunEncryptEnvConnectErrorsAreRedacted(t *testing.T) {
+	cc := pool.Config().ConnConfig
+	host, port, dbname, realUser, realPw := cc.Host, cc.Port, cc.Database, cc.User, cc.Password
+	const user, pw, mark = "zzdbuser", "ZZPWMARKER", "zzdbmarker"
+	cases := map[string]struct{ url, class, target string }{
+		"bad password":     {fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable&application_name=zzappmark", user, pw, host, port, dbname), "SQLSTATE 28", fmt.Sprintf("%s:%d/%s", host, port, dbname)},
+		"wrong password":   {fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable", realUser, pw, host, port, dbname), "SQLSTATE 28P01", fmt.Sprintf("%s:%d/%s", host, port, dbname)},
+		"bad host":         {fmt.Sprintf("postgres://%s:%s@127.0.0.1:1/%s?sslmode=disable", user, pw, dbname), "network error", "127.0.0.1:1/" + dbname},
+		"bad dbname":       {fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable", realUser, realPw, host, port, mark), "SQLSTATE 3D000", fmt.Sprintf("%s:%d/%s", host, port, mark)},
+		"password in path": {fmt.Sprintf("postgres://%s@%s:%d/%s?password=%s&sslmode=disable", realUser, host, port, mark, pw), "SQLSTATE 28P01", fmt.Sprintf("%s:%d/%s", host, port, mark)},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			var out bytes.Buffer
+			getenv := goodKeyEnv(map[string]string{"DATABASE_URL": c.url})
+			err := runEncryptEnv(context.Background(), []string{"--dry-run"}, getenv, connectDB, &out)
+			if err == nil || exitCode(err) != 1 {
+				t.Fatalf("err=%v", err)
+			}
+			all := out.String() + err.Error()
+			for _, bad := range []string{user, pw, "zzappmark", "user=", "password=", "database \"", "SASL", "FATAL"} {
+				if bad != "" && strings.Contains(all, bad) {
+					t.Fatalf("output contains %q: %q", bad, all)
+				}
+			}
+			if !strings.Contains(err.Error(), "cannot connect") || !strings.Contains(err.Error(), c.class) || !strings.Contains(err.Error(), "at "+c.target) {
+				t.Fatalf("want class %q in %q", c.class, all)
+			}
+		})
+	}
+}

@@ -7,6 +7,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
+	goruntime "runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -270,4 +273,42 @@ func TestRunRefusesSymlinkedLegacyVolumeRoot(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "LEGACY_VOLUME_ROOT") {
 		t.Fatalf("err = %v", err)
 	}
+}
+
+type recordingRegistry struct {
+	workflows  []any
+	activities []any
+}
+
+func (r *recordingRegistry) RegisterWorkflow(w any) { r.workflows = append(r.workflows, w) }
+func (r *recordingRegistry) RegisterActivity(a any) { r.activities = append(r.activities, a) }
+
+// Ruling 6 (STAFF-4c): DeployWorkflow, TeardownWorkflow and the activities are registered.
+func TestRegisterWorkflowsAndActivities(t *testing.T) {
+	acts := &workflows.Activities{}
+	r := &recordingRegistry{}
+	registerWorkflowsAndActivities(r, acts)
+	names := make([]string, 0, len(r.workflows))
+	for _, w := range r.workflows {
+		names = append(names, runtimeFuncName(w))
+	}
+	slices.Sort(names)
+	if !slices.Equal(names, []string{"DeployWorkflow", "TeardownWorkflow"}) {
+		t.Fatalf("workflows = %v", names)
+	}
+	if len(r.activities) != 1 || r.activities[0] != any(acts) {
+		t.Fatalf("activities = %v", r.activities)
+	}
+	// The registered struct really has the activities the workflows call.
+	typ := reflect.TypeOf(acts)
+	for _, m := range []string{"CancelServiceDeploys", "TeardownService", "LoadJob", "BuildImage", "RunContainer"} {
+		if _, ok := typ.MethodByName(m); !ok {
+			t.Errorf("Activities has no %s", m)
+		}
+	}
+}
+
+func runtimeFuncName(f any) string {
+	n := goruntime.FuncForPC(reflect.ValueOf(f).Pointer()).Name()
+	return n[strings.LastIndex(n, ".")+1:]
 }

@@ -19,6 +19,8 @@ import (
 	"go.temporal.io/api/serviceerror"
 	workflowpb "go.temporal.io/api/workflow/v1"
 	"go.temporal.io/api/workflowservice/v1"
+	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/workflow"
@@ -463,4 +465,52 @@ func TestTeardownFailureLogLevelEscalatesFromAttempt3(t *testing.T) {
 	}
 	// A nil metrics registry and a nil error are fine.
 	(&Activities{Log: slog.New(slog.NewTextHandler(&buf, nil))}).recordTeardownFailure("cancel", svcID, 1, boom)
+}
+
+// Ruling 6 (STAFF-4a): CancelServiceDeploys heartbeats while it waits, or its
+// 1-minute heartbeat timeout would kill a legitimate 3-minute wait.
+func TestCancelServiceDeploysHeartbeatsWhileWaiting(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	f := testutil.Seed(t, e.st, store.TypeNodejs)
+	d, _ := e.st.CreateDeployment(ctx, f.ServiceID, "main")
+	e.st.SoftDeleteService(ctx, f.ServiceID)
+	e.acts.Temporal = &fakeTemporal{running: map[string]int{DeployWorkflowID(d.ID): 5}}
+	e.acts.Cfg.CancelPollInterval = time.Millisecond
+	e.acts.Cfg.CancelWaitTimeout = 5 * time.Second
+
+	var s testsuite.WorkflowTestSuite
+	ae := s.NewTestActivityEnvironment()
+	ae.RegisterActivity(e.acts)
+	var beats int
+	ae.SetOnActivityHeartbeatListener(func(*activity.Info, converter.EncodedValues) { beats++ })
+	if _, err := ae.ExecuteActivity(e.acts.CancelServiceDeploys, TeardownInput{ServiceID: f.ServiceID}); err != nil {
+		t.Fatal(err)
+	}
+	if beats < 1 {
+		t.Fatalf("%d heartbeats while waiting, want at least 1", beats)
+	}
+}
+
+// Ruling 6 (STAFF-4b): when the cancel step fails permanently, nothing is torn down.
+func TestTeardownWorkflowSkipsTeardownWhenCancelFails(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env := s.NewTestWorkflowEnvironment()
+	env.RegisterActivity(&Activities{})
+	var a *Activities
+	in := TeardownInput{ServiceID: "s1", PurgeData: true}
+	env.OnActivity(a.CancelServiceDeploys, mock.Anything, in).Return(
+		temporal.NewNonRetryableApplicationError("invalid service id", "InvalidInput", nil))
+	teardownCalls := 0
+	env.OnActivity(a.TeardownService, mock.Anything, in).Return(func(context.Context, TeardownInput) error {
+		teardownCalls++
+		return nil
+	})
+	env.ExecuteWorkflow(TeardownWorkflow, in)
+	if !env.IsWorkflowCompleted() || env.GetWorkflowError() == nil {
+		t.Fatalf("workflow error = %v, want a failure", env.GetWorkflowError())
+	}
+	if teardownCalls != 0 {
+		t.Fatalf("TeardownService ran %d times after the cancel step failed", teardownCalls)
+	}
 }

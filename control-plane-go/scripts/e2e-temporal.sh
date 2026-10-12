@@ -9,6 +9,13 @@
 # TEMPORAL_E2E_ADDR and runs the e2e tests in internal/workflows and
 # internal/worker/outbox. The container is removed on exit, by exact name.
 #
+# The teardown cases (TestE2ETeardown*) include TestE2ETeardownRealDocker: it
+# deletes services that have a running deploy against real Temporal, real Docker
+# (busybox:1.36 and nginx:alpine, both must be local or it skips), and a Postgres
+# testcontainer, then checks the deploy ended failed, containers, route, volume
+# (kept or purged), env rows and the Completed workflow. It names every Docker
+# object after fresh ids (label cp.e2e=teardown) and removes only those.
+#
 # --record also rewrites internal/workflows/testdata/deploy_history.json from a
 # fresh real DeployWorkflow run (RECORD_DEPLOY_HISTORY=1).
 #
@@ -73,7 +80,7 @@ sleep 2 # the default namespace is registered just after the port opens
 export TEMPORAL_E2E_ADDR="127.0.0.1:$PORT"
 [[ "$RECORD" == "1" ]] && export RECORD_DEPLOY_HISTORY=1
 
-step "running e2e tests against $TEMPORAL_E2E_ADDR"
+step "running e2e tests against $TEMPORAL_E2E_ADDR (includes the teardown cases)"
 cd "$GO_DIR"
 # shellcheck disable=SC2086
 go test -count=1 -timeout 15m -race -v -run 'TestE2E' ./internal/workflows ./internal/worker/outbox ${E2E_GO_TEST_ARGS:-}

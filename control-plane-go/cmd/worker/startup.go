@@ -73,6 +73,21 @@ func checkLegacyVolumeRoot(root string) error {
 	return nil
 }
 
+// registry is the part of worker.Worker that registration uses.
+type registry interface {
+	RegisterWorkflow(w any)
+	RegisterActivity(a any)
+}
+
+// registerWorkflowsAndActivities registers everything the task queue serves.
+// A workflow or activity missing here only shows up at run time, so a test
+// pins the set.
+func registerWorkflowsAndActivities(r registry, acts *workflows.Activities) {
+	r.RegisterWorkflow(workflows.DeployWorkflow)
+	r.RegisterWorkflow(workflows.TeardownWorkflow)
+	r.RegisterActivity(acts)
+}
+
 // activityDeps are the collaborators of workflows.Activities.
 type activityDeps struct {
 	Store   *store.Store

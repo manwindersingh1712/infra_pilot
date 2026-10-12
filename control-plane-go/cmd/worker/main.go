@@ -168,9 +168,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	}
 
 	w := worker.New(tc, workflows.TaskQueue, worker.Options{})
-	w.RegisterWorkflow(workflows.DeployWorkflow)
-	w.RegisterWorkflow(workflows.TeardownWorkflow)
-	w.RegisterActivity(acts)
+	registerWorkflowsAndActivities(w, acts)
 	if err := w.Start(); err != nil {
 		return err
 	}

@@ -68,6 +68,42 @@ func newHTTPServer(addr string, h http.Handler) *http.Server {
 	}
 }
 
+// metricsRun is the metrics listener. It runs on its own context, not the
+// signal context, so /metrics stays up while in-flight requests drain.
+type metricsRun struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+func startMetrics(addr string, h http.Handler, logger *slog.Logger) *metricsRun {
+	ctx, cancel := context.WithCancel(context.Background())
+	mr := &metricsRun{cancel: cancel, done: make(chan struct{})}
+	go func() {
+		defer close(mr.done)
+		if err := metrics.Serve(ctx, addr, h, logger); err != nil {
+			logger.Error("metrics server stopped", "err", err)
+		}
+	}()
+	return mr
+}
+
+// Stop ends the listener and waits for it. Safe to call more than once.
+func (m *metricsRun) Stop() {
+	m.cancel()
+	<-m.done
+}
+
+// shutdownAPI ends open log streams, drains in-flight requests, and only then
+// stops metrics, so the drain is observable.
+func shutdownAPI(srv *http.Server, cancelStreams func(), mr *metricsRun, timeout time.Duration) error {
+	cancelStreams()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	err := srv.Shutdown(ctx)
+	mr.Stop()
+	return err
+}
+
 // logStartup writes the one startup line. Config redacts its secrets; the
 // encryption key appears only as its fingerprint.
 func logStartup(logger *slog.Logger, cfg config.Config) {
@@ -120,18 +156,8 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	defer cancelStreams()
 
 	m := metrics.NewAPI()
-	metricsCtx, stopMetrics := context.WithCancel(ctx)
-	metricsDone := make(chan struct{})
-	go func() {
-		defer close(metricsDone)
-		if err := metrics.Serve(metricsCtx, cfg.APIMetricsAddr, m.Handler(), logger); err != nil {
-			logger.Error("metrics server stopped", "err", err)
-		}
-	}()
-	defer func() { // runs before the pool and client closes above
-		stopMetrics()
-		<-metricsDone
-	}()
+	mr := startMetrics(cfg.APIMetricsAddr, m.Handler(), logger)
+	defer mr.Stop() // runs before the pool and client closes above
 
 	handler := api.NewHandler(api.Deps{
 		Store: store.New(pool), Redis: rdb, Signer: signer, Secrets: box,
@@ -158,10 +184,5 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	case <-ctx.Done():
 	}
 	logger.Info("api shutting down")
-	cancelStreams()
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-	defer cancel()
-	err = srv.Shutdown(shutdownCtx)
-	stop() // then the deferred metrics stop and wait, then the pool and clients close
-	return err
+	return shutdownAPI(srv, cancelStreams, mr, shutdownTimeout)
 }

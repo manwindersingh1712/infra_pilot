@@ -2,13 +2,19 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
 
 	"infrapilot/internal/config"
 	"infrapilot/internal/logging"
+	"infrapilot/internal/metrics"
 )
 
 func TestStartupLogHasNoSecrets(t *testing.T) {
@@ -76,5 +82,85 @@ func TestListenAddr(t *testing.T) {
 		if got := listenAddr(c.devLogin, c.port); got != c.want {
 			t.Errorf("listenAddr(%v, %q) = %q, want %q", c.devLogin, c.port, got, c.want)
 		}
+	}
+}
+
+// freeAddr returns a loopback address that was free a moment ago.
+func freeAddr(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	return ln.Addr().String()
+}
+
+// STAFF-1/SEC-4: /metrics keeps answering while in-flight requests drain, and
+// stops only after srv.Shutdown has returned; open streams are cancelled first.
+func TestShutdownKeepsMetricsDuringDrain(t *testing.T) {
+	logger := slog.New(slog.DiscardHandler)
+	maddr := freeAddr(t)
+	mr := startMetrics(maddr, metrics.NewAPI().Handler(), logger)
+	defer mr.Stop()
+
+	started, release := make(chan struct{}), make(chan struct{})
+	srv := newHTTPServer("127.0.0.1:0", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-release
+	}))
+	ln, err := net.Listen("tcp", srv.Addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	go func() {
+		resp, err := http.Get("http://" + ln.Addr().String() + "/")
+		if err == nil {
+			resp.Body.Close()
+		}
+	}()
+	<-started
+
+	streamsCancelled := false
+	done := make(chan error, 1)
+	go func() {
+		done <- shutdownAPI(srv, func() { streamsCancelled = true }, mr, 5*time.Second)
+	}()
+
+	// Shutdown is now waiting on the in-flight request; metrics must still answer.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		resp, err := http.Get("http://" + maddr + "/metrics")
+		if err == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("metrics unreachable during the drain: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("shutdown returned before the request finished: %v", err)
+	default:
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if !streamsCancelled {
+		t.Fatal("streams were not cancelled")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+maddr+"/metrics", nil)
+	if resp, err := http.DefaultClient.Do(req); err == nil {
+		resp.Body.Close()
+		t.Fatal("metrics still serving after shutdown completed")
 	}
 }

@@ -40,6 +40,9 @@ function EnvVarSection({ serviceId }: { serviceId: string }) {
   const [newValue, setNewValue] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [visibleValues, setVisibleValues] = useState<Set<string>>(new Set());
+  // Plain values, fetched only when the user first asks to see one. The list
+  // endpoint returns masked values.
+  const [revealed, setRevealed] = useState<Record<string, string> | null>(null);
 
   useEffect(() => {
     loadEnvVars();
@@ -47,6 +50,8 @@ function EnvVarSection({ serviceId }: { serviceId: string }) {
 
   async function loadEnvVars() {
     setLoading(true);
+    setRevealed(null);
+    setVisibleValues(new Set());
     try {
       const data = await apiFetch<EnvVar[]>(`/services/${serviceId}/env`);
       setEnvVars(data);
@@ -59,11 +64,13 @@ function EnvVarSection({ serviceId }: { serviceId: string }) {
 
   async function addEnvVar(e: React.FormEvent) {
     e.preventDefault();
-    if (!newKey.trim()) return;
+    const key = newKey.trim();
+    if (!key) return;
+    setError(null);
     try {
       await apiFetch(`/services/${serviceId}/env`, {
         method: "POST",
-        body: JSON.stringify({ key: newKey, value: newValue })
+        body: JSON.stringify({ key, value: newValue })
       });
       setNewKey("");
       setNewValue("");
@@ -75,14 +82,25 @@ function EnvVarSection({ serviceId }: { serviceId: string }) {
 
   async function deleteEnvVar(key: string) {
     try {
-      await apiFetch(`/services/${serviceId}/env/${key}`, { method: "DELETE" });
+      setError(null);
+      await apiFetch(`/services/${serviceId}/env/${encodeURIComponent(key)}`, { method: "DELETE" });
       await loadEnvVars();
     } catch (err) {
       setError(humanizeApiError(err));
     }
   }
 
-  function toggleValueVisibility(key: string) {
+  async function toggleValueVisibility(key: string) {
+    if (!visibleValues.has(key) && revealed === null) {
+      try {
+        setError(null);
+        const data = await apiFetch<EnvVar[]>(`/services/${serviceId}/env?reveal=true`);
+        setRevealed(Object.fromEntries(data.map((v) => [v.key, v.value])));
+      } catch (err) {
+        setError(humanizeApiError(err));
+        return;
+      }
+    }
     setVisibleValues((prev) => {
       const newSet = new Set(prev);
       if (newSet.has(key)) {
@@ -121,6 +139,12 @@ function EnvVarSection({ serviceId }: { serviceId: string }) {
           {error}
         </div>
       )}
+
+      <div style={{ fontSize: "12px", color: "#9ca3af", lineHeight: 1.6, marginBottom: "12px" }}>
+        <div>Names: letters, digits, <code>_</code> <code>.</code> <code>-</code>.</div>
+        <div>Values: a single line, up to 32 KiB. Use base64 for multi-line values such as PEM keys.</div>
+        <div>Changes apply to the next deployment: redeploy to apply them.</div>
+      </div>
 
       <form onSubmit={addEnvVar} style={{ marginBottom: "20px" }}>
         <div style={{ display: "flex", gap: "8px", marginBottom: "12px" }}>
@@ -207,7 +231,7 @@ function EnvVarSection({ serviceId }: { serviceId: string }) {
                 textOverflow: "ellipsis",
                 userSelect: visibleValues.has(env.key) ? "text" : "none"
               }}>
-                {visibleValues.has(env.key) ? env.value : "••••••••••"}
+                {visibleValues.has(env.key) ? (revealed?.[env.key] ?? "…") : "••••••••••"}
               </span>
               <button
                 onClick={() => toggleValueVisibility(env.key)}

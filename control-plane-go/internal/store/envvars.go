@@ -76,8 +76,19 @@ func (s *Store) EnvMap(ctx context.Context, serviceID string) (map[string]string
 // ListEnvVarsAfter returns up to limit env vars (every service, deleted ones
 // included) whose id sorts after afterID, in id order. Keyset paging lets
 // encrypt-env walk the table in short reads without holding any lock.
-func (s *Store) ListEnvVarsAfter(ctx context.Context, afterID string, limit int) ([]EnvVar, error) {
+//
+// A value longer than maxValueBytes (bytes, not characters) is not read from
+// the database: the row comes back with Value "" and TooLarge true, so memory
+// is bounded by limit x maxValueBytes.
+func (s *Store) ListEnvVarsAfter(ctx context.Context, afterID string, limit, maxValueBytes int) ([]EnvVar, error) {
 	rows, err := s.db.Query(ctx,
-		`SELECT `+envCols+` FROM "EnvVar" WHERE "id" > $1 ORDER BY "id" ASC LIMIT $2`, afterID, limit)
-	return collect(rows, err, scanEnvVar)
+		`SELECT "id", "serviceId", "key",
+		        CASE WHEN octet_length("value") > $3 THEN '' ELSE "value" END,
+		        octet_length("value") > $3, "createdAt"
+		 FROM "EnvVar" WHERE "id" > $1 ORDER BY "id" ASC LIMIT $2`, afterID, limit, maxValueBytes)
+	return collect(rows, err, func(row pgx.Row) (EnvVar, error) {
+		var e EnvVar
+		err := row.Scan(&e.ID, &e.ServiceID, &e.Key, &e.Value, &e.TooLarge, &e.CreatedAt.Time)
+		return e, noRows(err)
+	})
 }

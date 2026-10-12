@@ -764,3 +764,40 @@ func TestRealMainEncryptEnvExit2ThenZero(t *testing.T) {
 		t.Fatal("not encrypted")
 	}
 }
+
+// A value above the cap is never loaded: it is skipped, counted as too_large
+// (id only), left as it is, and the other rows are still processed.
+func TestEncryptEnvSkipsTooLargeValues(t *testing.T) {
+	st, f, box := setup(t)
+	big := strings.Repeat("Z", 101)
+	put(t, st, f.ServiceID, "BIG", big)
+	put(t, st, f.ServiceID, "EXACT", strings.Repeat("y", 100))
+	put(t, st, f.ServiceID, "SMALL", "s")
+	// Dry run reports it too and still never writes.
+	res, _, err := doEncrypt(t, st, box, encryptOptions{MaxValueBytes: 100, DryRun: true})
+	if err != nil || res.TooLarge != 1 || res.Encrypted != 2 || raw(t, st, f.ServiceID)["SMALL"] != "s" {
+		t.Fatalf("dry res=%+v err=%v", res, err)
+	}
+	res, out, err := doEncrypt(t, st, box, encryptOptions{MaxValueBytes: 100})
+	if err != nil || res.TooLarge != 1 || res.Encrypted != 2 {
+		t.Fatalf("res=%+v err=%v out=%q", res, err, out)
+	}
+	vars := raw(t, st, f.ServiceID)
+	if vars["BIG"] != big || !secrets.IsEncrypted(vars["EXACT"]) || !secrets.IsEncrypted(vars["SMALL"]) {
+		t.Fatal("wrong rows rewritten")
+	}
+	var pre, sum bool
+	for _, l := range strings.Split(out, "\n") {
+		pre = pre || (strings.HasPrefix(l, "pre-check:") && strings.Contains(l, "too_large=1"))
+		sum = sum || (strings.HasPrefix(l, "scanned=") && strings.Contains(l, "too_large=1"))
+	}
+	if !pre || !sum || !strings.Contains(out, f.ServiceID) || strings.Contains(out, "ZZZ") || strings.Contains(out, "BIG") {
+		t.Fatalf("out=%q", out)
+	}
+}
+
+func TestEncryptBatchDefaultsAreBounded(t *testing.T) {
+	if defaultEncryptBatch != 50 || defaultMaxValueBytes != 8<<20 {
+		t.Fatalf("batch=%d max=%d", defaultEncryptBatch, defaultMaxValueBytes)
+	}
+}

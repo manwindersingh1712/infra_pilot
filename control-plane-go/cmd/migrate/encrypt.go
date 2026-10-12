@@ -75,8 +75,10 @@ func targetOf(raw string) string {
 var portRe = regexp.MustCompile(`^[0-9]{1,5}$`)
 
 const (
-	defaultEncryptBatch = 200
-	maxListedServices   = 20
+	defaultEncryptBatch = 50
+	// defaultMaxValueBytes caps one value (the API accepts 32 KiB; Node-era rows may be larger).
+	defaultMaxValueBytes = 8 << 20
+	maxListedServices    = 20
 )
 
 type encryptOptions struct {
@@ -90,6 +92,8 @@ type encryptOptions struct {
 	// Target is "host:port/dbname", printed first. Never holds credentials.
 	Target    string
 	BatchSize int // rows per read; 0 means defaultEncryptBatch
+	// MaxValueBytes: a larger value is skipped unread and counted as too_large. 0 means defaultMaxValueBytes.
+	MaxValueBytes int
 
 	// afterRead runs after each batch is read and before it is written. Tests
 	// use it to simulate a user saving a value through the API in between.
@@ -102,6 +106,7 @@ type encryptResult struct {
 	Scanned          int // rows read
 	Encrypted        int // rows rewritten (dry run: rows that would be)
 	AlreadyEncrypted int // enc:v1: rows that decrypt with the current key
+	TooLarge         int // values over MaxValueBytes: skipped unread, left as they are
 	Plain            int // plain-text rows seen by the read-only pre-pass
 	Suspect          int // enc:v1: rows that do NOT decrypt: left alone, see below
 	Conflicts        int // rows edited between read and write: left alone, a re-run picks them up
@@ -129,7 +134,12 @@ func encryptEnv(ctx context.Context, st *store.Store, box *secrets.Box, opt encr
 	if batch <= 0 {
 		batch = defaultEncryptBatch
 	}
+	maxBytes := opt.MaxValueBytes
+	if maxBytes <= 0 {
+		maxBytes = defaultMaxValueBytes
+	}
 	suspectServices := map[string]bool{}
+	tooLargeServices := map[string]bool{}
 	if opt.Target != "" {
 		fmt.Fprintf(out, "target: %s\n", opt.Target)
 	}
@@ -139,7 +149,7 @@ func encryptEnv(ctx context.Context, st *store.Store, box *secrets.Box, opt encr
 	var pre encryptResult
 	after := ""
 	for {
-		page, err := st.ListEnvVarsAfter(ctx, after, batch)
+		page, err := st.ListEnvVarsAfter(ctx, after, batch, maxBytes)
 		if err != nil {
 			return pre, fmt.Errorf("read env vars: %w", err)
 		}
@@ -150,6 +160,9 @@ func encryptEnv(ctx context.Context, st *store.Store, box *secrets.Box, opt encr
 		for _, v := range page {
 			pre.Scanned++
 			switch {
+			case v.TooLarge:
+				pre.TooLarge++
+				tooLargeServices[v.ServiceID] = true
 			case !secrets.IsEncrypted(v.Value):
 				pre.Plain++
 			default:
@@ -162,8 +175,8 @@ func encryptEnv(ctx context.Context, st *store.Store, box *secrets.Box, opt encr
 			}
 		}
 	}
-	fmt.Fprintf(out, "pre-check: scanned=%d plain=%d already_encrypted=%d suspect=%d\n",
-		pre.Scanned, pre.Plain, pre.AlreadyEncrypted, pre.Suspect)
+	fmt.Fprintf(out, "pre-check: scanned=%d plain=%d already_encrypted=%d suspect=%d too_large=%d\n",
+		pre.Scanned, pre.Plain, pre.AlreadyEncrypted, pre.Suspect, pre.TooLarge)
 	if pre.Suspect > 0 {
 		printSuspect(out, pre.Suspect, suspectServices)
 		if pre.AlreadyEncrypted == 0 && pre.Plain > 0 {
@@ -186,7 +199,7 @@ func encryptEnv(ctx context.Context, st *store.Store, box *secrets.Box, opt encr
 	res.Plain = pre.Plain
 	after = ""
 	for {
-		page, err := st.ListEnvVarsAfter(ctx, after, batch)
+		page, err := st.ListEnvVarsAfter(ctx, after, batch, maxBytes)
 		if err != nil {
 			return res, fmt.Errorf("read env vars: %w", err)
 		}
@@ -199,6 +212,10 @@ func encryptEnv(ctx context.Context, st *store.Store, box *secrets.Box, opt encr
 		}
 		for _, v := range page {
 			res.Scanned++
+			if v.TooLarge {
+				res.TooLarge++
+				continue
+			}
 			if secrets.IsEncrypted(v.Value) {
 				if _, err := box.Decrypt(v.Value); err != nil {
 					res.Suspect++
@@ -235,7 +252,7 @@ func encryptEnv(ctx context.Context, st *store.Store, box *secrets.Box, opt encr
 			}
 		}
 	}
-	printSummary(out, opt.DryRun, res, suspectServices)
+	printSummary(out, opt.DryRun, res, suspectServices, tooLargeServices)
 	if res.Errors > 0 {
 		return res, fmt.Errorf("%d env var(s) could not be encrypted; fix the cause and run again (the command is safe to repeat)", res.Errors)
 	}
@@ -251,8 +268,13 @@ func sqlState(err error) string {
 
 // printSuspect names the suspect count and at most maxListedServices service ids.
 func printSuspect(out io.Writer, n int, suspect map[string]bool) {
-	ids := make([]string, 0, len(suspect))
-	for id := range suspect {
+	printIDs(out, fmt.Sprintf("warning: suspect=%d value(s) start with enc:v1: but do not decrypt with this key: a plain-text value that looks like ciphertext, or the wrong ENV_ENCRYPTION_KEY. They are NOT changed. Services:", n), suspect)
+}
+
+// printIDs prints msg followed by at most maxListedServices sorted ids.
+func printIDs(out io.Writer, msg string, set map[string]bool) {
+	ids := make([]string, 0, len(set))
+	for id := range set {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
@@ -260,17 +282,19 @@ func printSuspect(out io.Writer, n int, suspect map[string]bool) {
 	if len(ids) > maxListedServices {
 		ids, more = ids[:maxListedServices], fmt.Sprintf(" (+%d more)", len(ids)-maxListedServices)
 	}
-	fmt.Fprintf(out, "warning: suspect=%d value(s) start with enc:v1: but do not decrypt with this key: a plain-text value that looks like ciphertext, or the wrong ENV_ENCRYPTION_KEY. They are NOT changed. Services: %v%s\n",
-		n, ids, more)
+	fmt.Fprintf(out, "%s %v%s\n", msg, ids, more)
 }
 
-func printSummary(out io.Writer, dry bool, r encryptResult, suspect map[string]bool) {
+func printSummary(out io.Writer, dry bool, r encryptResult, suspect, tooLarge map[string]bool) {
 	label, verb := "", "encrypted"
 	if dry {
 		label, verb = "dry run (nothing written): ", "would_encrypt"
 	}
-	fmt.Fprintf(out, "%sscanned=%d %s=%d already_encrypted=%d suspect=%d conflicts=%d errors=%d\n",
-		label, r.Scanned, verb, r.Encrypted, r.AlreadyEncrypted, r.Suspect, r.Conflicts, r.Errors)
+	fmt.Fprintf(out, "%sscanned=%d %s=%d already_encrypted=%d suspect=%d too_large=%d conflicts=%d errors=%d\n",
+		label, r.Scanned, verb, r.Encrypted, r.AlreadyEncrypted, r.Suspect, r.TooLarge, r.Conflicts, r.Errors)
+	if r.TooLarge > 0 {
+		printIDs(out, fmt.Sprintf("warning: too_large=%d value(s) exceed the size limit and were skipped unread (still plain text if they were). Services:", r.TooLarge), tooLarge)
+	}
 	if r.Suspect > 0 {
 		printSuspect(out, r.Suspect, suspect)
 	}

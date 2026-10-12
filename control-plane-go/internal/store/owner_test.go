@@ -77,7 +77,7 @@ func TestListEnvVarsAfterPagesByID(t *testing.T) {
 	var seen []string
 	after := ""
 	for {
-		page, err := st.ListEnvVarsAfter(ctx, after, 2)
+		page, err := st.ListEnvVarsAfter(ctx, after, 2, 1<<20)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -94,5 +94,41 @@ func TestListEnvVarsAfterPagesByID(t *testing.T) {
 	}
 	if len(seen) != 5 {
 		t.Fatalf("saw %v", seen)
+	}
+}
+
+// A value above maxValueBytes comes back flagged with an empty Value, so the
+// caller never holds it in memory; one exactly at the limit comes back whole.
+func TestListEnvVarsAfterCapsLargeValues(t *testing.T) {
+	st, ctx := newStore(t), context.Background()
+	f := testutil.Seed(t, st, store.TypeNodejs)
+	for k, v := range map[string]string{"AT": "12345", "OVER": "123456", "UTF": "ää", "UTF3": "äää"} { // UTF is 4 bytes, UTF3 is 6
+		if _, err := st.UpsertEnvVar(ctx, f.ServiceID, k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page, err := st.ListEnvVarsAfter(ctx, "", 10, 5)
+	if err != nil || len(page) != 4 {
+		t.Fatalf("%v %v", page, err)
+	}
+	for _, v := range page {
+		switch v.Key {
+		case "AT":
+			if v.TooLarge || v.Value != "12345" {
+				t.Fatalf("AT: %+v", v)
+			}
+		case "UTF":
+			if v.TooLarge || v.Value != "ää" {
+				t.Fatalf("UTF: %+v", v)
+			}
+		case "UTF3": // 3 characters but 6 bytes: over a 5-byte cap
+			if !v.TooLarge || v.Value != "" {
+				t.Fatalf("UTF3: %+v", v)
+			}
+		case "OVER":
+			if !v.TooLarge || v.Value != "" {
+				t.Fatalf("OVER: %+v", v)
+			}
+		}
 	}
 }

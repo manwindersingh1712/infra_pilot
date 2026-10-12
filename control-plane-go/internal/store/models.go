@@ -77,6 +77,9 @@ type EnvVar struct {
 	Key       string    `json:"key"`
 	Value     string    `json:"value"`
 	CreatedAt Timestamp `json:"createdAt"`
+	// TooLarge is set only by ListEnvVarsAfter: the value was over the size cap
+	// and Value is empty.
+	TooLarge bool `json:"-"`
 }
 
 type Deployment struct {

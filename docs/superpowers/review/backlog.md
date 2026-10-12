@@ -331,3 +331,9 @@ Source: `review/plan2/task-11-product.md`. The backend is fine for users; the ri
 - Verifier: make the shipped e2e "live service" have an in-flight deploy and assert the deploy stays Running after a forged teardown (today only proven in a scratch copy).
 - Release note could repeat the retention-window caveat (a kept volume can only not be purged by a late event while the completed `teardown-<id>` workflow is inside the Temporal retention window).
 - Dev-environment: disk/Docker incident of 2026-10-12 is recorded in START-HERE (go build cache regrows quickly with -race test runs: check `df` before long sessions).
+
+## Plan 2 Task 13, closed (rounds 1-4)
+- Open question for Task 14/18: should the Go API and worker log the encryption-key fingerprint (`secrets.Fingerprint`, first 12 hex of sha256 of the key bytes) at startup, so the runbook's first-run key check is a direct comparison? (Engineer left it out as scope creep; the runbook currently says to run `encrypt-env --print-key-fingerprint` in their environment.) Recommended: add it in Task 14 `cmd/api` and the worker startup (one Info line, fingerprint only).
+- Oversize `enc:v1:` values (> 8 MiB, ciphertext of a 6-8 MiB Node-era plain value) are reported `already_encrypted_large` and cannot be decrypt-verified by `encrypt-env` (documented in the runbook). The API limit is 32 KiB so only Node-era values are affected.
+- SEC-R3-2 (info): the in-flight `encrypted=N` count is best effort (can be one low). The `EnvMap` read in the in-flight check loads all of the service's values: a targeted SELECT would be lighter.
+- Runbook: `docs/superpowers/runbook/encrypt-env.md` is the cutover procedure for Task 18 (stop Node API first, backup DB + key, key fingerprint check, `--dry-run` until suspect=0 / too_large=0, `--yes`, repeat until conflicts=0, final dry-run). Release note section 'Env var encryption' links it.

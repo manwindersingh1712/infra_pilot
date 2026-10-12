@@ -11,7 +11,7 @@ Infra Pilot is a minimal control-plane + UI for managing projects, services, and
 - **RabbitMQ** for async job queues
 - **Docker** for building images and running containers
 - **Nginx** for subdomain-based service routing
-- **Redis** for Socket.io adapter, pub/sub, and hot log storage
+- **Redis** for pub/sub, one-time stream tickets and hot log storage
 - **MinIO/S3** for log archival
 - **ClickHouse** for structured log aggregation
 
@@ -156,7 +156,7 @@ queued → building → deploying → deployed
 3. **Cold (S3/MinIO)**: Large log batches (>1000 entries) are also uploaded to S3 for archival.
 
 Real-time logs reach the UI via two paths:
-- **Socket.io** (via Redis adapter for horizontal scaling) → immediate broadcast to connected clients
+- **Server-Sent Events** (`GET /logs/deployments/:id/stream?ticket=`, one-time ticket from `POST .../stream-ticket`; events `history`, `log`, `end`) → immediate delivery to connected clients
 - **HTTP API** (`GET /logs/:deploymentId`) → queries the appropriate tier automatically based on time range
 
 ### Nginx Routing
@@ -264,7 +264,7 @@ VITE_API_BASE=http://localhost:8080
 
 ### Logs
 - `GET /logs/:deploymentId` - Get deployment logs (auto-tiers: Redis for <10min, ClickHouse for older)
-- `GET /logs/:deploymentId/stream` - Stream logs (Socket.io, room `logs:${deploymentId}`)
+- `GET /logs/deployments/:id/stream?ticket=` - Stream logs over SSE (ticket from `POST /logs/deployments/:id/stream-ticket`)
 
 ### Health
 - `GET /healthz` - Always returns `{ok: true}`
@@ -275,7 +275,7 @@ VITE_API_BASE=http://localhost:8080
 - **React 19** with **Vite** (no CRA)
 - **React Router v7** for routing
 - **@xyflow/react** (React Flow) for the interactive canvas showing service topology
-- **Socket.io client** for real-time log streaming
+- **EventSource (SSE)** for real-time log streaming (`src/hooks/useLogs.ts`, pure helpers in `src/lib/logStream.ts`)
 - **Inline styles only** — no Tailwind, no CSS-in-JS library. Components are styled via `style={{...}}` objects; `src/index.css` and `src/App.css` exist only for global/base rules.
 - Animations use the `motion` library.
 - Mobile users are shown a "Desktop Required" screen

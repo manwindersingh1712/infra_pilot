@@ -116,6 +116,8 @@ The size cap (8 MiB) applies to the PLAINTEXT. A plain value up to 8 MiB is encr
 
 `too_large` rows are plain (not `enc:v1:`-prefixed) values over 8 MiB: they are not read, not changed and listed by service id. The API accepts 32 KiB, so these are Node-era oddities; look at them by hand. Because they stay in plain text, the command exits 1 when `too_large>0` (after finishing every other row); the last error line names the service ids. Delete or re-save those variables through the API, then run again.
 
+The `encrypted=N so far` count printed when a run is interrupted is best effort: it can be one too low. After the cancel the database server may still finish the update that was in flight, and the check that follows can run before it commits. Nothing is lost: the next run reports that row as already encrypted.
+
 ## Memory
 
 Each read batch holds at most 50 rows and about 16 MiB of values (a single value is capped at 8 MiB), so peak memory is a few tens of MiB for typical data and about 250 MiB in the worst case of 8 MiB values; it does not grow with the table. Measured with 50 values of 8 MiB: about 114 MB peak RSS for a dry run, about 253 MB for a real run.

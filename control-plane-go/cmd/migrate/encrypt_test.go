@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1241,5 +1242,89 @@ func TestEncryptEnvOversizePrefixedIsUnverifiedAndNeutral(t *testing.T) {
 	}
 	if raw(t, st2, f2.ServiceID)["PLAIN"] != "p" {
 		t.Fatal("wrote under a wrong key")
+	}
+}
+
+// A read error mid-run (the connection is killed between two batches, in pass 1
+// and in pass 2) prints a fixed text and a class, never the driver text, which
+// can name the DB user, the database and the host:port.
+func TestEncryptEnvReadErrorsAreRedacted(t *testing.T) {
+	cc := pool.Config().ConnConfig
+	const user, pw = "zzreaduser", "ZZREADPW"
+	// A role of its own, so the user name is a marker we can grep for.
+	ctx := context.Background()
+	for _, q := range []string{
+		fmt.Sprintf(`CREATE ROLE %s LOGIN PASSWORD '%s' SUPERUSER`, user, pw),
+	} {
+		if _, err := pool.Exec(ctx, q); err != nil && !strings.Contains(err.Error(), "already exists") {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(ctx, "DROP ROLE IF EXISTS "+user) })
+	url := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable&application_name=zzkillme", user, pw, cc.Host, cc.Port, cc.Database)
+	for _, killPass := range []int{1, 2} {
+		t.Run(fmt.Sprintf("pass%d", killPass), func(t *testing.T) {
+			st0, f, box := setup(t)
+			for i := range 6 {
+				put(t, st0, f.ServiceID, fmt.Sprintf("K%d", i), "v")
+			}
+			p, closeP, err := connectDB(ctx, url)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer closeP()
+			kill := func() {
+				if _, err := pool.Exec(ctx, `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = 'zzkillme'`); err != nil {
+					t.Fatal(err)
+				}
+				time.Sleep(200 * time.Millisecond)
+			}
+			// Pass 1: kill the idle pooled connection before the first read.
+			if killPass == 1 {
+				kill()
+			}
+			// Pass 2 (batch 3): kill right after the third write, so the next read fails.
+			s := store.New(p)
+			writes := 0
+			replace := func(c context.Context, svc, key, old, enc string) (bool, error) {
+				swapped, err := s.ReplaceEnvVarIfEquals(c, svc, key, old, enc)
+				if writes++; killPass == 2 && writes == 3 {
+					kill()
+				}
+				return swapped, err
+			}
+			var out bytes.Buffer
+			_, err = encryptEnv(ctx, s, box, encryptOptions{Yes: true, BatchSize: 3, replace: replace}, &out)
+			if err == nil {
+				t.Fatal("expected a read error")
+			}
+			all := out.String() + err.Error()
+			for _, bad := range []string{user, pw, cc.Database, fmt.Sprint(cc.Port), "failed to connect", "FATAL", "dial", "unexpected EOF", "conn closed", "terminating connection", "127.0.0.1"} {
+				if strings.Contains(all, bad) {
+					t.Fatalf("output contains %q: %q", bad, all)
+				}
+			}
+			if !strings.Contains(err.Error(), "read env vars failed (") || exitCode(err) != 1 {
+				t.Fatalf("err=%v", err)
+			}
+		})
+	}
+}
+
+func TestReadFailureClasses(t *testing.T) {
+	leak := errors.New("failed to connect to `user=secretuser database=dbn`: 127.0.0.1:1 (127.0.0.1): dial error")
+	for _, c := range []struct {
+		err  error
+		want string
+	}{
+		{leak, "connection error"},
+		{&net.OpError{Op: "dial", Err: leak}, "network error"},
+		{&pgconn.PgError{Code: "57P01", Message: "terminating connection for user secretuser"}, "SQLSTATE 57P01"},
+		{context.DeadlineExceeded, "timeout"},
+	} {
+		got := readFailure(c.err).Error()
+		if got != "read env vars failed ("+c.want+")" || strings.Contains(got, "secretuser") {
+			t.Fatalf("%v -> %q", c.err, got)
+		}
 	}
 }

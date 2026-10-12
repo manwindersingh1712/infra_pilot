@@ -181,7 +181,7 @@ func encryptEnv(ctx context.Context, st *store.Store, box *secrets.Box, opt encr
 			if ctx.Err() != nil {
 				return pre, interrupted()
 			}
-			return pre, fmt.Errorf("read env vars: %w", err)
+			return pre, readFailure(err)
 		}
 		if len(page) == 0 {
 			break
@@ -235,7 +235,7 @@ func encryptEnv(ctx context.Context, st *store.Store, box *secrets.Box, opt encr
 			if ctx.Err() != nil {
 				return res, interrupted()
 			}
-			return res, fmt.Errorf("read env vars: %w", err)
+			return res, readFailure(err)
 		}
 		if len(page) == 0 {
 			break
@@ -322,6 +322,13 @@ func connectFailure(target string, err error) error {
 	if strings.HasPrefix(err.Error(), "parse DATABASE_URL") {
 		return errors.New(err.Error())
 	}
+	return fmt.Errorf("cannot connect to the database at %s (%s); check the target, user, password and database name in DATABASE_URL", target, errClass(err))
+}
+
+// errClass reduces a database error to a class that is safe to print: the
+// SQLSTATE, "network error", "timeout", "interrupted" or "connection error".
+// The driver text (which can name the DB user, database and host:port) is dropped.
+func errClass(err error) string {
 	class := "connection error"
 	var netErr net.Error
 	switch {
@@ -335,7 +342,13 @@ func connectFailure(target string, err error) error {
 	if _, ok := errors.AsType[*pgconn.PgError](err); ok {
 		class = sqlState(err)
 	}
-	return fmt.Errorf("cannot connect to the database at %s (%s); check the target, user, password and database name in DATABASE_URL", target, class)
+	return class
+}
+
+// readFailure is the printed form of a failed read: class only, same
+// redaction as connectFailure.
+func readFailure(err error) error {
+	return fmt.Errorf("read env vars failed (%s)", errClass(err))
 }
 
 // inflightCommitted reports whether the row now holds enc (the ciphertext

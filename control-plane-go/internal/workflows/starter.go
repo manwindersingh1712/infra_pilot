@@ -110,7 +110,10 @@ func (s Starter) Start(ctx context.Context, eventType string, payload []byte) er
 // parseTeardown parses the payload and, when it is refused, logs the serviceId
 // it carried (clipped; best effort) so an operator can find the service.
 func (s Starter) parseTeardown(payload []byte) (TeardownInput, error) {
-	in, err := parseTeardownPayload(payload)
+	in, odd, err := parseTeardownPayload(payload)
+	if err == nil && odd != "" {
+		s.log().Warn("teardown event has a purgeData that is not true or false; not purging", "serviceId", in.ServiceID, "purgeData", odd)
+	}
 	if err != nil {
 		var probe struct {
 			ServiceID any `json:"serviceId"`
@@ -135,61 +138,61 @@ func ignoreAlreadyStarted(err error) error {
 }
 
 // parseTeardownPayload reads {serviceId, purgeData} strictly: the payload is
-// data. serviceId must be a cuid; purgeData is optional and, when present, a
-// JSON boolean (anything else, including null, is refused rather than guessed,
-// because a wrong guess either keeps data the user wanted gone or destroys data
-// they wanted kept); unknown and duplicate keys and trailing data are refused.
-func parseTeardownPayload(payload []byte) (TeardownInput, error) {
-	var in TeardownInput
+// data. serviceId must be a cuid; unknown and duplicate keys, trailing data and
+// non-objects are refused. purgeData purges only for the exact JSON literal
+// true; absent, false and any other value mean no purge (never fall back to
+// true: the volume is the one thing that cannot be undone), and any other value
+// is returned in odd (clipped) so the caller can warn.
+func parseTeardownPayload(payload []byte) (in TeardownInput, odd string, err error) {
 	dec := json.NewDecoder(bytes.NewReader(payload))
 	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
-		return in, errors.New("payload is not a JSON object")
+		return in, "", errors.New("payload is not a JSON object")
 	}
 	seen := map[string]bool{}
 	for dec.More() {
 		keyTok, err := dec.Token()
 		key, ok := keyTok.(string)
 		if err != nil || !ok {
-			return in, errors.New("malformed payload")
+			return in, "", errors.New("malformed payload")
 		}
 		if seen[key] {
-			return in, fmt.Errorf("duplicate key %q", clip(key, 40))
+			return in, "", fmt.Errorf("duplicate key %q", clip(key, 40))
 		}
 		seen[key] = true
 		switch key {
 		case "serviceId":
 			var id string
 			if err := dec.Decode(&id); err != nil {
-				return in, errors.New("serviceId is not a string")
+				return in, "", errors.New("serviceId is not a string")
 			}
 			if !serviceIDPattern.MatchString(id) {
-				return in, fmt.Errorf("serviceId %q is not a cuid", clip(id, 40))
+				return in, "", fmt.Errorf("serviceId %q is not a cuid", clip(id, 40))
 			}
 			in.ServiceID = id
 		case "purgeData":
 			var raw json.RawMessage
 			if err := dec.Decode(&raw); err != nil {
-				return in, errors.New("malformed purgeData")
+				return in, "", errors.New("malformed purgeData")
 			}
 			switch string(raw) {
 			case "true":
 				in.PurgeData = true
 			case "false":
 			default:
-				return in, errors.New("purgeData is not a boolean")
+				odd = clip(string(raw), 40) // never true: a wrong guess would destroy data
 			}
 		default:
-			return in, fmt.Errorf("unknown key %q", clip(key, 40))
+			return in, "", fmt.Errorf("unknown key %q", clip(key, 40))
 		}
 	}
 	if _, err := dec.Token(); err != nil { // closing brace
-		return in, errors.New("malformed payload")
+		return in, "", errors.New("malformed payload")
 	}
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return in, errors.New("trailing data after payload")
+		return in, "", errors.New("trailing data after payload")
 	}
 	if in.ServiceID == "" {
-		return in, errors.New("payload has no serviceId")
+		return in, "", errors.New("payload has no serviceId")
 	}
-	return in, nil
+	return in, odd, nil
 }

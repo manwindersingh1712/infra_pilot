@@ -290,6 +290,21 @@ func (s *Server) deleteServiceEnv(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
 }
 
+// parsePurgeData reads the purgeData query values: none or one empty value is
+// "unset" (set=false); true and false are accepted; anything else, including a
+// repeated parameter, is not ok. The delete must not commit on a bad value.
+func parsePurgeData(vals []string) (purge, set, ok bool) {
+	switch {
+	case len(vals) == 0, len(vals) == 1 && vals[0] == "":
+		return false, false, true
+	case len(vals) == 1 && vals[0] == "true":
+		return true, true, true
+	case len(vals) == 1 && vals[0] == "false":
+		return false, true, true
+	}
+	return false, false, false
+}
+
 // deleteService hides the service at once and queues TeardownWorkflow to
 // remove its containers and route (and its data volume with ?purgeData=true).
 // The soft delete and the outbox event commit together. Cancelling in-flight
@@ -300,7 +315,12 @@ func (s *Server) deleteService(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	purge := r.URL.Query().Get("purgeData") == "true"
+	purge, set, ok := parsePurgeData(r.URL.Query()["purgeData"])
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid_purge_data")
+		return
+	}
+	_ = set
 	ctx := r.Context()
 	err := s.Store.InTx(ctx, func(tx *store.Store) error {
 		if err := tx.SoftDeleteService(ctx, svc.ID); err != nil {

@@ -427,14 +427,38 @@ func TestDeleteServiceQueuesTeardown(t *testing.T) {
 
 func TestDeleteServiceDefaultsToKeepingData(t *testing.T) {
 	hs := newHarness(t)
-	for _, q := range []string{"", "?purgeData=false", "?purgeData=1", "?purgeData=TRUE"} {
-		g := testutil.Seed(t, hs.st, store.TypeRedis)
+	for _, q := range []string{"", "?purgeData=", "?purgeData=false", "?other=1"} {
+		g := testutil.Seed(t, hs.st, store.TypeNodejs)
 		expectStatus(t, hs.do("DELETE", "/services/"+g.ServiceID+q, hs.token(g.UserID), nil), 202)
 		ev := outboxEvents(t)
 		if last := ev[len(ev)-1][1]; last != `{"purgeData": false, "serviceId": "`+g.ServiceID+`"}` {
 			t.Errorf("query %q: payload %s", q, last)
 		}
 	}
+}
+
+// Ruling 2: only absent, empty, true and false are accepted, and a bad value is
+// refused before anything commits.
+func TestDeleteServiceRejectsInvalidPurgeData(t *testing.T) {
+	hs := newHarness(t)
+	f := testutil.Seed(t, hs.st, store.TypeNodejs)
+	tok := hs.token(f.UserID)
+	for _, q := range []string{"?purgeData=TRUE", "?purgeData=True", "?purgeData=1", "?purgeData=yes", "?purgeData=0", "?purgeData=%20true",
+		"?purgeData=true&purgeData=false", "?purgeData=false&purgeData=true", "?purgeData=true&purgeData=", "?purgeData=null"} {
+		rec := hs.do("DELETE", "/services/"+f.ServiceID+q, tok, nil)
+		expectStatus(t, rec, 400)
+		expectBody(t, rec, `{"error":"invalid_purge_data"}`)
+		if _, err := hs.st.GetService(context.Background(), f.ServiceID); err != nil {
+			t.Fatalf("%s: service was deleted: %v", q, err)
+		}
+		if len(outboxEvents(t)) != 0 {
+			t.Fatalf("%s: outbox row written", q)
+		}
+	}
+	// A foreign caller still sees 404, not a validation answer.
+	expectStatus(t, hs.do("DELETE", "/services/"+f.ServiceID+"?purgeData=bad", hs.token("someone-else"), nil), 404)
+	// true is accepted.
+	expectStatus(t, hs.do("DELETE", "/services/"+f.ServiceID+"?purgeData=true", tok, nil), 202)
 }
 
 func TestDeleteServiceRejectsBadIDs(t *testing.T) {

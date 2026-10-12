@@ -187,10 +187,6 @@ func TestStarterRejectsBadTeardownPayloadsPermanently(t *testing.T) {
 		"malformed":        `{"serviceId":`,
 		"bad id":           `{"serviceId":"../etc"}`,
 		"uppercase id":     `{"serviceId":"` + "CM1A1B2C3D4E5F6G7H8I9J0K1" + `"}`,
-		"purge string":     `{"serviceId":"` + svcID + `","purgeData":"true"}`,
-		"purge number":     `{"serviceId":"` + svcID + `","purgeData":1}`,
-		"purge null":       `{"serviceId":"` + svcID + `","purgeData":null}`,
-		"purge object":     `{"serviceId":"` + svcID + `","purgeData":{}}`,
 		"unknown field":    `{"serviceId":"` + svcID + `","volume":"cp-vol-other"}`,
 		"trailing data":    `{"serviceId":"` + svcID + `"} {}`,
 		"duplicate purge":  `{"serviceId":"` + svcID + `","purgeData":false,"purgeData":true}`,
@@ -239,5 +235,51 @@ func TestStarterLogsServiceIDOfRejectedTeardownEvent(t *testing.T) {
 	_ = s.Start(context.Background(), store.EventTeardownRequested, []byte(`{"serviceId":"`+strings.Repeat("A", 5000)+`"}`))
 	if buf.Len() > 1000 {
 		t.Fatalf("log line is %d bytes", buf.Len())
+	}
+}
+
+// Ruling 2: only the exact JSON literal true purges; any other purgeData value
+// starts the workflow with PurgeData=false and logs a warning with the serviceId.
+func TestStarterMalformedPurgeDataMeansNoPurgeAndWarns(t *testing.T) {
+	for name, raw := range map[string]string{
+		"string true": `"true"`, "number": `1`, "zero": `0`, "null": `null`, "object": `{}`,
+		"array": `[true]`, "upper": `"TRUE"`, "empty string": `""`,
+	} {
+		for _, order := range []string{
+			`{"serviceId":"` + svcID + `","purgeData":` + raw + `}`,
+			`{"purgeData":` + raw + `,"serviceId":"` + svcID + `"}`,
+		} {
+			var buf bytes.Buffer
+			fc := &fakeClient{}
+			err := (Starter{Client: fc, Log: slog.New(slog.NewTextHandler(&buf, nil))}).Start(context.Background(), store.EventTeardownRequested, []byte(order))
+			if err != nil || len(fc.args) != 1 {
+				t.Fatalf("%s: err %v starts %d", name, err, len(fc.args))
+			}
+			if in := fc.args[0][0].(TeardownInput); in.PurgeData || in.ServiceID != svcID {
+				t.Errorf("%s: input %+v, want PurgeData=false", name, in)
+			}
+			if out := buf.String(); !strings.Contains(out, "level=WARN") || !strings.Contains(out, "serviceId="+svcID) {
+				t.Errorf("%s: log %q", name, out)
+			}
+		}
+	}
+	// absent, true and false do not warn.
+	for _, payload := range []string{`{"serviceId":"` + svcID + `"}`, `{"serviceId":"` + svcID + `","purgeData":true}`, `{"serviceId":"` + svcID + `","purgeData":false}`} {
+		var buf bytes.Buffer
+		if err := (Starter{Client: &fakeClient{}, Log: slog.New(slog.NewTextHandler(&buf, nil))}).Start(context.Background(), store.EventTeardownRequested, []byte(payload)); err != nil || buf.Len() != 0 {
+			t.Errorf("%s: err %v log %q", payload, err, buf.String())
+		}
+	}
+	// A huge value is clipped in the log.
+	var buf bytes.Buffer
+	_ = (Starter{Client: &fakeClient{}, Log: slog.New(slog.NewTextHandler(&buf, nil))}).Start(context.Background(), store.EventTeardownRequested,
+		[]byte(`{"serviceId":"`+svcID+`","purgeData":"`+strings.Repeat("x", 5000)+`"}`))
+	if buf.Len() > 1000 {
+		t.Fatalf("log is %d bytes", buf.Len())
+	}
+	// Still strict elsewhere: a duplicate purgeData key stays permanent.
+	err := (Starter{Client: &fakeClient{}}).Start(context.Background(), store.EventTeardownRequested, []byte(`{"serviceId":"`+svcID+`","purgeData":null,"purgeData":true}`))
+	if !errors.Is(err, store.ErrOutboxPermanent) {
+		t.Fatalf("duplicate key: %v", err)
 	}
 }

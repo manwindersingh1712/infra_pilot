@@ -2,6 +2,9 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { LogViewer } from "./LogViewer";
 import { DeploymentStageTracker } from "./DeploymentStageTracker";
 import { apiFetch, humanizeApiError } from "../lib/api";
+import {
+  buildConnectionRows, isManagedDb, passwordEnvKey, pickConnectionDeployment,
+} from "../lib/serviceActions";
 
 interface Deployment {
   id: string;
@@ -13,6 +16,7 @@ interface Deployment {
   hostPort: number | null;
   containerPort: number | null;
   createdAt: string;
+  stoppedAt: string | null;
 }
 
 interface Service {
@@ -291,31 +295,50 @@ function EnvVarSection({ serviceId }: { serviceId: string }) {
   );
 }
 
-function isManagedDbService(serviceType: string): boolean {
-  return serviceType === "redis" || serviceType === "mongodb";
-}
-
-function ConnectionSection({ deployment }: { service: Service; deployment: Deployment | null }) {
+function ConnectionSection({ service, deployment }: { service: Service; deployment: Deployment | null }) {
   const [copiedField, setCopiedField] = useState<string | null>(null);
+  // null = not loaded yet; "" = the service has no stored password.
+  const [password, setPassword] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const passwordKey = passwordEnvKey(service.serviceType);
+  const deploymentId = deployment?.id ?? null;
+
+  // The generated password comes from the reveal endpoint, only while a live
+  // deployment is shown. A response that arrives after the service or the
+  // deployment changed is dropped, and the value is cleared when this tab
+  // unmounts. It is never logged and never put in a URL of this page.
+  useEffect(() => {
+    if (deploymentId === null) return;
+    let cancelled = false;
+    apiFetch<EnvVar[]>(`/services/${service.id}/env?reveal=true`)
+      .then((vars) => {
+        if (!cancelled) setPassword(vars.find((v) => v.key === passwordKey)?.value ?? "");
+      })
+      .catch((err) => {
+        if (!cancelled) setError(humanizeApiError(err));
+      });
+    return () => {
+      cancelled = true;
+      setPassword(null);
+      setError(null);
+    };
+  }, [service.id, passwordKey, deploymentId]);
+
+  useEffect(
+    () => () => {
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+    },
+    []
+  );
 
   function copyToClipboard(text: string, field: string) {
-    navigator.clipboard.writeText(text);
+    void navigator.clipboard?.writeText(text).catch(() => undefined);
     setCopiedField(field);
-    setTimeout(() => setCopiedField(null), 2000);
+    if (copyTimer.current) clearTimeout(copyTimer.current);
+    copyTimer.current = setTimeout(() => setCopiedField(null), 2000);
   }
-
-  function getRedisConnectionInfo(dep: Deployment | null) {
-    const host = "localhost";
-    const port = dep?.hostPort ?? 6379;
-    return {
-      host,
-      port: String(port),
-      url: `redis://${host}:${port}`,
-      cli: `redis-cli -h ${host} -p ${port}`,
-    };
-  }
-
-  const info = getRedisConnectionInfo(deployment);
 
   const rowStyle: React.CSSProperties = {
     display: "flex",
@@ -356,7 +379,7 @@ function ConnectionSection({ deployment }: { service: Service; deployment: Deplo
     whiteSpace: "nowrap",
   };
 
-  if (!deployment || deployment.status !== "deployed") {
+  if (!deployment) {
     return (
       <div style={{ padding: "20px" }}>
         <div
@@ -369,19 +392,14 @@ function ConnectionSection({ deployment }: { service: Service; deployment: Deplo
             border: "1px solid rgba(255,255,255,0.1)",
           }}
         >
-          <p>Not deployed yet.</p>
+          <p>Not running.</p>
           <p style={{ fontSize: "14px" }}>Deploy the service to see connection details.</p>
         </div>
       </div>
     );
   }
 
-  const connectionRows = [
-    { label: "Host", value: info.host, field: "host" },
-    { label: "Port", value: info.port, field: "port" },
-    { label: "URL", value: info.url, field: "url" },
-    { label: "CLI", value: info.cli, field: "cli" },
-  ];
+  const connectionRows = buildConnectionRows(service.serviceType, service.id, deployment.hostPort, password);
 
   return (
     <div style={{ padding: "20px", display: "flex", flexDirection: "column", gap: "10px" }}>
@@ -395,28 +413,38 @@ function ConnectionSection({ deployment }: { service: Service; deployment: Deplo
         }}
       >
         <p style={{ margin: 0, fontSize: "13px", color: "#c4b5fd", lineHeight: 1.5 }}>
-          Connect to this Redis instance using the details below. The port is dynamically allocated on deploy.
+          Services in this project reach this database at the host below. It is not exposed to the internet
+          {deployment.hostPort ? "; in development it is also available on localhost." : "."}
         </p>
       </div>
+      {error && (
+        <p role="alert" style={{ margin: 0, fontSize: "13px", color: "#f87171" }}>
+          Could not load the password. {error}
+        </p>
+      )}
 
-      {connectionRows.map((row) => (
-        <div key={row.field} style={rowStyle}>
-          <span style={labelStyle}>{row.label}</span>
-          <span style={valueStyle}>{row.value}</span>
-          <button
-            onClick={() => copyToClipboard(row.value, row.field)}
-            style={copyButtonStyle}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = "rgba(255,255,255,0.1)";
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = "rgba(255,255,255,0.05)";
-            }}
-          >
-            {copiedField === row.field ? "Copied!" : "Copy"}
-          </button>
-        </div>
-      ))}
+      {connectionRows.map((row) => {
+        const unavailable = row.field === "password" && (password === null || password === "");
+        return (
+          <div key={row.field} style={rowStyle} data-field={row.field}>
+            <span style={labelStyle}>{row.label}</span>
+            <span style={valueStyle}>{row.value}</span>
+            <button
+              onClick={() => copyToClipboard(row.value, row.field)}
+              disabled={unavailable || (password === null && (row.field === "url" || row.field === "local"))}
+              style={copyButtonStyle}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = "rgba(255,255,255,0.1)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "rgba(255,255,255,0.05)";
+              }}
+            >
+              {copiedField === row.field ? "Copied!" : "Copy"}
+            </button>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -665,7 +693,7 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
           >
             Deployments
           </button>
-          {!isManagedDbService(service.serviceType) && (
+          {!isManagedDb(service.serviceType) && (
             <button
               onClick={() => setActiveTab("env")}
               style={{
@@ -694,7 +722,7 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
               Env Vars
             </button>
           )}
-          {isManagedDbService(service.serviceType) ? (
+          {isManagedDb(service.serviceType) ? (
             <button
               onClick={() => setActiveTab("connection")}
               style={{
@@ -836,7 +864,7 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
                     }}
                     onViewLogs={(id) => {
                       setLatestDeploymentId(id);
-                      if (service && !isManagedDbService(service.serviceType)) {
+                      if (service && !isManagedDb(service.serviceType)) {
                         setActiveTab("logs");
                       }
                     }}
@@ -862,7 +890,7 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
                       }}
                       onViewLogs={(id) => {
                         setLatestDeploymentId(id);
-                        if (service && !isManagedDbService(service.serviceType)) {
+                        if (service && !isManagedDb(service.serviceType)) {
                           setActiveTab("logs");
                         }
                       }}
@@ -954,8 +982,9 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
             <EnvVarSection key={service.id} serviceId={service.id} />
           ) : activeTab === "connection" ? (
             <ConnectionSection
+              key={service.id}
               service={service}
-              deployment={deployments.find((d) => d.status === "deployed") ?? null}
+              deployment={pickConnectionDeployment(deployments)}
             />
           ) : (
             <div style={{ padding: "20px", height: "100%", boxSizing: "border-box" }}>

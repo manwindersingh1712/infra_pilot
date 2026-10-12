@@ -1,10 +1,13 @@
 package api
 
 import (
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"testing"
+
+	"infrapilot/internal/auth"
 )
 
 func prefixes(t *testing.T, s ...string) []netip.Prefix {
@@ -82,5 +85,59 @@ func TestWrapUsesTrustedProxyClientKey(t *testing.T) {
 	}
 	if call("203.0.113.9:1", "1.1.1.1") != 200 || call("203.0.113.9:1", "2.2.2.2") != http.StatusTooManyRequests {
 		t.Fatal("an untrusted peer must be keyed by its address whatever XFF says")
+	}
+}
+
+// STAFF-2: Deps.TrustedProxies must reach every limiter that NewHandler builds.
+// Each route group below is limited by its own ipLimiter (auth, refresh,
+// stream); dropping the wiring from any one of them fails its case.
+func TestNewHandlerWiresTrustedProxiesIntoEveryLimiter(t *testing.T) {
+	signer, err := auth.NewSigner("test-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newH := func() http.Handler { // fresh limiters per route: register shares login's bucket
+		return NewHandler(Deps{
+			Signer: signer, Log: slog.New(slog.DiscardHandler),
+			AuthBurst: 1, RefreshBurst: 1, Stream: StreamConfig{Burst: 1},
+			TrustedProxies: prefixes(t, "172.18.0.0/16"),
+		})
+	}
+	routes := []struct{ name, method, path string }{
+		{"login (auth limiter)", "POST", "/auth/login"},
+		{"register (auth limiter)", "POST", "/auth/register"},
+		{"refresh (refresh limiter)", "POST", "/auth/refresh"},
+		{"logout (refresh limiter)", "POST", "/auth/logout"},
+		{"stream-ticket (stream limiter)", "POST", "/logs/deployments/d1/stream-ticket"},
+		{"stream (stream limiter)", "GET", "/logs/deployments/d1/stream"},
+	}
+	for _, rt := range routes {
+		t.Run(rt.name, func(t *testing.T) {
+			h := newH()
+			call := func(peer, xff string) int {
+				r := httptest.NewRequest(rt.method, rt.path, nil)
+				r.RemoteAddr = peer
+				r.Header.Set("X-Forwarded-For", xff)
+				rec := httptest.NewRecorder()
+				h.ServeHTTP(rec, r)
+				return rec.Code
+			}
+			const proxy = "172.18.0.2:1"
+			if call(proxy, "198.51.100.1") == http.StatusTooManyRequests ||
+				call(proxy, "198.51.100.2") == http.StatusTooManyRequests {
+				t.Fatal("two clients behind the trusted proxy must not share a bucket")
+			}
+			if call(proxy, "198.51.100.1") != http.StatusTooManyRequests {
+				t.Fatal("the same client behind the proxy must be limited")
+			}
+			// A direct, untrusted peer cannot mint buckets with a forged header.
+			const direct = "203.0.113.9:1"
+			if call(direct, "9.9.9.1") == http.StatusTooManyRequests {
+				t.Fatal("first request from a direct peer was limited")
+			}
+			if call(direct, "9.9.9.2") != http.StatusTooManyRequests {
+				t.Fatal("a forged X-Forwarded-For from an untrusted peer must not get a fresh bucket")
+			}
+		})
 	}
 }

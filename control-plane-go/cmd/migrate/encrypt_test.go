@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"infrapilot/internal/api"
@@ -626,25 +627,118 @@ func TestRunEncryptEnvAllowSuspectFlag(t *testing.T) {
 	}
 }
 
-func TestTargetOf(t *testing.T) {
-	cases := map[string]string{
-		"postgresql://cp:cp@localhost:5432/control_plane?schema=public": "localhost:5432/control_plane",
-		"postgres://u:pw@db.internal/prod":                              "db.internal:5432/prod",
-		// Percent-encoded special characters in the password, and secrets in the query.
-		"postgres://cp:p%40ss%3Aw%2Frd%23%3F%26@db.example:6543/app?sslmode=disable&password=q-secret": "db.example:6543/app",
-		"postgres://cp:pw@[::1]:5433/app": "[::1]:5433/app",
+// pgxTarget renders what pgx resolves for dsn, independently of targetOf.
+func pgxTarget(t *testing.T, dsn string) string {
+	t.Helper()
+	cfg, err := pgconn.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("pgx rejects %q: %v", dsn, err)
 	}
-	for in, want := range cases {
-		got := targetOf(in)
-		if got != want {
-			t.Errorf("targetOf(%q) = %q, want %q", in, got, want)
+	host := cfg.Host
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	return fmt.Sprintf("%s:%d/%s", host, cfg.Port, cfg.Database)
+}
+
+// The target line is what pgx will really connect to: query parameters,
+// key=value DSNs, unix sockets, IPv6 and multi-host lists included.
+func TestTargetOfMatchesWhatPgxResolves(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"postgresql://cp:cp@localhost:5432/control_plane?schema=public", "localhost:5432/control_plane"},
+		{"postgres://u:pw@db.internal/prod", "db.internal:5432/prod"},
+		{"postgres://u:p@localhost/db?host=/tmp/sock", "/tmp/sock:5432/db"},
+		{"postgres://u:p@localhost:5432/db?dbname=other&port=6000", "localhost:6000/other"},
+		{"postgres://u:p@localhost:5432/db?host=other.example", "other.example:5432/db"},
+		{"host=h password=SECRET dbname=d user=zzuser", "h:5432/d"},
+		{"host=/var/run/postgresql dbname=d port=5555 user=zzuser password=SECRET", "/var/run/postgresql:5555/d"},
+		{"postgres://u:p@[::1]:5433/app", "[::1]:5433/app"},
+		{"postgres://u:p@a:1,b:2/db?sslmode=disable", "a:1,b:2/db"},
+		{"postgres://u:p@a,b:2/db?sslmode=disable", "a:5432,b:2/db"},
+		{"postgres://cp:p%40ss%2Fw%3Frd%23x%2540@db.example:6543/app?sslmode=disable&password=q-secret", "db.example:6543/app"},
+	}
+	for _, c := range cases {
+		got := targetOf(c.in)
+		if got != c.want {
+			t.Errorf("targetOf(%q) = %q, want %q", c.in, got, c.want)
+		}
+		if !strings.Contains(c.in, ",") && got != pgxTarget(t, c.in) {
+			t.Errorf("targetOf(%q) = %q disagrees with pgx %q", c.in, got, pgxTarget(t, c.in))
+		}
+		for _, bad := range []string{"zzuser", "SECRET", "q-secret", "p@ss", "p%40ss", "sslmode", "pw", "cp:"} {
+			if strings.Contains(got, bad) {
+				t.Errorf("targetOf(%q) = %q leaks %q", c.in, got, bad)
+			}
 		}
 	}
-	for _, in := range []string{"", "host=db password=hunter2 dbname=x", "://nope", "postgres://cp:pw@/", "postgres://cp:pw@host/db name;drop"} {
+}
+
+func TestTargetOfUsesPGEnvDefaults(t *testing.T) {
+	t.Setenv("PGHOST", "envhost.example")
+	t.Setenv("PGPORT", "7777")
+	if got, want := targetOf("postgres:///db"), "envhost.example:7777/db"; got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestTargetOfUnknown(t *testing.T) {
+	for _, in := range []string{
+		"", "://nope", "postgres://u:p%zz@h/db", "postgres://cp:pw@/", "postgres://cp:pw@host/db name;drop",
+		"postgres://u:pw@host", "host=h password=hunter2 port=notaport",
+		"postgres://u:12/pw#x@h/db",
+	} {
 		got := targetOf(in)
-		if strings.Contains(got, "hunter2") || strings.Contains(got, "pw") || !strings.Contains(got, "not shown") {
+		if got == unknownTarget {
+			continue
+		}
+		// If pgx can resolve it, the answer must be the true one and carry no credential text.
+		if strings.Contains(got, "hunter2") || strings.Contains(got, "pw") || strings.Contains(got, "12/") {
 			t.Errorf("targetOf(%q) = %q", in, got)
 		}
+		if _, err := pgconn.ParseConfig(in); err != nil {
+			t.Errorf("targetOf(%q) = %q but pgx cannot parse it", in, got)
+		}
+	}
+	if got := targetOf("postgres://u:p%zz@h/db"); got != unknownTarget {
+		t.Fatalf("got %q", got)
+	}
+}
+
+// With an undeterminable target a real run is refused (exit 2) with or without
+// --yes; a dry run may continue.
+func TestRunEncryptEnvUnknownTargetRefusesRealRun(t *testing.T) {
+	st, f, _ := setup(t)
+	put(t, st, f.ServiceID, "A", "plain-a")
+	var connects atomic.Int32
+	connect := func(context.Context, string) (*pgxpool.Pool, func(), error) {
+		connects.Add(1)
+		return pool, func() {}, nil
+	}
+	getenv := goodKeyEnv(map[string]string{"DATABASE_URL": "postgres://u:p%zz@h/db"})
+	for _, args := range [][]string{nil, {"--yes"}, {"--yes", "--allow-suspect"}} {
+		var out bytes.Buffer
+		err := runEncryptEnv(context.Background(), args, getenv, connect, &out)
+		if connects.Load() != 0 {
+			t.Fatal("connected although the target is unknown")
+		}
+		if exitCode(err) != 2 || !strings.Contains(out.String(), "target: (unknown target)") {
+			t.Fatalf("args=%v err=%v out=%q", args, err, out.String())
+		}
+		if raw(t, st, f.ServiceID)["A"] != "plain-a" {
+			t.Fatal("wrote with an unknown target")
+		}
+	}
+	var out bytes.Buffer
+	if err := runEncryptEnv(context.Background(), []string{"--dry-run"}, getenv, connect, &out); err != nil {
+		t.Fatalf("dry run refused: %v", err)
+	}
+	if !strings.Contains(out.String(), "target: (unknown target)") || !strings.Contains(out.String(), "would_encrypt=1") {
+		t.Fatalf("out=%q", out.String())
+	}
+	// The same guard sits inside encryptEnv.
+	box := newBox(t, 9)
+	if _, err := encryptEnv(context.Background(), st, box, encryptOptions{Yes: true, Target: unknownTarget}, &out); exitCode(err) != 2 {
+		t.Fatalf("encryptEnv err=%v", err)
 	}
 }
 

@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -65,6 +67,56 @@ func poolConfig(rawURL string) (*pgxpool.Config, error) {
 		cfg.ConnConfig.RuntimeParams["search_path"] = schema
 	}
 	return cfg, nil
+}
+
+var (
+	targetHostRe   = regexp.MustCompile(`^[A-Za-z0-9._\-]+$`)
+	targetSocketRe = regexp.MustCompile(`^/[A-Za-z0-9._\-/]*$`)
+	targetDBRe     = regexp.MustCompile(`^[A-Za-z0-9_.\-]+$`)
+)
+
+// Target renders "host:port[,host:port...]/dbname" from what pgx will really
+// connect to: the resolved config (URL query overrides, key=value DSNs, PG*
+// environment defaults, unix socket hosts and every multi-host fallback), not
+// the raw URL text. It returns ok=false when the config cannot be parsed or a
+// part does not look like a plain host or database name. It never includes the
+// user, the password or any query value.
+func Target(rawURL string) (string, bool) {
+	cfg, err := poolConfig(rawURL)
+	if err != nil {
+		return "", false
+	}
+	cc := cfg.ConnConfig
+	type hp struct {
+		host string
+		port uint16
+	}
+	hosts := []hp{{cc.Host, cc.Port}}
+	for _, fb := range cc.Fallbacks {
+		hosts = append(hosts, hp{fb.Host, fb.Port})
+	}
+	if !targetDBRe.MatchString(cc.Database) {
+		return "", false
+	}
+	var parts []string
+	seen := map[string]bool{}
+	for _, h := range hosts {
+		var host string
+		switch {
+		case targetSocketRe.MatchString(h.host), targetHostRe.MatchString(h.host):
+			host = h.host
+		case strings.Contains(h.host, ":") && net.ParseIP(h.host) != nil:
+			host = "[" + h.host + "]"
+		default:
+			return "", false
+		}
+		s := fmt.Sprintf("%s:%d", host, h.port)
+		if !seen[s] {
+			seen[s] = true
+			parts = append(parts, s)
+		}
+	}
+	return strings.Join(parts, ",") + "/" + cc.Database, true
 }
 
 // normalizeURL removes Prisma's ?schema= parameter and the other Prisma-only

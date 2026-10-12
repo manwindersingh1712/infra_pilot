@@ -6,15 +6,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net/url"
-	"regexp"
 	"sort"
-	"strings"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"infrapilot/internal/config"
+	"infrapilot/internal/db"
 	"infrapilot/internal/secrets"
 	"infrapilot/internal/store"
 )
@@ -24,6 +22,8 @@ var (
 	errSuspect = errors.New("refusing to write: some enc:v1: values do not decrypt with this key (nothing was changed)")
 	// errNeedYes: a real run without --yes. Exit code 2.
 	errNeedYes = &exitCodeError{code: 2, msg: "not confirmed: nothing was changed; use --dry-run to preview or --yes to apply"}
+	// errUnknownTarget: a real run whose database target cannot be shown. Exit code 2.
+	errUnknownTarget = &exitCodeError{code: 2, msg: "refusing a real run: the database target cannot be determined (nothing was changed); fix DATABASE_URL or use --dry-run"}
 	// errWrongKey: every enc:v1: value fails and plain rows exist. Not overridable.
 	errWrongKey = errors.New("refusing to write: no enc:v1: value decrypts with this ENV_ENCRYPTION_KEY, so it is almost certainly the wrong key (nothing was changed)")
 )
@@ -47,32 +47,17 @@ func exitCode(err error) int {
 	return 1
 }
 
-var hostRe = regexp.MustCompile(`^[A-Za-z0-9._\-]+$|^\[[0-9A-Fa-f:.]+\]$`)
-var dbRe = regexp.MustCompile(`^[A-Za-z0-9_.\-]+$`)
+const unknownTarget = "(unknown target)"
 
-// targetOf renders "host:port/dbname" from a Postgres URL. It never returns the
-// user, the password, query parameters or any part of an unparseable URL.
+// targetOf renders what pgx will really connect to ("host:port/dbname", see
+// db.Target). It never returns the user, the password or a query value; when
+// the target cannot be determined it returns unknownTarget.
 func targetOf(raw string) string {
-	const unknown = "(unparseable DATABASE_URL, not shown)"
-	u, err := url.Parse(raw)
-	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") {
-		return unknown
+	if t, ok := db.Target(raw); ok {
+		return t
 	}
-	host, port := u.Hostname(), u.Port()
-	if strings.Contains(u.Host, "]") {
-		host = "[" + host + "]"
-	}
-	db := strings.TrimPrefix(u.Path, "/")
-	if host == "" || !hostRe.MatchString(host) || !dbRe.MatchString(db) || (port != "" && !portRe.MatchString(port)) {
-		return unknown
-	}
-	if port == "" {
-		port = "5432"
-	}
-	return host + ":" + port + "/" + db
+	return unknownTarget
 }
-
-var portRe = regexp.MustCompile(`^[0-9]{1,5}$`)
 
 const (
 	defaultEncryptBatch = 50
@@ -142,6 +127,9 @@ func encryptEnv(ctx context.Context, st *store.Store, box *secrets.Box, opt encr
 	tooLargeServices := map[string]bool{}
 	if opt.Target != "" {
 		fmt.Fprintf(out, "target: %s\n", opt.Target)
+	}
+	if opt.Target == unknownTarget && !opt.DryRun {
+		return encryptResult{}, errUnknownTarget
 	}
 
 	// Pass 1, read-only: classify every row before anything is written, so a
@@ -339,11 +327,16 @@ func runEncryptEnv(ctx context.Context, args []string, getenv func(string) strin
 	if err != nil {
 		return err
 	}
+	target := targetOf(cfg.DatabaseURL)
+	if target == unknownTarget && !*dry {
+		fmt.Fprintf(out, "target: %s\n", target)
+		return errUnknownTarget
+	}
 	pool, closePool, err := connect(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}
 	defer closePool()
-	_, err = encryptEnv(ctx, store.New(pool), box, encryptOptions{DryRun: *dry, AllowSuspect: *allowSuspect, Yes: *yes, Target: targetOf(cfg.DatabaseURL)}, out)
+	_, err = encryptEnv(ctx, store.New(pool), box, encryptOptions{DryRun: *dry, AllowSuspect: *allowSuspect, Yes: *yes, Target: target}, out)
 	return err
 }

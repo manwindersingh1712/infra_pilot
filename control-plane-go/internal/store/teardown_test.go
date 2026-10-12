@@ -118,3 +118,15 @@ func TestScrubDeletedService(t *testing.T) {
 		t.Fatalf("remaining connections = %d err=%v", n, err)
 	}
 }
+
+func TestListOpenDeploymentIDs(t *testing.T) {
+	st, ctx := newStore(t), context.Background()
+	f := testutil.Seed(t, st, store.TypeNodejs)
+	d1, _ := st.CreateDeployment(ctx, f.ServiceID, "main")
+	d2, _ := st.CreateDeployment(ctx, f.ServiceID, "main")
+	st.SetDeploymentStatus(ctx, d2.ID, "deployed")
+	ids, err := st.ListOpenDeploymentIDs(ctx, f.ServiceID)
+	if err != nil || len(ids) != 1 || ids[0] != d1.ID {
+		t.Fatalf("ids=%v err=%v", ids, err)
+	}
+}

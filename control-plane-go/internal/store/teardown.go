@@ -65,3 +65,16 @@ func (s *Store) ScrubDeletedService(ctx context.Context, serviceID string) error
 		return err
 	})
 }
+
+// ListOpenDeploymentIDs returns the service's queued, building and deploying
+// deployments: the ones whose DeployWorkflow may still be running.
+func (s *Store) ListOpenDeploymentIDs(ctx context.Context, serviceID string) ([]string, error) {
+	rows, err := s.db.Query(ctx,
+		`SELECT "id" FROM "Deployment"
+		 WHERE "serviceId" = $1 AND "status" IN ('queued', 'building', 'deploying') ORDER BY "createdAt"`, serviceID)
+	return collect(rows, err, func(row pgx.Row) (string, error) {
+		var id string
+		err := row.Scan(&id)
+		return id, err
+	})
+}

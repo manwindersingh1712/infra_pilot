@@ -3,6 +3,8 @@ package store_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"infrapilot/internal/store"
@@ -77,7 +79,7 @@ func TestListEnvVarsAfterPagesByID(t *testing.T) {
 	var seen []string
 	after := ""
 	for {
-		page, err := st.ListEnvVarsAfter(ctx, after, 2, 1<<20)
+		page, err := st.ListEnvVarsAfter(ctx, after, 2, 1<<20, 1<<30)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -107,7 +109,7 @@ func TestListEnvVarsAfterCapsLargeValues(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	page, err := st.ListEnvVarsAfter(ctx, "", 10, 5)
+	page, err := st.ListEnvVarsAfter(ctx, "", 10, 5, 1<<30)
 	if err != nil || len(page) != 4 {
 		t.Fatalf("%v %v", page, err)
 	}
@@ -130,5 +132,84 @@ func TestListEnvVarsAfterCapsLargeValues(t *testing.T) {
 				t.Fatalf("OVER: %+v", v)
 			}
 		}
+	}
+}
+
+// walkEnvVars pages the whole table with the keyset loop encrypt-env uses and
+// returns the pages as lists of "key:size".
+func walkEnvVars(t *testing.T, st *store.Store, limit, maxValue, maxBatch int) [][]string {
+	t.Helper()
+	var pages [][]string
+	after := ""
+	for {
+		page, err := st.ListEnvVarsAfter(context.Background(), after, limit, maxValue, maxBatch)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page) == 0 {
+			return pages
+		}
+		var p []string
+		for _, v := range page {
+			if v.ID <= after {
+				t.Fatalf("id %s not after %s (duplicate or out of order)", v.ID, after)
+			}
+			after = v.ID
+			p = append(p, fmt.Sprintf("%s:%d", v.Key, len(v.Value)))
+		}
+		pages = append(pages, p)
+	}
+}
+
+// A page stops filling once the summed value sizes would pass the byte budget;
+// a row exactly at the budget still fits; the next page resumes at the next row
+// (no row skipped or repeated).
+func TestListEnvVarsAfterBoundsPagesByBytes(t *testing.T) {
+	st, ctx := newStore(t), context.Background()
+	f := testutil.Seed(t, st, store.TypeNodejs)
+	// Created in id order (cuid ids sort by creation time).
+	sizes := []int{10, 10, 10, 30, 5, 5, 5, 5, 5}
+	for i, n := range sizes {
+		if _, err := st.UpsertEnvVar(ctx, f.ServiceID, fmt.Sprintf("K%d", i), strings.Repeat("x", n)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Budget 20: [10 10] | [10] (next 30 would pass) | [30 alone, bigger than the budget] | [5 5 5 5] | [5]
+	got := walkEnvVars(t, st, 50, 100, 20)
+	want := [][]string{{"K0:10", "K1:10"}, {"K2:10"}, {"K3:30"}, {"K4:5", "K5:5", "K6:5", "K7:5"}, {"K8:5"}}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("got  %v\nwant %v", got, want)
+	}
+	// The row limit binds too, whichever comes first.
+	got = walkEnvVars(t, st, 2, 100, 1<<30)
+	if len(got) != 5 || len(got[0]) != 2 || len(got[4]) != 1 {
+		t.Fatalf("row limit: %v", got)
+	}
+	// Every row exactly once, for several budgets.
+	for _, budget := range []int{1, 9, 10, 11, 29, 30, 31, 1000} {
+		n := 0
+		for _, p := range walkEnvVars(t, st, 50, 100, budget) {
+			n += len(p)
+		}
+		if n != len(sizes) {
+			t.Fatalf("budget %d saw %d rows", budget, n)
+		}
+	}
+}
+
+// Values over the per-value cap are not read and weigh nothing, so they never
+// stop a page from filling; and the first row of a page is always returned.
+func TestListEnvVarsAfterByteBudgetIgnoresTooLarge(t *testing.T) {
+	st, ctx := newStore(t), context.Background()
+	f := testutil.Seed(t, st, store.TypeNodejs)
+	for i, n := range []int{8, 500, 8, 500, 8} {
+		if _, err := st.UpsertEnvVar(ctx, f.ServiceID, fmt.Sprintf("K%d", i), strings.Repeat("x", n)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := walkEnvVars(t, st, 50, 100, 16)
+	want := [][]string{{"K0:8", "K1:0", "K2:8", "K3:0"}, {"K4:8"}}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("got %v want %v", got, want)
 	}
 }

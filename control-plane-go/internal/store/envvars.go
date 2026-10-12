@@ -78,14 +78,31 @@ func (s *Store) EnvMap(ctx context.Context, serviceID string) (map[string]string
 // encrypt-env walk the table in short reads without holding any lock.
 //
 // A value longer than maxValueBytes (bytes, not characters) is not read from
-// the database: the row comes back with Value "" and TooLarge true, so memory
-// is bounded by limit x maxValueBytes.
-func (s *Store) ListEnvVarsAfter(ctx context.Context, afterID string, limit, maxValueBytes int) ([]EnvVar, error) {
+// the database: the row comes back with Value "" and TooLarge true (and weighs
+// nothing below).
+//
+// A page also stops once the summed sizes of its values would pass
+// maxBatchBytes, so memory per page is bounded by that budget, not by
+// limit x maxValueBytes. The first row of a page is always returned (progress),
+// so a page can exceed the budget by at most one value of at most
+// maxValueBytes. The caller continues from the last returned id and treats an
+// empty page as the end; a short page is not the end.
+func (s *Store) ListEnvVarsAfter(ctx context.Context, afterID string, limit, maxValueBytes, maxBatchBytes int) ([]EnvVar, error) {
 	rows, err := s.db.Query(ctx,
-		`SELECT "id", "serviceId", "key",
-		        CASE WHEN octet_length("value") > $3 THEN '' ELSE "value" END,
-		        octet_length("value") > $3, "createdAt"
-		 FROM "EnvVar" WHERE "id" > $1 ORDER BY "id" ASC LIMIT $2`, afterID, limit, maxValueBytes)
+		`WITH page AS (
+		     SELECT "id", octet_length("value") AS n FROM "EnvVar" WHERE "id" > $1 ORDER BY "id" ASC LIMIT $2
+		 ), sized AS (
+		     SELECT "id", n,
+		            SUM(CASE WHEN n > $3 THEN 0 ELSE n END) OVER (ORDER BY "id") AS cum,
+		            ROW_NUMBER() OVER (ORDER BY "id") AS rn
+		     FROM page
+		 )
+		 SELECT e."id", e."serviceId", e."key",
+		        CASE WHEN s.n > $3 THEN '' ELSE e."value" END,
+		        s.n > $3, e."createdAt"
+		 FROM sized s JOIN "EnvVar" e ON e."id" = s."id"
+		 WHERE s.cum <= $4 OR s.rn = 1
+		 ORDER BY e."id" ASC`, afterID, limit, maxValueBytes, maxBatchBytes)
 	return collect(rows, err, func(row pgx.Row) (EnvVar, error) {
 		var e EnvVar
 		err := row.Scan(&e.ID, &e.ServiceID, &e.Key, &e.Value, &e.TooLarge, &e.CreatedAt.Time)

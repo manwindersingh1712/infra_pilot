@@ -65,6 +65,9 @@ const (
 	defaultEncryptBatch = 50
 	// defaultMaxValueBytes caps one value (the API accepts 32 KiB; Node-era rows may be larger).
 	defaultMaxValueBytes = 8 << 20
+	// defaultMaxBatchBytes caps the summed value sizes of one read batch, so
+	// peak memory is about this, not batch x defaultMaxValueBytes.
+	defaultMaxBatchBytes = 16 << 20
 	maxListedServices    = 20
 )
 
@@ -81,6 +84,8 @@ type encryptOptions struct {
 	BatchSize int // rows per read; 0 means defaultEncryptBatch
 	// MaxValueBytes: a larger value is skipped unread and counted as too_large. 0 means defaultMaxValueBytes.
 	MaxValueBytes int
+	// MaxBatchBytes: a batch stops filling once its value sizes would pass this. 0 means defaultMaxBatchBytes.
+	MaxBatchBytes int
 
 	// afterRead runs after each batch is read and before it is written. Tests
 	// use it to simulate a user saving a value through the API in between.
@@ -125,6 +130,10 @@ func encryptEnv(ctx context.Context, st *store.Store, box *secrets.Box, opt encr
 	if maxBytes <= 0 {
 		maxBytes = defaultMaxValueBytes
 	}
+	maxBatch := opt.MaxBatchBytes
+	if maxBatch <= 0 {
+		maxBatch = defaultMaxBatchBytes
+	}
 	suspectServices := map[string]bool{}
 	tooLargeServices := map[string]bool{}
 	if opt.Target != "" {
@@ -139,7 +148,7 @@ func encryptEnv(ctx context.Context, st *store.Store, box *secrets.Box, opt encr
 	var pre encryptResult
 	after := ""
 	for {
-		page, err := st.ListEnvVarsAfter(ctx, after, batch, maxBytes)
+		page, err := st.ListEnvVarsAfter(ctx, after, batch, maxBytes, maxBatch)
 		if err != nil {
 			return pre, fmt.Errorf("read env vars: %w", err)
 		}
@@ -195,7 +204,7 @@ func encryptEnv(ctx context.Context, st *store.Store, box *secrets.Box, opt encr
 	}
 	after = ""
 	for {
-		page, err := st.ListEnvVarsAfter(ctx, after, batch, maxBytes)
+		page, err := st.ListEnvVarsAfter(ctx, after, batch, maxBytes, maxBatch)
 		if err != nil {
 			return res, fmt.Errorf("read env vars: %w", err)
 		}

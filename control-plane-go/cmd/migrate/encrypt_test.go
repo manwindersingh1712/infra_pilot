@@ -924,8 +924,8 @@ func TestEncryptEnvSkipsTooLargeValues(t *testing.T) {
 }
 
 func TestEncryptBatchDefaultsAreBounded(t *testing.T) {
-	if defaultEncryptBatch != 50 || defaultMaxValueBytes != 8<<20 {
-		t.Fatalf("batch=%d max=%d", defaultEncryptBatch, defaultMaxValueBytes)
+	if defaultEncryptBatch != 50 || defaultMaxValueBytes != 8<<20 || defaultMaxBatchBytes != 16<<20 {
+		t.Fatalf("batch=%d max=%d bytes=%d", defaultEncryptBatch, defaultMaxValueBytes, defaultMaxBatchBytes)
 	}
 }
 
@@ -1002,5 +1002,65 @@ func TestRunEncryptEnvConnectErrorsAreRedacted(t *testing.T) {
 				t.Fatalf("want class %q in %q", c.class, all)
 			}
 		})
+	}
+}
+
+// Batches are bounded by bytes as well as rows. Values around the byte budget
+// and the row limit: every row is encrypted exactly once, none skipped, none
+// repeated, and no batch (except a lone big row) passes the budget.
+func TestEncryptEnvBatchesAreBoundedByBytes(t *testing.T) {
+	st, f, box := setup(t)
+	sizes := []int{40, 40, 20, 100, 99, 1, 60, 41, 59, 10, 10, 10, 10}
+	want := map[string]string{}
+	for i, n := range sizes {
+		k := fmt.Sprintf("K%02d", i)
+		want[k] = strings.Repeat(string(rune('a'+i)), n)
+		put(t, st, f.ServiceID, k, want[k])
+	}
+	var batches [][]int
+	opt := encryptOptions{MaxBatchBytes: 100, MaxValueBytes: 1000, BatchSize: 5, afterRead: func(b []store.EnvVar) {
+		var sz []int
+		for _, v := range b {
+			sz = append(sz, len(v.Value))
+		}
+		batches = append(batches, sz)
+	}}
+	res, out, err := doEncrypt(t, st, box, opt)
+	if err != nil || res.Encrypted != len(sizes) || res.Scanned != len(sizes) || res.Conflicts != 0 {
+		t.Fatalf("res=%+v err=%v out=%q", res, err, out)
+	}
+	rows := 0
+	for _, b := range batches {
+		sum := 0
+		for _, n := range b {
+			sum += n
+		}
+		if len(b) > 5 || (sum > 100 && len(b) > 1) {
+			t.Fatalf("batch %v breaks the limits (rows %d, bytes %d)", b, len(b), sum)
+		}
+		rows += len(b)
+	}
+	if rows != len(sizes) { // the write pass reads each row once
+		t.Fatalf("write pass saw %d rows in %v", rows, batches)
+	}
+	for k, v := range raw(t, st, f.ServiceID) {
+		got, err := box.Decrypt(v)
+		if err != nil || got != want[k] {
+			t.Fatalf("%s: err=%v", k, err)
+		}
+	}
+}
+
+// With no option set, the 16 MiB default budget applies: three 6 MiB values
+// do not fit one batch.
+func TestEncryptEnvDefaultByteBudgetApplies(t *testing.T) {
+	st, f, box := setup(t)
+	for i := range 3 {
+		put(t, st, f.ServiceID, fmt.Sprintf("K%d", i), strings.Repeat("v", 6<<20))
+	}
+	var rows []int
+	res, _, err := doEncrypt(t, st, box, encryptOptions{DryRun: true, afterRead: func(b []store.EnvVar) { rows = append(rows, len(b)) }})
+	if err != nil || res.Encrypted != 3 || fmt.Sprint(rows) != "[2 1]" {
+		t.Fatalf("res=%+v err=%v batches=%v", res, err, rows)
 	}
 }

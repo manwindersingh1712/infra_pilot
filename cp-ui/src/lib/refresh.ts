@@ -100,11 +100,12 @@ export async function withStorageLock<T>(
 
   const claim = () => `${id}|${now() + ttl}`;
   const owner = (v: string | null) => (v ? v.split("|")[0] : "");
-  // Clamp what is read from storage: a far-future (or garbage) expiry written
-  // by anything else on the origin must not hold the lock longer than ttl.
+  // A genuine claim never expires later than now+ttl. Anything beyond that,
+  // or not a number, was written by something else on the origin: treat it as
+  // already expired so it cannot hold the lock for longer than ttl.
   const expiry = (v: string | null) => {
     const n = Number(v?.split("|")[1] ?? 0);
-    return Number.isFinite(n) ? Math.min(n, now() + ttl) : 0;
+    return Number.isFinite(n) && n <= now() + ttl ? n : 0;
   };
 
   const deadline = now() + wait;

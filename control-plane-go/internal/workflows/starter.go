@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"regexp"
 
 	enumspb "go.temporal.io/api/enums/v1"
@@ -31,6 +32,25 @@ import (
 // (ClaimDeploy), not here: the starter deliberately has no service-level check.
 type Starter struct {
 	Client client.Client
+	// TaskQueue overrides the default queue (tests only).
+	TaskQueue string
+	// Log receives the serviceId of teardown events rejected as permanent; nil
+	// uses slog.Default().
+	Log *slog.Logger
+}
+
+func (s Starter) taskQueue() string {
+	if s.TaskQueue != "" {
+		return s.TaskQueue
+	}
+	return TaskQueue
+}
+
+func (s Starter) log() *slog.Logger {
+	if s.Log != nil {
+		return s.Log
+	}
+	return slog.Default()
 }
 
 // deploymentIDPattern matches the cuids the API generates. The id goes into a
@@ -59,7 +79,7 @@ func (s Starter) Start(ctx context.Context, eventType string, payload []byte) er
 		}
 		_, err := s.Client.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
 			ID:                    DeployWorkflowID(msg.DeploymentID),
-			TaskQueue:             TaskQueue,
+			TaskQueue:             s.taskQueue(),
 			WorkflowIDReusePolicy: enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
 		}, DeployWorkflow, msg.DeploymentID)
 		if err = ignoreAlreadyStarted(err); err != nil {
@@ -67,14 +87,17 @@ func (s Starter) Start(ctx context.Context, eventType string, payload []byte) er
 		}
 		return nil
 	case store.EventTeardownRequested:
-		in, err := parseTeardownPayload(payload)
+		in, err := s.parseTeardown(payload)
 		if err != nil {
 			return fmt.Errorf("outbox %s: %w: %w", eventType, err, store.ErrOutboxPermanent)
 		}
+		// A completed teardown stays unique and a running one is never doubled
+		// ("already started" is success). A failed, terminated, cancelled or
+		// timed-out one is restarted by a new outbox event (the runbook).
 		_, err = s.Client.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
 			ID:                    TeardownWorkflowID(in.ServiceID),
-			TaskQueue:             TaskQueue,
-			WorkflowIDReusePolicy: enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
+			TaskQueue:             s.taskQueue(),
+			WorkflowIDReusePolicy: enumspb.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY,
 		}, TeardownWorkflow, in)
 		if err = ignoreAlreadyStarted(err); err != nil {
 			return fmt.Errorf("outbox %s: start workflow for service %s: %w", eventType, in.ServiceID, err)
@@ -82,6 +105,24 @@ func (s Starter) Start(ctx context.Context, eventType string, payload []byte) er
 		return nil
 	}
 	return fmt.Errorf("outbox: unknown event type %q", eventType)
+}
+
+// parseTeardown parses the payload and, when it is refused, logs the serviceId
+// it carried (clipped; best effort) so an operator can find the service.
+func (s Starter) parseTeardown(payload []byte) (TeardownInput, error) {
+	in, err := parseTeardownPayload(payload)
+	if err != nil {
+		var probe struct {
+			ServiceID any `json:"serviceId"`
+		}
+		_ = json.Unmarshal(payload, &probe)
+		id := ""
+		if probe.ServiceID != nil {
+			id = clip(fmt.Sprint(probe.ServiceID), 40)
+		}
+		s.log().Error("teardown event rejected as permanent", "serviceId", id, "err", err)
+	}
+	return in, err
 }
 
 // ignoreAlreadyStarted treats "this deployment's workflow already exists" as success.

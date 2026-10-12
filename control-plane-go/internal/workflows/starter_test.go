@@ -1,9 +1,11 @@
 package workflows
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -161,8 +163,9 @@ func TestStarterStartsTeardownOnce(t *testing.T) {
 			t.Fatalf("%s: %v", payload, err)
 		}
 		o := fc.opts[0]
+		// Teardown is restartable after a failed run; a completed one stays unique.
 		if o.ID != "teardown-"+svcID || o.TaskQueue != TaskQueue ||
-			o.WorkflowIDReusePolicy != enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE {
+			o.WorkflowIDReusePolicy != enumspb.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY {
 			t.Fatalf("options %+v", o)
 		}
 		if in, ok := fc.args[0][0].(TeardownInput); !ok || in.ServiceID != svcID || in.PurgeData != purge {
@@ -201,5 +204,40 @@ func TestStarterRejectsBadTeardownPayloadsPermanently(t *testing.T) {
 		if len(fc.opts) != 0 {
 			t.Errorf("%s: started a workflow", name)
 		}
+	}
+}
+
+func TestStarterTaskQueueOverride(t *testing.T) {
+	fc := &fakeClient{}
+	if err := (Starter{Client: fc, TaskQueue: "tq-x"}).Start(context.Background(), store.EventTeardownRequested, []byte(`{"serviceId":"`+svcID+`"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if fc.opts[0].TaskQueue != "tq-x" {
+		t.Fatalf("task queue %q", fc.opts[0].TaskQueue)
+	}
+}
+
+func TestStarterLogsServiceIDOfRejectedTeardownEvent(t *testing.T) {
+	var buf bytes.Buffer
+	s := Starter{Client: &fakeClient{}, Log: slog.New(slog.NewTextHandler(&buf, nil))}
+	err := s.Start(context.Background(), store.EventTeardownRequested, []byte(`{"serviceId":"`+svcID+`","volume":"x"}`))
+	if !errors.Is(err, store.ErrOutboxPermanent) {
+		t.Fatalf("err = %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "level=ERROR") || !strings.Contains(out, "serviceId="+svcID) {
+		t.Fatalf("log = %q", out)
+	}
+	// A payload with no usable id still logs, without inventing one.
+	buf.Reset()
+	_ = s.Start(context.Background(), store.EventTeardownRequested, []byte(`[]`))
+	if !strings.Contains(buf.String(), "level=ERROR") {
+		t.Fatalf("log = %q", buf.String())
+	}
+	// A hostile id is clipped.
+	buf.Reset()
+	_ = s.Start(context.Background(), store.EventTeardownRequested, []byte(`{"serviceId":"`+strings.Repeat("A", 5000)+`"}`))
+	if buf.Len() > 1000 {
+		t.Fatalf("log line is %d bytes", buf.Len())
 	}
 }

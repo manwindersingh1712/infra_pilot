@@ -1,10 +1,15 @@
 package workflows
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,8 +19,11 @@ import (
 	"go.temporal.io/api/serviceerror"
 	workflowpb "go.temporal.io/api/workflow/v1"
 	"go.temporal.io/api/workflowservice/v1"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/workflow"
 
+	"infrapilot/internal/metrics"
 	"infrapilot/internal/store"
 	"infrapilot/internal/testutil"
 )
@@ -283,4 +291,138 @@ func TestTeardownWorkflowRunsActivities(t *testing.T) {
 		t.Fatalf("order %v", order)
 	}
 	env.AssertExpectations(t)
+}
+
+// Ruling 1: teardown retries without limit; only InvalidInput and NotDeleted are permanent.
+func TestTeardownRetryPolicy(t *testing.T) {
+	r := teardownRetry
+	if r.MaximumAttempts != 0 || r.InitialInterval != 10*time.Second || r.BackoffCoefficient != 2 || r.MaximumInterval != 5*time.Minute {
+		t.Fatalf("teardownRetry = %+v", r)
+	}
+	got := slices.Clone(r.NonRetryableErrorTypes)
+	slices.Sort(got)
+	if !slices.Equal(got, []string{"InvalidInput", "NotDeleted"}) {
+		t.Fatalf("non-retryable types = %v", got)
+	}
+	for name, c := range map[string]struct {
+		o     workflow.ActivityOptions
+		start time.Duration
+		hbeat time.Duration
+	}{
+		"cancel":   {cancelOptions(), 6 * time.Minute, time.Minute},
+		"teardown": {teardownOptions(), 2 * time.Minute, 0},
+	} {
+		if c.o.RetryPolicy != teardownRetry {
+			t.Errorf("%s options do not use teardownRetry: %+v", name, c.o.RetryPolicy)
+		}
+		if c.o.ScheduleToCloseTimeout != 0 || c.o.StartToCloseTimeout != c.start || c.o.HeartbeatTimeout != c.hbeat {
+			t.Errorf("%s options = %+v", name, c.o)
+		}
+	}
+	// Deploy workflows keep their bounded policy.
+	if retry.MaximumAttempts != 6 {
+		t.Fatalf("deploy retry changed: %+v", retry)
+	}
+}
+
+// An activity that fails many times (more than the old limit of 6) and then
+// succeeds completes the workflow; the test clock skips the backoff.
+func TestTeardownWorkflowRetriesTransientFailuresUntilSuccess(t *testing.T) {
+	for _, failing := range []string{"cancel", "teardown"} {
+		var s testsuite.WorkflowTestSuite
+		env := s.NewTestWorkflowEnvironment()
+		env.RegisterActivity(&Activities{})
+		var a *Activities
+		in := TeardownInput{ServiceID: "s1"}
+		const failures = 8
+		calls := map[string]int{}
+		step := func(name string) func(context.Context, TeardownInput) error {
+			return func(context.Context, TeardownInput) error {
+				calls[name]++
+				if name == failing && calls[name] <= failures {
+					return errors.New("docker daemon down")
+				}
+				return nil
+			}
+		}
+		env.OnActivity(a.CancelServiceDeploys, mock.Anything, in).Return(step("cancel"))
+		env.OnActivity(a.TeardownService, mock.Anything, in).Return(step("teardown"))
+		env.ExecuteWorkflow(TeardownWorkflow, in)
+		if !env.IsWorkflowCompleted() || env.GetWorkflowError() != nil {
+			t.Fatalf("%s: %v", failing, env.GetWorkflowError())
+		}
+		if calls[failing] != failures+1 {
+			t.Fatalf("%s: %d attempts, want %d", failing, calls[failing], failures+1)
+		}
+	}
+}
+
+func TestTeardownWorkflowStopsOnPermanentErrors(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env := s.NewTestWorkflowEnvironment()
+	env.RegisterActivity(&Activities{})
+	var a *Activities
+	in := TeardownInput{ServiceID: "s1"}
+	calls := 0
+	env.OnActivity(a.CancelServiceDeploys, mock.Anything, in).Return(func(context.Context, TeardownInput) error {
+		return nil
+	})
+	env.OnActivity(a.TeardownService, mock.Anything, in).Return(func(context.Context, TeardownInput) error {
+		calls++
+		return temporal.NewNonRetryableApplicationError("service is not deleted", "NotDeleted", nil)
+	})
+	env.ExecuteWorkflow(TeardownWorkflow, in)
+	if !env.IsWorkflowCompleted() || env.GetWorkflowError() == nil || calls != 1 {
+		t.Fatalf("err %v, calls %d", env.GetWorkflowError(), calls)
+	}
+}
+
+func TestTeardownFailureMetricAndLogs(t *testing.T) {
+	e := newEnv(t)
+	// A live service: TeardownService fails (NotDeleted), counted under step=teardown.
+	f := testutil.Seed(t, e.st, store.TypeNodejs)
+	if _, err := e.run(t, e.acts.TeardownService, TeardownInput{ServiceID: f.ServiceID}); err == nil {
+		t.Fatal("want an error")
+	}
+	// A bad id fails CancelServiceDeploys, counted under step=cancel.
+	if _, err := e.run(t, e.acts.CancelServiceDeploys, TeardownInput{ServiceID: "../x"}); err == nil {
+		t.Fatal("want an error")
+	}
+	body := scrape(t, e.metrics)
+	for _, want := range []string{
+		`cp_teardown_activity_failures_total{step="teardown"} 1`,
+		`cp_teardown_activity_failures_total{step="cancel"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q in\n%s", want, body)
+		}
+	}
+	// Success does not count.
+	e.st.SoftDeleteService(context.Background(), f.ServiceID)
+	if _, err := e.run(t, e.acts.TeardownService, TeardownInput{ServiceID: f.ServiceID}); err != nil {
+		t.Fatal(err)
+	}
+	if body := scrape(t, e.metrics); !strings.Contains(body, `cp_teardown_activity_failures_total{step="teardown"} 1`) {
+		t.Fatalf("success changed the counter:\n%s", body)
+	}
+}
+
+func TestTeardownFailureLogLevelEscalatesFromAttempt3(t *testing.T) {
+	var buf bytes.Buffer
+	a := &Activities{Log: slog.New(slog.NewTextHandler(&buf, nil)), Metrics: metrics.NewWorker()}
+	boom := errors.New("nginx reload failed")
+	for _, c := range []struct {
+		attempt int32
+		level   string
+	}{{1, "WARN"}, {2, "WARN"}, {3, "ERROR"}, {7, "ERROR"}} {
+		buf.Reset()
+		a.recordTeardownFailure("teardown", svcID, c.attempt, boom)
+		out := buf.String()
+		if !strings.Contains(out, "level="+c.level) || !strings.Contains(out, "serviceId="+svcID) ||
+			!strings.Contains(out, "step=teardown") || !strings.Contains(out, "attempt="+strconv.Itoa(int(c.attempt))) {
+			t.Errorf("attempt %d: %q", c.attempt, out)
+		}
+	}
+	// A nil metrics registry and a nil error are fine.
+	(&Activities{Log: slog.New(slog.NewTextHandler(&buf, nil))}).recordTeardownFailure("cancel", svcID, 1, boom)
 }

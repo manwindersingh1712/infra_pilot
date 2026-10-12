@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"regexp"
 	"time"
@@ -15,11 +16,13 @@ import (
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
+	"infrapilot/internal/metrics"
 	"infrapilot/internal/store"
 )
 
-// TeardownWorkflowID is unique per service, with REJECT_DUPLICATE in the
-// starter: a second delete event for one service never starts a second run.
+// TeardownWorkflowID is unique per service. The starter uses
+// ALLOW_DUPLICATE_FAILED_ONLY: a second delete event never starts a second run
+// of a running or completed teardown, but restarts a failed or terminated one.
 func TeardownWorkflowID(serviceID string) string { return "teardown-" + serviceID }
 
 type TeardownInput struct {
@@ -39,11 +42,54 @@ func checkServiceID(id string) error {
 	return nil
 }
 
+// teardownRetry retries without limit: teardown has no commit point and every
+// step is idempotent, so retrying until the cause (Docker, nginx, Postgres) is
+// fixed is correct, and a stuck teardown shows up as a running workflow with a
+// failing activity. The interval caps at 5 minutes. Only InvalidInput and
+// NotDeleted are permanent. There is deliberately no ScheduleToCloseTimeout.
+var teardownRetry = &temporal.RetryPolicy{
+	InitialInterval:        10 * time.Second,
+	BackoffCoefficient:     2,
+	MaximumInterval:        5 * time.Minute,
+	MaximumAttempts:        0,
+	NonRetryableErrorTypes: []string{"InvalidInput", "NotDeleted"},
+}
+
+func teardownOptions() workflow.ActivityOptions {
+	return workflow.ActivityOptions{StartToCloseTimeout: 2 * time.Minute, RetryPolicy: teardownRetry}
+}
+
+// errorLogFromAttempt is the first attempt that logs at Error (earlier ones Warn).
+const errorLogFromAttempt = 3
+
+// recordTeardownFailure counts a failed attempt and logs it: Warn for the first
+// attempts, Error from attempt 3 on, so a stuck teardown is visible.
+func (a *Activities) recordTeardownFailure(step, serviceID string, attempt int32, err error) {
+	a.Metrics.TeardownActivityFailed(step)
+	if a.Log == nil {
+		return
+	}
+	level := slog.LevelWarn
+	if attempt >= errorLogFromAttempt {
+		level = slog.LevelError
+	}
+	a.Log.Log(context.Background(), level, "teardown activity failed",
+		"serviceId", clip(serviceID, 40), "step", step, "attempt", attempt, "err", err)
+}
+
+// failed passes err through after recording it.
+func (a *Activities) teardownFailed(ctx context.Context, step, serviceID string, err error) error {
+	if err != nil {
+		a.recordTeardownFailure(step, serviceID, activity.GetInfo(ctx).Attempt, err)
+	}
+	return err
+}
+
 // cancelOptions: CancelServiceDeploys waits for cancelled deploys to close and
 // heartbeats while it does.
 func cancelOptions() workflow.ActivityOptions {
 	return workflow.ActivityOptions{
-		StartToCloseTimeout: 6 * time.Minute, HeartbeatTimeout: time.Minute, RetryPolicy: retry,
+		StartToCloseTimeout: 6 * time.Minute, HeartbeatTimeout: time.Minute, RetryPolicy: teardownRetry,
 	}
 }
 
@@ -57,7 +103,7 @@ func TeardownWorkflow(ctx workflow.Context, in TeardownInput) error {
 	if err := workflow.ExecuteActivity(workflow.WithActivityOptions(ctx, cancelOptions()), a.CancelServiceDeploys, in).Get(ctx, nil); err != nil {
 		return err
 	}
-	return workflow.ExecuteActivity(workflow.WithActivityOptions(ctx, shortOptions()), a.TeardownService, in).Get(ctx, nil)
+	return workflow.ExecuteActivity(workflow.WithActivityOptions(ctx, teardownOptions()), a.TeardownService, in).Get(ctx, nil)
 }
 
 // CancelServiceDeploys requests cancellation of the DeployWorkflow of every
@@ -67,6 +113,10 @@ func TeardownWorkflow(ctx workflow.Context, in TeardownInput) error {
 // deleted services. If one is still running after CancelWaitTimeout the
 // activity fails (retryable) rather than let teardown race it.
 func (a *Activities) CancelServiceDeploys(ctx context.Context, in TeardownInput) error {
+	return a.teardownFailed(ctx, metrics.StepCancel, in.ServiceID, a.cancelServiceDeploys(ctx, in))
+}
+
+func (a *Activities) cancelServiceDeploys(ctx context.Context, in TeardownInput) error {
 	if err := checkServiceID(in.ServiceID); err != nil {
 		return err
 	}
@@ -123,6 +173,10 @@ func (a *Activities) CancelServiceDeploys(ctx context.Context, in TeardownInput)
 // goes only for an exact PurgeData == true, and only the volume named after
 // this (validated) service id.
 func (a *Activities) TeardownService(ctx context.Context, in TeardownInput) error {
+	return a.teardownFailed(ctx, metrics.StepTeardown, in.ServiceID, a.teardownService(ctx, in))
+}
+
+func (a *Activities) teardownService(ctx context.Context, in TeardownInput) error {
 	if err := checkServiceID(in.ServiceID); err != nil {
 		return err
 	}

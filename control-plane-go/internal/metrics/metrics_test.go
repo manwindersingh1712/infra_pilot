@@ -136,3 +136,28 @@ func TestAPIObserveBoundsMethodLabel(t *testing.T) {
 		}
 	}
 }
+
+func TestTeardownActivityFailuresAreCountedPerStep(t *testing.T) {
+	m := NewWorker()
+	m.TeardownActivityFailed(StepCancel)
+	m.TeardownActivityFailed(StepTeardown)
+	m.TeardownActivityFailed(StepTeardown)
+	m.TeardownActivityFailed("whatever-" + time.Now().String())
+	var nilWorker *Worker
+	nilWorker.TeardownActivityFailed(StepCancel)
+
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+	body := rec.Body.String()
+	for _, want := range []string{
+		`cp_teardown_activity_failures_total{step="cancel"} 1`,
+		`cp_teardown_activity_failures_total{step="teardown"} 2`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	if strings.Contains(body, "whatever") {
+		t.Error("unknown step leaked into the label set")
+	}
+}

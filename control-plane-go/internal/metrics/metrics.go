@@ -22,6 +22,7 @@ type Worker struct {
 	deploy      prometheus.Histogram
 	outbox      *prometheus.GaugeVec
 	outboxLag   prometheus.Gauge
+	teardownErr *prometheus.CounterVec
 }
 
 func NewWorker() *Worker {
@@ -45,8 +46,12 @@ func NewWorker() *Worker {
 		outboxLag: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "cp_outbox_oldest_pending_age_seconds", Help: "Age of the oldest pending or publishing outbox row; 0 when none.",
 		}),
+		teardownErr: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "cp_teardown_activity_failures_total",
+			Help: "Failed teardown activity attempts by step (cancel|teardown). Teardown retries without limit, so a count that keeps rising means a stuck teardown.",
+		}, []string{"step"}),
 	}
-	reg.MustRegister(m.deployments, m.build, m.deploy, m.outbox, m.outboxLag,
+	reg.MustRegister(m.deployments, m.build, m.deploy, m.outbox, m.outboxLag, m.teardownErr,
 		collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	return m
 }
@@ -62,6 +67,22 @@ const (
 	OutcomeDeployed = "deployed"
 	OutcomeFailed   = "failed"
 )
+
+// Teardown steps accepted by TeardownActivityFailed.
+const (
+	StepCancel   = "cancel"
+	StepTeardown = "teardown"
+)
+
+// TeardownActivityFailed counts one failed attempt of a teardown activity.
+// Any step other than StepCancel or StepTeardown is ignored, so the label set
+// stays bounded.
+func (m *Worker) TeardownActivityFailed(step string) {
+	if m == nil || (step != StepCancel && step != StepTeardown) {
+		return
+	}
+	m.teardownErr.WithLabelValues(step).Inc()
+}
 
 // DeploymentFinished counts an outcome; d is the total time since the
 // deployment was created and is recorded only for successful deployments.

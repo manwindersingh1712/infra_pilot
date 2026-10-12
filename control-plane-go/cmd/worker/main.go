@@ -173,7 +173,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	}
 	defer w.Stop()
 
-	publisher := outbox.New(st, workflows.Starter{Client: tc}, logger)
+	publisher := outbox.New(st, workflows.Starter{Client: tc, Log: logger}, logger)
 	sup := newSupervisor(logger, cancel)
 	// Resume runs under the supervisor: a hung Docker daemon must not delay the
 	// outbox starter or "worker up" (T26 STAFF-1).

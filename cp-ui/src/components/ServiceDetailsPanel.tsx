@@ -101,15 +101,17 @@ function EnvVarSection({ serviceId }: { serviceId: string }) {
         return;
       }
     }
-    setVisibleValues((prev) => {
-      const newSet = new Set(prev);
-      if (newSet.has(key)) {
-        newSet.delete(key);
-      } else {
-        newSet.add(key);
-      }
-      return newSet;
-    });
+    const next = new Set(visibleValues);
+    if (next.has(key)) {
+      next.delete(key);
+    } else {
+      next.add(key);
+    }
+    setVisibleValues(next);
+    // Once nothing is shown, drop every decrypted value from memory; the next
+    // eye click fetches them again. (Leaving the tab or closing the panel
+    // unmounts this component, which discards the state too.)
+    if (next.size === 0) setRevealed(null);
   }
 
   const inputStyle = {

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"infrapilot/internal/config"
 	"infrapilot/internal/metrics"
 	"infrapilot/internal/secrets"
 	"infrapilot/internal/store"
@@ -222,5 +223,51 @@ func TestResolveRoutesDirWarnsWhenRelative(t *testing.T) {
 	abs := t.TempDir()
 	if got := resolveRoutesDir(abs, log); got != abs || buf.Len() != 0 {
 		t.Fatalf("absolute dir must pass through silently, got %q log=%q", got, buf.String())
+	}
+}
+
+// Ruling 5 (SEC-5): the legacy volume root must not be a symlink.
+func TestCheckLegacyVolumeRoot(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real")
+	if err := os.Mkdir(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	dangling := filepath.Join(dir, "dangling")
+	if err := os.Symlink(filepath.Join(dir, "nowhere"), dangling); err != nil {
+		t.Fatal(err)
+	}
+	for _, ok := range []string{"", real, filepath.Join(dir, "missing")} {
+		if err := checkLegacyVolumeRoot(ok); err != nil {
+			t.Errorf("%q: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{link, dangling} {
+		err := checkLegacyVolumeRoot(bad)
+		if err == nil || !strings.Contains(err.Error(), bad) || !strings.Contains(err.Error(), "LEGACY_VOLUME_ROOT") {
+			t.Errorf("%q: err = %v, want a fatal error naming the path", bad, err)
+		}
+	}
+	// A symlink in a parent directory is not the root itself.
+	if err := checkLegacyVolumeRoot(filepath.Join(link, "child")); err != nil {
+		t.Errorf("missing child below a linked parent: %v", err)
+	}
+}
+
+// run refuses to start on a symlinked legacy root before it touches anything else.
+func TestRunRefusesSymlinkedLegacyVolumeRoot(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(dir, "cp-volumes")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{EnvEncryptionKey: bytes.Repeat([]byte{1}, 32), LegacyVolumeRoot: link, DatabaseURL: "postgres://127.0.0.1:1/none"}
+	err := run(cfg, slog.New(slog.DiscardHandler))
+	if err == nil || !strings.Contains(err.Error(), "LEGACY_VOLUME_ROOT") {
+		t.Fatalf("err = %v", err)
 	}
 }

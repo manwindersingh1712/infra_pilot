@@ -56,6 +56,9 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	if err := prepareEnv(); err != nil {
 		return err
 	}
+	if err := checkLegacyVolumeRoot(cfg.LegacyVolumeRoot); err != nil {
+		return err
+	}
 	sigCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
 	ctx, cancel := context.WithCancel(sigCtx)

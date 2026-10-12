@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -50,6 +51,27 @@ func checkGitVersion(out string) (string, error) {
 // without credentials must fail fast instead of waiting for a prompt until the
 // build timeout (FWD-A2).
 func prepareEnv() error { return os.Setenv("GIT_TERMINAL_PROMPT", "0") }
+
+// checkLegacyVolumeRoot refuses a LEGACY_VOLUME_ROOT that is itself a symlink:
+// purge deletes <root>/<serviceId> through os.Root, which confines the child but
+// trusts the root, so a link there would aim the deletion elsewhere (SEC-5). A
+// missing directory is fine (nothing to purge); an empty path disables the feature.
+func checkLegacyVolumeRoot(root string) error {
+	if root == "" {
+		return nil
+	}
+	fi, err := os.Lstat(root)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("LEGACY_VOLUME_ROOT %q: %w", root, err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("LEGACY_VOLUME_ROOT %q is a symlink; point it at the real directory", root)
+	}
+	return nil
+}
 
 // activityDeps are the collaborators of workflows.Activities.
 type activityDeps struct {

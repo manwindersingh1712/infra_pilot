@@ -1,0 +1,7 @@
+# Task 14 close-out (orchestrator)
+
+Round 1 (6dca7f5 TRUSTED_PROXIES config + limiter key, 760040a worker key fingerprint, 98497fe cmd/api): Security (1 medium dev-login guard can never fail and API binds all interfaces; 3 low), Staff (3 medium: metrics stop at SIGTERM, TrustedProxies wiring untested, stream-vs-WriteTimeout unproven; 4 low), Verifier PASS (smoke, TRUSTED_PROXIES via curl, SIGTERM with an open stream). Rulings: decisions.md "2026-10-12 Plan 2 Task 14 rulings". Fix round 1: ef38f46 (loopback bind when dev login is on, dead guard removed), 1493550 (metrics through the drain), d52eecf (bind before "api listening"; metrics bind failure ends the API), af2ccac, 6680428, dcb0d83 (tests, mutation-proven), 88c4f64 (docs: TRUSTED_PROXIES, nginx address only). Round 2: Security PASS (0 medium+, 3 info), Verifier PASS (bind addresses, production vs development, SIGTERM drain, port in use, XFF buckets; VER-1 cosmetic: dev WARN logged before a failed bind).
+
+Safety record: no real dev DB, Node API, Go worker or encrypt-env touched; throwaway Postgres containers removed. Nothing pushed.
+
+Carry-forward to Task 18: nginx path test of rate limit + XFF (`X-Forwarded-For $remote_addr`, only the nginx address in TRUSTED_PROXIES); dev `APP_ENV=development` binds loopback, so the dev UI reaches the API at localhost only; apply migration 00004 to the dev DB in a controlled step before the API runs there.

@@ -399,10 +399,10 @@ func runEncryptEnv(ctx context.Context, args []string, getenv func(string) strin
 	yes := fs.Bool("yes", false, "confirm the real run (without it nothing is written and the exit code is 2)")
 	allowSuspect := fs.Bool("allow-suspect", false, "continue although some enc:v1: values do not decrypt (they stay untouched)")
 	if err := fs.Parse(args); err != nil {
-		return fmt.Errorf("usage: migrate encrypt-env [--dry-run]: %w", err)
+		return fmt.Errorf("usage: migrate encrypt-env [--dry-run] [--yes] [--allow-suspect]: %w", err)
 	}
 	if fs.NArg() != 0 {
-		return errors.New("usage: migrate encrypt-env [--dry-run]")
+		return errors.New("usage: migrate encrypt-env [--dry-run] [--yes] [--allow-suspect]")
 	}
 	cfg, err := config.Load(getenv)
 	if err != nil {

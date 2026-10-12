@@ -1150,3 +1150,14 @@ func TestEncryptEnvInterruptedCountIsExact(t *testing.T) {
 		})
 	}
 }
+
+// The usage text of encrypt-env names every flag.
+func TestEncryptEnvUsageShowsAllFlags(t *testing.T) {
+	connect := func(context.Context, string) (*pgxpool.Pool, func(), error) { return nil, func() {}, errors.New("must not connect") }
+	for _, args := range [][]string{{"--bogus"}, {"extra"}} {
+		err := runEncryptEnv(context.Background(), args, goodKeyEnv(nil), connect, &bytes.Buffer{})
+		if err == nil || !strings.Contains(err.Error(), "migrate encrypt-env [--dry-run] [--yes] [--allow-suspect]") {
+			t.Fatalf("args=%v err=%v", args, err)
+		}
+	}
+}

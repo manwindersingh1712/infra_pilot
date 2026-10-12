@@ -21,7 +21,7 @@ The migration is complete when:
 | # | Topic | Decision |
 |---|---|---|
 | D1 | Job pipeline | Temporal replaces RabbitMQ. One `DeployWorkflow` and one `TeardownWorkflow` per service operation. |
-| D2 | Starting workflows | Keep the `OutboxEvent` table. The API writes the state change and an outbox row in one transaction; the worker's outbox starter calls `ExecuteWorkflow`. The workflow ID is `deploy-<deploymentId>` / `teardown-<serviceId>` (a soft-deleted service cannot be deleted again) with the reject-duplicate policy, and "already started" counts as success. |
+| D2 | Starting workflows | Keep the `OutboxEvent` table. The API writes the state change and an outbox row in one transaction; the worker's outbox starter calls `ExecuteWorkflow`. The workflow ID is `deploy-<deploymentId>` / `teardown-<serviceId>` (a soft-deleted service cannot be deleted again) with the reject-duplicate policy for deploy and allow-duplicate-failed-only for teardown (a failed or terminated teardown is restarted by a new outbox event), and "already started" counts as success. |
 | D3 | Order | **Worker first** (Plan 1), API second (Plan 2), hardening and cleanup third (Plan 3). The riskiest new piece, Temporal, gets proven first. |
 | D4 | Node code | **Never deleted.** Runnable during the rollback window (§9). After that it is frozen: tagged `node-final`, marked with `control-plane/FROZEN.md`, excluded from CI, and not maintained. The Go backend stays in `control-plane-go/` (no rename). |
 | D5 | Live logs | SSE, authenticated with a single-use stream ticket (never the JWT in the URL). |
@@ -96,6 +96,8 @@ Every activity has its own timeout and a retry policy: 10 s initial interval, ×
 2. Remove the nginx route.
 3. Remove the named volume, only if `purgeData`.
 4. Mark the deployments `stoppedAt`.
+
+Order: cancel and await the service's open `deploy-<id>` workflows, fail its open deployments, remove containers (by deployment name and by the `cp.serviceId` label), mark deployments stopped, remove the route, remove the volume only if `purgeData`, then scrub: env vars (with `purgeData=false` on a managed service only the generated password row is kept so an operator can recover the volume), connections and `repoUrl`. Activities retry without limit (interval capped at 5 minutes); only `InvalidInput` and `NotDeleted` are permanent. `purgeData` is true only for the JSON literal `true`; the API rejects any other value with 400 and requires an explicit value for mongodb and redis.
 
 The API has already soft-deleted the service (`deletedAt`), so it disappears from listings immediately.
 

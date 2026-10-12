@@ -98,7 +98,7 @@ UPDATE "Service" SET "repoUrl" = NULL WHERE "id" = :'sid' AND "deletedAt" IS NOT
 
 ## 5. Orphan volumes (kept data)
 
-A managed database (MongoDB, Redis) deleted with `purgeData=false` keeps its volume `cp-vol-<serviceId>` on the server and its generated password row (encrypted). The data cannot be re-attached from Infra Pilot; an operator can recover it. A kept volume cannot be purged later by an event (the workflow id is taken by the completed run). To purge it:
+A managed database (MongoDB, Redis) deleted with `purgeData=false` keeps its volume `cp-vol-<serviceId>` on the server and its generated password row (encrypted). The data cannot be re-attached from Infra Pilot; an operator can recover it. A kept volume cannot be purged later by an event, but this holds only while the completed `teardown-<serviceId>` workflow is still inside the Temporal namespace retention window (it holds the workflow id); after that a late event could start a second teardown, so purge a kept volume by hand as below. To purge it:
 
 1. List the candidates. Choose volumes only from this SQL list (soft-deleted managed databases that still have their password row), never by hand from `docker volume ls`:
 

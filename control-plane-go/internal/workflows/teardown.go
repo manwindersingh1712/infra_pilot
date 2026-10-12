@@ -75,7 +75,9 @@ func (a *Activities) recordTeardownFailure(step, serviceID string, attempt int32
 		"serviceId", clip(serviceID, 40), "step", step, "attempt", attempt, "err", err)
 }
 
-// failed passes err through after recording it.
+// teardownFailed passes err through after recording it. The counter also
+// counts attempts that ended with a cancelled context (a worker restart or a
+// StartToClose expiry); the 30-minute window of the alert absorbs those.
 func (a *Activities) teardownFailed(ctx context.Context, step, serviceID string, err error) error {
 	if err != nil {
 		a.recordTeardownFailure(step, serviceID, activity.GetInfo(ctx).Attempt, err)

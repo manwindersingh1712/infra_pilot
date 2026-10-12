@@ -43,6 +43,9 @@ interface ProjectCanvasPageProps {
   onBack: () => void;
 }
 
+// Server sentences ("Connection already exists") may lack a final period.
+const sentence = (t: string) => (/[.!?]$/.test(t) ? t : `${t}.`);
+
 export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps) {
   const [projectName, setProjectName] = useState("");
   const [services, setServices] = useState<Service[]>([]);
@@ -153,7 +156,7 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
         );
       } catch (err) {
         console.error("Failed to update position:", err);
-        setToast(`Could not save the new position. ${humanizeApiError(err)}`);
+        setToast(`Could not save the new position. ${sentence(humanizeApiError(err))} It will reset when you reload.`);
       }
     },
     []
@@ -201,7 +204,7 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
       } catch (err) {
         setEdges(eds => eds.filter(e => e.id !== newEdge.id));
         console.error("Failed to create connection:", err);
-        setToast(`Could not connect the services. ${humanizeApiError(err)}`);
+        setToast(`Could not connect the services. ${sentence(humanizeApiError(err))}`);
       }
     },
     [setEdges]
@@ -223,7 +226,7 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
           console.error("Failed to delete connection:", err);
           // React Flow already removed the edge locally; put it back.
           setEdges(eds => (eds.some(e => e.id === edge.id) ? eds : [...eds, edge]));
-          setToast(`Could not delete the connection. ${humanizeApiError(err)}`);
+          setToast(`Could not delete the connection. ${sentence(humanizeApiError(err))}`);
         }
       }
     },

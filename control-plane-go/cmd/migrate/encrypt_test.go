@@ -14,7 +14,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -367,6 +369,24 @@ func TestRunEncryptEnvFlagsAndDryRun(t *testing.T) {
 	}
 	if !secrets.IsEncrypted(raw(t, st, f.ServiceID)["A"]) || strings.Contains(out.String(), "plain-a") {
 		t.Fatalf("not encrypted or leaked: %q", out.String())
+	}
+	// Neither the key nor DATABASE_URL (nor its password) is ever printed.
+	const pw = "s3cr3t-Pa55"
+	url := "postgres://cpuser:" + pw + "@db.example:5432/appdb"
+	getenv := goodKeyEnv(map[string]string{"DATABASE_URL": url})
+	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{9}, 32))
+	for _, args := range [][]string{{"--dry-run"}, {"--yes"}, nil, {"--bogus"}, {"extra"}, {"--yes", "--allow-suspect"}} {
+		var o bytes.Buffer
+		err := runEncryptEnv(context.Background(), args, getenv, connect, &o)
+		all := o.String()
+		if err != nil {
+			all += err.Error()
+		}
+		for _, bad := range []string{key, url, pw, "cpuser"} {
+			if strings.Contains(all, bad) {
+				t.Fatalf("args=%v: output contains %q: %q", args, bad, all)
+			}
+		}
 	}
 }
 
@@ -799,5 +819,46 @@ func TestEncryptEnvSkipsTooLargeValues(t *testing.T) {
 func TestEncryptBatchDefaultsAreBounded(t *testing.T) {
 	if defaultEncryptBatch != 50 || defaultMaxValueBytes != 8<<20 {
 		t.Fatalf("batch=%d max=%d", defaultEncryptBatch, defaultMaxValueBytes)
+	}
+}
+
+// Cancelling the context (SIGINT/SIGTERM in the real binary) stops the run
+// before the next write, returns a non-zero error, and a re-run finishes.
+func TestEncryptEnvCancelStopsCleanlyAndResumes(t *testing.T) {
+	st, f, box := setup(t)
+	for i := range 30 {
+		put(t, st, f.ServiceID, fmt.Sprintf("K%02d", i), fmt.Sprintf("v%d", i))
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var out bytes.Buffer
+	res, err := encryptEnv(ctx, st, box, encryptOptions{Yes: true, BatchSize: 10, afterRead: func([]store.EnvVar) { cancel() }}, &out)
+	if !errors.Is(err, context.Canceled) || exitCode(err) != 1 || res.Encrypted != 0 {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+	for k, v := range raw(t, st, f.ServiceID) {
+		if secrets.IsEncrypted(v) {
+			t.Fatalf("%s was written after the cancel", k)
+		}
+	}
+	if !strings.Contains(out.String(), "interrupted") || strings.Contains(out.String(), "v1") {
+		t.Fatalf("out=%q", out.String())
+	}
+	res, _, err = doEncrypt(t, st, box, encryptOptions{BatchSize: 10})
+	if err != nil || res.Encrypted != 30 {
+		t.Fatalf("resume res=%+v err=%v", res, err)
+	}
+}
+
+func TestNotifyContextCancelsOnSIGTERM(t *testing.T) {
+	ctx, stop := notifyContext(context.Background())
+	defer stop()
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ctx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("SIGTERM did not cancel the context")
 	}
 }

@@ -197,6 +197,12 @@ func encryptEnv(ctx context.Context, st *store.Store, box *secrets.Box, opt encr
 	// Pass 2: the write pass (or the dry-run count).
 	var res encryptResult
 	res.Plain = pre.Plain
+	// interrupted reports a cancelled context (SIGINT/SIGTERM). Every write is
+	// its own CAS, so what was written stays valid and a re-run resumes.
+	interrupted := func() error {
+		fmt.Fprintf(out, "interrupted: stopped before finishing (encrypted=%d so far); nothing further was written; run again to resume\n", res.Encrypted)
+		return fmt.Errorf("interrupted: %w", ctx.Err())
+	}
 	after = ""
 	for {
 		page, err := st.ListEnvVarsAfter(ctx, after, batch, maxBytes)
@@ -211,6 +217,9 @@ func encryptEnv(ctx context.Context, st *store.Store, box *secrets.Box, opt encr
 			opt.afterRead(page)
 		}
 		for _, v := range page {
+			if ctx.Err() != nil {
+				return res, interrupted()
+			}
 			res.Scanned++
 			if v.TooLarge {
 				res.TooLarge++
@@ -239,7 +248,7 @@ func encryptEnv(ctx context.Context, st *store.Store, box *secrets.Box, opt encr
 			switch {
 			case err != nil:
 				if ctx.Err() != nil {
-					return res, ctx.Err()
+					return res, interrupted()
 				}
 				res.Errors++
 				// Only the service id and the SQLSTATE: a driver error text is

@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -19,7 +21,18 @@ import (
 	"infrapilot/internal/db"
 )
 
-func main() { os.Exit(realMain(context.Background(), os.Args[1:], os.Stdout, os.Stderr)) }
+func main() {
+	ctx, stop := notifyContext(context.Background())
+	code := realMain(ctx, os.Args[1:], os.Stdout, os.Stderr)
+	stop()
+	os.Exit(code)
+}
+
+// notifyContext is cancelled by SIGINT or SIGTERM, so encrypt-env stops
+// between writes instead of dying mid-run. A re-run resumes.
+func notifyContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
+}
 
 // realMain runs the command and returns the process exit code.
 func realMain(ctx context.Context, args []string, stdout, stderr io.Writer) int {

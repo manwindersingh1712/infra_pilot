@@ -11,8 +11,7 @@ import { ProjectsPage } from "./pages/ProjectsPage";
 import { ProjectCanvasPage } from "./pages/ProjectCanvasPage";
 import { LandingPage } from "./pages/LandingPage";
 import logoSvg from "./assets/logo.svg";
-
-const API = import.meta.env.VITE_API_BASE ?? "http://localhost:8080";
+import { ApiError, apiFetch, getToken, humanizeApiError, logout as endSession, setSession, takeSessionNotice } from "./lib/api";
 
 function useIsMobile() {
   const [isMobile, setIsMobile] = useState(false);
@@ -29,53 +28,34 @@ function useIsMobile() {
   return isMobile;
 }
 
-async function apiFetch<T>(
-  path: string,
-  opts: RequestInit = {},
-  token?: string
-): Promise<T> {
-  const headers = new Headers(opts.headers);
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-  if (opts.body != null && !headers.has("Content-Type")) {
-    headers.set("Content-Type", "application/json");
-  }
-
-  const res = await fetch(`${API}${path}`, { ...opts, headers });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`${res.status}: ${text}`);
-  }
-  return res.json();
-}
-
 // Auth context
 function useAuth() {
   const [token, setToken] = useState<string>(
-    () => localStorage.getItem("cp_token") ?? ""
+    () => getToken()
   );
 
   const login = async (email: string, password: string) => {
-    const r = await apiFetch<{ token: string; user: { id: string; email: string; name: string | null } }>(`/auth/login`, {
+    const r = await apiFetch<{ token: string; refreshToken: string; user: { id: string; email: string; name: string | null } }>(`/auth/login`, {
       method: "POST",
       body: JSON.stringify({ email, password }),
     });
-    localStorage.setItem("cp_token", r.token);
+    setSession(r.token, r.refreshToken);
     setToken(r.token);
     return r;
   };
 
   const register = async (email: string, password: string, name?: string) => {
-    const r = await apiFetch<{ token: string; user: { id: string; email: string; name: string | null } }>(`/auth/register`, {
+    const r = await apiFetch<{ token: string; refreshToken: string; user: { id: string; email: string; name: string | null } }>(`/auth/register`, {
       method: "POST",
       body: JSON.stringify({ email, password, name }),
     });
-    localStorage.setItem("cp_token", r.token);
+    setSession(r.token, r.refreshToken);
     setToken(r.token);
     return r;
   };
 
   const logout = () => {
-    localStorage.removeItem("cp_token");
+    void endSession();
     setToken("");
   };
 
@@ -128,7 +108,7 @@ function LoginPage() {
   const navigate = useNavigate();
   const { login } = useAuth();
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(() => takeSessionNotice());
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 
@@ -143,8 +123,7 @@ function LoginPage() {
       await login(email, password);
       navigate("/projects");
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setError(message.includes("401") ? "Invalid email or password" : message);
+      setError(humanizeApiError(err));
     } finally {
       setLoading(false);
     }
@@ -416,8 +395,13 @@ function SignupPage() {
       setError("Please enter email and password");
       return;
     }
-    if (password.length < 8) {
-      setError("Password must be at least 8 characters");
+    const passwordBytes = new TextEncoder().encode(password).length;
+    if (passwordBytes < 8) {
+      setError(humanizeApiError(new ApiError(400, "password_too_short")));
+      return;
+    }
+    if (passwordBytes > 72) {
+      setError(humanizeApiError(new ApiError(400, "password_too_long")));
       return;
     }
     if (password !== confirmPassword) {
@@ -430,8 +414,7 @@ function SignupPage() {
       await register(email, password, name || undefined);
       navigate("/projects");
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setError(message.includes("409") ? "Email already registered" : message);
+      setError(humanizeApiError(err));
     } finally {
       setLoading(false);
     }
@@ -623,7 +606,7 @@ function SignupPage() {
           </label>
           <input
             type="password"
-            placeholder="Min 8 characters"
+            placeholder="8 to 72 characters"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             style={{
@@ -750,7 +733,7 @@ function SignupPage() {
 
 // Protected route wrapper
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const token = localStorage.getItem("cp_token");
+  const token = getToken();
   if (!token) {
     return <Navigate to="/login" replace />;
   }
@@ -759,7 +742,7 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 
 // Home route - shows landing page if not authenticated, projects if authenticated
 function HomeRoute() {
-  const token = localStorage.getItem("cp_token");
+  const token = getToken();
   if (token) {
     return <Navigate to="/projects" replace />;
   }

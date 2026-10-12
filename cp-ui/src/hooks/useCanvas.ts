@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-
-const API = import.meta.env.VITE_API_BASE ?? "http://localhost:8080";
+import { apiFetch, humanizeApiError } from "../lib/api";
 
 interface CanvasService {
   id: string;
@@ -27,26 +26,6 @@ interface UseCanvasOptions {
   projectId: string;
 }
 
-function getToken() {
-  return localStorage.getItem("cp_token") ?? "";
-}
-
-async function apiFetch<T>(path: string, opts: RequestInit = {}): Promise<T> {
-  const headers = new Headers(opts.headers);
-  const token = getToken();
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-  if (opts.body && !headers.has("Content-Type")) {
-    headers.set("Content-Type", "application/json");
-  }
-
-  const res = await fetch(`${API}${path}`, { ...opts, headers });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`${res.status}: ${text}`);
-  }
-  return res.json();
-}
-
 export function useCanvas({ projectId }: UseCanvasOptions) {
   const [state, setState] = useState<CanvasState | null>(null);
   const [loading, setLoading] = useState(false);
@@ -63,7 +42,7 @@ export function useCanvas({ projectId }: UseCanvasOptions) {
       const data = await apiFetch<CanvasState>(`/projects/${projectId}/canvas`);
       setState(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(humanizeApiError(err));
     } finally {
       setLoading(false);
     }

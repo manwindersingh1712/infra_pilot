@@ -1,8 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { LogViewer } from "./LogViewer";
 import { DeploymentStageTracker } from "./DeploymentStageTracker";
-
-const API = import.meta.env.VITE_API_BASE ?? "http://localhost:8080";
+import { apiFetch, humanizeApiError } from "../lib/api";
 
 interface Deployment {
   id: string;
@@ -34,26 +33,6 @@ interface ServiceDetailsPanelProps {
   onClose: () => void;
 }
 
-function getToken() {
-  return localStorage.getItem("cp_token") ?? "";
-}
-
-async function apiFetch<T>(path: string, opts: RequestInit = {}): Promise<T> {
-  const headers = new Headers(opts.headers);
-  const token = getToken();
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-  if (opts.body && !headers.has("Content-Type")) {
-    headers.set("Content-Type", "application/json");
-  }
-
-  const res = await fetch(`${API}${path}`, { ...opts, headers });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`${res.status}: ${text}`);
-  }
-  return res.json();
-}
-
 function EnvVarSection({ serviceId }: { serviceId: string }) {
   const [envVars, setEnvVars] = useState<EnvVar[]>([]);
   const [loading, setLoading] = useState(false);
@@ -72,7 +51,7 @@ function EnvVarSection({ serviceId }: { serviceId: string }) {
       const data = await apiFetch<EnvVar[]>(`/services/${serviceId}/env`);
       setEnvVars(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(humanizeApiError(err));
     } finally {
       setLoading(false);
     }
@@ -90,7 +69,7 @@ function EnvVarSection({ serviceId }: { serviceId: string }) {
       setNewValue("");
       await loadEnvVars();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(humanizeApiError(err));
     }
   }
 
@@ -99,7 +78,7 @@ function EnvVarSection({ serviceId }: { serviceId: string }) {
       await apiFetch(`/services/${serviceId}/env/${key}`, { method: "DELETE" });
       await loadEnvVars();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(humanizeApiError(err));
     }
   }
 
@@ -467,7 +446,7 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
       const data = await apiFetch<Deployment[]>(`/deployments?serviceId=${service.id}`);
       setDeployments(data.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(humanizeApiError(err));
     } finally {
       if (showLoading) setLoading(false);
     }
@@ -483,7 +462,7 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
       });
       await loadDeployments();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(humanizeApiError(err));
     }
   }
 

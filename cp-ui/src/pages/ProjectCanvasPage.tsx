@@ -15,8 +15,7 @@ import "@xyflow/react/dist/style.css";
 import { ServiceNode } from "../components/ServiceNode";
 import { CreateServiceModal } from "../components/CreateServiceModal";
 import { ServiceDetailsPanel } from "../components/ServiceDetailsPanel";
-
-const API = import.meta.env.VITE_API_BASE ?? "http://localhost:8080";
+import { apiFetch, humanizeApiError, logout } from "../lib/api";
 
 const nodeTypes = {
   service: ServiceNode
@@ -41,26 +40,6 @@ interface ConnectionData {
 interface ProjectCanvasPageProps {
   projectId: string;
   onBack: () => void;
-}
-
-function getToken() {
-  return localStorage.getItem("cp_token") ?? "";
-}
-
-async function apiFetch<T>(path: string, opts: RequestInit = {}): Promise<T> {
-  const headers = new Headers(opts.headers);
-  const token = getToken();
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-  if (opts.body && !headers.has("Content-Type")) {
-    headers.set("Content-Type", "application/json");
-  }
-
-  const res = await fetch(`${API}${path}`, { ...opts, headers });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`${res.status}: ${text}`);
-  }
-  return res.json();
 }
 
 export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps) {
@@ -101,15 +80,16 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
         setIsCreateModalOpen(true);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(humanizeApiError(err));
     } finally {
       setLoading(false);
     }
   }
 
   function handleLogout() {
-    localStorage.removeItem("cp_token");
-    window.location.href = "/";
+    void logout().finally(() => {
+      window.location.href = "/";
+    });
   }
 
   // Convert services to React Flow nodes

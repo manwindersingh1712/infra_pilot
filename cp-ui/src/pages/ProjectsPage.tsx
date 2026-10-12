@@ -1,8 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import logoSvg from "../assets/logo.svg";
-
-const API = import.meta.env.VITE_API_BASE ?? "http://localhost:8080";
+import { apiFetch, humanizeApiError, logout } from "../lib/api";
 
 interface Project {
   id: string;
@@ -11,29 +10,6 @@ interface Project {
   _count?: {
     services: number;
   };
-}
-
-function getToken() {
-  return localStorage.getItem("cp_token") ?? "";
-}
-
-async function apiFetch<T>(
-  path: string,
-  opts: RequestInit = {}
-): Promise<T> {
-  const headers = new Headers(opts.headers);
-  const token = getToken();
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-  if (opts.body && !headers.has("Content-Type")) {
-    headers.set("Content-Type", "application/json");
-  }
-
-  const res = await fetch(`${API}${path}`, { ...opts, headers });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`${res.status}: ${text}`);
-  }
-  return res.json();
 }
 
 export function ProjectsPage() {
@@ -56,7 +32,7 @@ export function ProjectsPage() {
       const data = await apiFetch<Project[]>("/projects");
       setProjects(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(humanizeApiError(err));
     } finally {
       setLoading(false);
     }
@@ -74,15 +50,14 @@ export function ProjectsPage() {
       setShowCreateModal(false);
       await loadProjects();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(humanizeApiError(err));
     } finally {
       setIsCreating(false);
     }
   }
 
   function handleLogout() {
-    localStorage.removeItem("cp_token");
-    navigate("/");
+    void logout().finally(() => navigate("/"));
   }
 
   if (loading) {

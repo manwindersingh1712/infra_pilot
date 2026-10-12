@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-
-const API = import.meta.env.VITE_API_BASE ?? "http://localhost:8080";
+import { apiFetch, humanizeApiError } from "../lib/api";
 
 type ServiceType = "docker" | "nodejs" | "nextjs" | "react" | "mongodb" | "redis";
 type Step = "select-type" | "database-options" | "github-type" | "service-form";
@@ -10,26 +9,6 @@ interface CreateServiceModalProps {
   isOpen: boolean;
   onClose: () => void;
   onCreated: () => void;
-}
-
-function getToken() {
-  return localStorage.getItem("cp_token") ?? "";
-}
-
-async function apiFetch<T>(path: string, opts: RequestInit = {}): Promise<T> {
-  const headers = new Headers(opts.headers);
-  const token = getToken();
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-  if (opts.body && !headers.has("Content-Type")) {
-    headers.set("Content-Type", "application/json");
-  }
-
-  const res = await fetch(`${API}${path}`, { ...opts, headers });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`${res.status}: ${text}`);
-  }
-  return res.json();
 }
 
 // Service category definitions
@@ -286,7 +265,7 @@ export function CreateServiceModal({ projectId, isOpen, onClose, onCreated }: Cr
       onCreated();
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(humanizeApiError(err));
     } finally {
       setLoading(false);
     }

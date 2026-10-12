@@ -147,6 +147,9 @@ export function CreateServiceModal({ projectId, isOpen, onClose, onCreated }: Cr
   // Set once POST /services succeeded. A retry after a failed deploy must not
   // create a second service, so submit then only repeats the deploy.
   const [createdId, setCreatedId] = useState<string | null>(null);
+  // Bumped whenever the form is reset or closed. A request that was started
+  // before that must not write state into the next use of the dialog.
+  const generation = useRef(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Auto-focus input when modal opens or step changes to select-type
@@ -180,6 +183,8 @@ export function CreateServiceModal({ projectId, isOpen, onClose, onCreated }: Cr
     setBranch("main");
     setError(null);
     setCreatedId(null);
+    setLoading(false);
+    generation.current++;
   }
 
   function handleClose() {
@@ -238,6 +243,8 @@ export function CreateServiceModal({ projectId, isOpen, onClose, onCreated }: Cr
     e.preventDefault();
     if (!name.trim()) return;
 
+    const myGeneration = generation.current;
+    const stale = () => generation.current !== myGeneration;
     setLoading(true);
     setError(null);
 
@@ -266,9 +273,13 @@ export function CreateServiceModal({ projectId, isOpen, onClose, onCreated }: Cr
           body: JSON.stringify(body)
         });
         id = service.id;
-        setCreatedId(id);
         // Show the new node on the canvas even if the deploy below fails.
         onCreated();
+        // The dialog was closed while the request was in flight: the service
+        // exists, but this dialog instance is gone, so keep no id and report
+        // nothing here (the canvas refresh above shows the service).
+        if (stale()) return;
+        setCreatedId(id);
       }
 
       try {
@@ -278,19 +289,21 @@ export function CreateServiceModal({ projectId, isOpen, onClose, onCreated }: Cr
           body: JSON.stringify({ commitSha: "HEAD" })
         });
       } catch (err) {
+        if (stale()) return;
         setError(
           `The service was created, but starting its deployment failed: ${humanizeApiError(err)} ` +
-            "Press Deploy to try again, or close this dialog and deploy it from the service panel."
+            "The fields are locked because the service exists; Deploy only retries the deployment. Or close this dialog and deploy it from the service panel."
         );
         return;
       }
 
+      if (stale()) return;
       resetForm();
       onClose();
     } catch (err) {
-      setError(humanizeApiError(err));
+      if (!stale()) setError(humanizeApiError(err));
     } finally {
-      setLoading(false);
+      if (!stale()) setLoading(false);
     }
   }
 
@@ -704,6 +717,7 @@ export function CreateServiceModal({ projectId, isOpen, onClose, onCreated }: Cr
                 onChange={(e) => setName(e.target.value)}
                 placeholder={serviceType === "mongodb" ? "my-mongodb" : serviceType === "redis" ? "my-redis" : "my-service"}
                 required
+                disabled={createdId !== null}
                 style={inputStyle}
                 onFocus={(e) => {
                   e.currentTarget.style.borderColor = "rgba(139,92,246,0.5)";
@@ -726,6 +740,7 @@ export function CreateServiceModal({ projectId, isOpen, onClose, onCreated }: Cr
                     onChange={(e) => setRepoUrl(e.target.value)}
                     placeholder="https://github.com/username/repo"
                     required={needsRepo}
+                    disabled={createdId !== null}
                     style={inputStyle}
                     onFocus={(e) => {
                       e.currentTarget.style.borderColor = "rgba(139,92,246,0.5)";
@@ -745,6 +760,7 @@ export function CreateServiceModal({ projectId, isOpen, onClose, onCreated }: Cr
                     value={branch}
                     onChange={(e) => setBranch(e.target.value)}
                     placeholder="main"
+                    disabled={createdId !== null}
                     style={inputStyle}
                     onFocus={(e) => {
                       e.currentTarget.style.borderColor = "rgba(139,92,246,0.5)";

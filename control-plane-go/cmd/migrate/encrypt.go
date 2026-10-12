@@ -252,10 +252,16 @@ func encryptEnv(ctx context.Context, st *store.Store, box *secrets.Box, opt encr
 		}
 	}
 	printSummary(out, opt.DryRun, res, suspectServices, tooLargeServices)
+	var errs []error
 	if res.Errors > 0 {
-		return res, fmt.Errorf("%d env var(s) could not be encrypted; fix the cause and run again (the command is safe to repeat)", res.Errors)
+		errs = append(errs, fmt.Errorf("%d env var(s) could not be encrypted; fix the cause and run again (the command is safe to repeat)", res.Errors))
 	}
-	return res, nil
+	if res.TooLarge > 0 {
+		// Every other row is done; the run still fails so a sign-off cannot pass with plaintext left.
+		errs = append(errs, fmt.Errorf("too_large=%d value(s) over the size limit were skipped and never encrypted: inspect them and delete or re-save them through the API (services %s)",
+			res.TooLarge, idList(tooLargeServices)))
+	}
+	return res, errors.Join(errs...)
 }
 
 // connectFailure replaces a connect/ping error with a fixed message, the error
@@ -296,6 +302,11 @@ func printSuspect(out io.Writer, n int, suspect map[string]bool) {
 
 // printIDs prints msg followed by at most maxListedServices sorted ids.
 func printIDs(out io.Writer, msg string, set map[string]bool) {
+	fmt.Fprintf(out, "%s %s\n", msg, idList(set))
+}
+
+// idList renders at most maxListedServices sorted ids, "[a b] (+n more)".
+func idList(set map[string]bool) string {
 	ids := make([]string, 0, len(set))
 	for id := range set {
 		ids = append(ids, id)
@@ -305,7 +316,7 @@ func printIDs(out io.Writer, msg string, set map[string]bool) {
 	if len(ids) > maxListedServices {
 		ids, more = ids[:maxListedServices], fmt.Sprintf(" (+%d more)", len(ids)-maxListedServices)
 	}
-	fmt.Fprintf(out, "%s %v%s\n", msg, ids, more)
+	return fmt.Sprintf("%v%s", ids, more)
 }
 
 func printSummary(out io.Writer, dry bool, r encryptResult, suspect, tooLarge map[string]bool) {

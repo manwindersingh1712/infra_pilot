@@ -38,15 +38,15 @@ A "suspect" value starts with `enc:v1:` but does not decrypt with the current ke
 
 | Code | Meaning |
 |------|---------|
-| 0 | Done (including `conflicts>0`, which needs another run; and `too_large>0`, which needs a manual look). A dry run that completed. |
-| 1 | Refused or failed: suspect rows without `--allow-suspect`, the wrong-key guard, a bad key or config, a database or read error, `errors>0`, or interrupted (SIGINT/SIGTERM). No write happens in the two refusals. |
+| 0 | Done (including `conflicts>0`, which needs another run). A dry run that completed with `too_large=0`. |
+| 1 | Refused or failed: suspect rows without `--allow-suspect`, the wrong-key guard, a bad key or config, a database or read error, `errors>0`, `too_large>0` (reported at the very end, after every other row was processed; a dry run too), or interrupted (SIGINT/SIGTERM). No write happens in the two refusals. |
 | 2 | A real run without `--yes`. Nothing was changed. |
 
 ## Output reference
 
 `pre-check: scanned= plain= already_encrypted= suspect= too_large=` is the read-only pass that always runs first. The final line `scanned= encrypted= already_encrypted= suspect= too_large= conflicts= errors=` is the result (`would_encrypt=` instead of `encrypted=` in a dry run). Output holds counts and service ids only, never a key name or a value.
 
-`too_large` rows are values over 8 MiB: they are not read, not changed and listed by service id. The API accepts 32 KiB, so these are Node-era oddities; look at them by hand.
+`too_large` rows are values over 8 MiB: they are not read, not changed and listed by service id. The API accepts 32 KiB, so these are Node-era oddities; look at them by hand. Because they stay in plain text, the command exits 1 when `too_large>0` (after finishing every other row); the last error line names the service ids. Delete or re-save those variables through the API, then run again.
 
 ## Postgres server logs
 

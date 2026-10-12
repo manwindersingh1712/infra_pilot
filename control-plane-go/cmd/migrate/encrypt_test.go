@@ -887,14 +887,23 @@ func TestEncryptEnvSkipsTooLargeValues(t *testing.T) {
 	put(t, st, f.ServiceID, "BIG", big)
 	put(t, st, f.ServiceID, "EXACT", strings.Repeat("y", 100))
 	put(t, st, f.ServiceID, "SMALL", "s")
-	// Dry run reports it too and still never writes.
+	// Dry run reports it too, still never writes, and exits 1 after finishing every row.
 	res, _, err := doEncrypt(t, st, box, encryptOptions{MaxValueBytes: 100, DryRun: true})
-	if err != nil || res.TooLarge != 1 || res.Encrypted != 2 || raw(t, st, f.ServiceID)["SMALL"] != "s" {
+	if exitCode(err) != 1 || res.TooLarge != 1 || res.Encrypted != 2 || res.Scanned != 3 || raw(t, st, f.ServiceID)["SMALL"] != "s" {
 		t.Fatalf("dry res=%+v err=%v", res, err)
 	}
 	res, out, err := doEncrypt(t, st, box, encryptOptions{MaxValueBytes: 100})
-	if err != nil || res.TooLarge != 1 || res.Encrypted != 2 {
+	if exitCode(err) != 1 || res.TooLarge != 1 || res.Encrypted != 2 {
 		t.Fatalf("res=%+v err=%v out=%q", res, err, out)
+	}
+	// The final error names the service id (no key, no value) and what to do.
+	for _, want := range []string{"too_large=1", f.ServiceID, "re-save"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q lacks %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "BIG") || strings.Contains(err.Error(), "ZZZ") {
+		t.Fatalf("error leaks: %q", err)
 	}
 	vars := raw(t, st, f.ServiceID)
 	if vars["BIG"] != big || !secrets.IsEncrypted(vars["EXACT"]) || !secrets.IsEncrypted(vars["SMALL"]) {
@@ -907,6 +916,10 @@ func TestEncryptEnvSkipsTooLargeValues(t *testing.T) {
 	}
 	if !pre || !sum || !strings.Contains(out, f.ServiceID) || strings.Contains(out, "ZZZ") || strings.Contains(out, "BIG") {
 		t.Fatalf("out=%q", out)
+	}
+	// With the cap raised nothing is too large and the run exits 0.
+	if res, _, err := doEncrypt(t, st, box, encryptOptions{MaxValueBytes: 1000}); err != nil || res.TooLarge != 0 || res.Encrypted != 1 {
+		t.Fatalf("res=%+v err=%v", res, err)
 	}
 }
 

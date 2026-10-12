@@ -26,3 +26,10 @@ With `APP_ENV=development` the API binds `127.0.0.1` only, because `POST /dev/lo
 - Passwords must be 8 to 72 bytes (accented or non-Latin characters take more than one byte). Project names must be 2 to 100 characters.
 - Environment variable values are hidden until you click the eye icon, and hidden again (and forgotten by the page) when you hide the last one. Changes apply on the next deployment: redeploy to apply them.
 - Repository URLs must be public https:// URLs; SSH and file URLs are not supported.
+- Live logs now use Server-Sent Events instead of Socket.io; the panel shows Live (green), Reconnecting (amber), Paused (grey, tab in the background) or Disconnected (red) and never gives up on its own while the deployment exists. Retry reconnects at once.
+- The stream renews itself every hour and after sleep or network changes without a visible interruption. Lines kept on screen are not lost and Clear stays cleared; after a long gap only the latest 100 lines are re-fetched, so some lines in between may be missing. The panel keeps at most the newest 5,000 lines.
+- A tab hidden for more than 5 minutes closes its log stream and reopens it when you come back; a tab opened in the background opens no stream until you show it.
+- Up to 5 live log streams per user (20 per deployment). If the panel cannot connect it says your streams may be at the limit and keeps retrying; abandoned connections free their slot within a few minutes.
+- If the deployment or its service was deleted the panel says "This deployment no longer exists." and stops.
+- A single log line is cut at 8 KiB and ends with `...[truncated]`.
+- The new UI is required at cutover; the Go API has no Socket.io.

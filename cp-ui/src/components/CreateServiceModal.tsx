@@ -144,6 +144,9 @@ export function CreateServiceModal({ projectId, isOpen, onClose, onCreated }: Cr
   const [branch, setBranch] = useState("main");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Set once POST /services succeeded. A retry after a failed deploy must not
+  // create a second service, so submit then only repeats the deploy.
+  const [createdId, setCreatedId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Auto-focus input when modal opens or step changes to select-type
@@ -176,6 +179,7 @@ export function CreateServiceModal({ projectId, isOpen, onClose, onCreated }: Cr
     setRepoUrl("");
     setBranch("main");
     setError(null);
+    setCreatedId(null);
   }
 
   function handleClose() {
@@ -206,6 +210,12 @@ export function CreateServiceModal({ projectId, isOpen, onClose, onCreated }: Cr
   }
 
   function handleBack() {
+    // The service already exists; going back would show a form that no longer
+    // matches it, so leave the dialog (the canvas was refreshed on create).
+    if (createdId !== null) {
+      handleClose();
+      return;
+    }
     if (step === "database-options") {
       setStep("select-type");
       setSelectedCategory(null);
@@ -249,20 +259,33 @@ export function CreateServiceModal({ projectId, isOpen, onClose, onCreated }: Cr
         body.branch = branch;
       }
 
-      // Create service
-      const service = await apiFetch<{ id: string }>("/services", {
-        method: "POST",
-        body: JSON.stringify(body)
-      });
+      let id = createdId;
+      if (id === null) {
+        const service = await apiFetch<{ id: string }>("/services", {
+          method: "POST",
+          body: JSON.stringify(body)
+        });
+        id = service.id;
+        setCreatedId(id);
+        // Show the new node on the canvas even if the deploy below fails.
+        onCreated();
+      }
 
-      // Auto-deploy the service
-      await apiFetch(`/services/${service.id}/deploy`, {
-        method: "POST",
-        body: JSON.stringify({ commitSha: "HEAD" })
-      });
+      try {
+        // Auto-deploy the service
+        await apiFetch(`/services/${id}/deploy`, {
+          method: "POST",
+          body: JSON.stringify({ commitSha: "HEAD" })
+        });
+      } catch (err) {
+        setError(
+          `The service was created, but starting its deployment failed: ${humanizeApiError(err)} ` +
+            "Press Deploy to try again, or close this dialog and deploy it from the service panel."
+        );
+        return;
+      }
 
       resetForm();
-      onCreated();
       onClose();
     } catch (err) {
       setError(humanizeApiError(err));
@@ -760,7 +783,7 @@ export function CreateServiceModal({ projectId, isOpen, onClose, onCreated }: Cr
               </button>
               <button
                 type="submit"
-                disabled={loading || !name.trim() || (needsRepo && !repoUrl.trim())}
+                disabled={loading || (createdId === null && (!name.trim() || (needsRepo && !repoUrl.trim())))}
                 style={{
                   padding: "10px 20px",
                   borderRadius: "8px",
@@ -782,7 +805,7 @@ export function CreateServiceModal({ projectId, isOpen, onClose, onCreated }: Cr
                   e.currentTarget.style.boxShadow = "none";
                 }}
               >
-                {loading ? "Creating..." : serviceType === "mongodb" || serviceType === "redis" ? "Create Database" : "Create Service"}
+                {loading ? (createdId ? "Deploying..." : "Creating...") : createdId ? "Deploy" : serviceType === "mongodb" || serviceType === "redis" ? "Create Database" : "Create Service"}
               </button>
             </div>
           </form>

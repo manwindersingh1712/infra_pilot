@@ -122,6 +122,16 @@ func (f *fakeDocker) UsedPorts(context.Context) (map[int]bool, error) {
 	return out, f.usedErr
 }
 
+func (f *fakeDocker) RemoveVolume(_ context.Context, name string) error {
+	f.rec("rmvolume " + name)
+	return nil
+}
+
+func (f *fakeDocker) RemoveServiceContainers(_ context.Context, serviceID string) error {
+	f.rec("rmservice " + serviceID)
+	return nil
+}
+
 type fakeRouter struct {
 	routes  []string
 	removed []string

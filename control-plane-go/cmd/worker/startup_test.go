@@ -60,7 +60,7 @@ func fullDeps(t *testing.T) activityDeps {
 	}
 	return activityDeps{
 		Store: &store.Store{}, Secrets: box, Docker: nopDocker{}, Router: nopRouter{}, Builder: nopBuilder{},
-		Logs: nopLogs{}, Metrics: metrics.NewWorker(), Log: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
+		Logs: nopLogs{}, Temporal: nopTemporal{}, Metrics: metrics.NewWorker(), Log: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
 		Cfg: workflows.ActivityConfig{HealthTimeout: time.Minute},
 	}
 }
@@ -77,14 +77,15 @@ func TestNewActivitiesRejectsNilFields(t *testing.T) {
 		t.Fatalf("health config = %+v", acts.Cfg)
 	}
 	for name, mut := range map[string]func(*activityDeps){
-		"Store":   func(d *activityDeps) { d.Store = nil },
-		"Secrets": func(d *activityDeps) { d.Secrets = nil },
-		"Docker":  func(d *activityDeps) { d.Docker = nil },
-		"Router":  func(d *activityDeps) { d.Router = nil },
-		"Builder": func(d *activityDeps) { d.Builder = nil },
-		"Logs":    func(d *activityDeps) { d.Logs = nil },
-		"Metrics": func(d *activityDeps) { d.Metrics = nil },
-		"Log":     func(d *activityDeps) { d.Log = nil },
+		"Store":    func(d *activityDeps) { d.Store = nil },
+		"Secrets":  func(d *activityDeps) { d.Secrets = nil },
+		"Docker":   func(d *activityDeps) { d.Docker = nil },
+		"Router":   func(d *activityDeps) { d.Router = nil },
+		"Builder":  func(d *activityDeps) { d.Builder = nil },
+		"Logs":     func(d *activityDeps) { d.Logs = nil },
+		"Temporal": func(d *activityDeps) { d.Temporal = nil },
+		"Metrics":  func(d *activityDeps) { d.Metrics = nil },
+		"Log":      func(d *activityDeps) { d.Log = nil },
 	} {
 		d := fullDeps(t)
 		mut(&d)
@@ -167,6 +168,7 @@ type nopDocker struct{ workflows.ContainerRuntime }
 type nopRouter struct{ workflows.Router }
 type nopBuilder struct{ workflows.ImageBuilder }
 type nopLogs struct{}
+type nopTemporal struct{ workflows.WorkflowController }
 
 func (nopLogs) Start(string, string) {}
 

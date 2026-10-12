@@ -87,7 +87,7 @@ func TestStarterRejectsPoisonEvents(t *testing.T) {
 	fc := &fakeClient{}
 	s := Starter{Client: fc}
 	cases := map[string][2]string{
-		"unknown type":  {"teardown.requested", `{"deploymentId":"` + depID + `"}`},
+		"unknown type":  {"unknown.event", `{"deploymentId":"` + depID + `"}`},
 		"empty object":  {store.EventBuildRequested, `{}`},
 		"not an object": {store.EventBuildRequested, `"dep-1"`},
 		"array":         {store.EventBuildRequested, `[]`},
@@ -144,6 +144,62 @@ func TestRealCuidsPassTheIDCheck(t *testing.T) {
 		id := cuid.New()
 		if err := (Starter{Client: fc}).Start(context.Background(), store.EventBuildRequested, []byte(`{"deploymentId":"`+id+`"}`)); err != nil {
 			t.Fatalf("cuid %q rejected: %v", id, err)
+		}
+	}
+}
+
+const svcID = "cm1a1b2c3d4e5f6g7h8i9j0k1"
+
+func TestStarterStartsTeardownOnce(t *testing.T) {
+	for payload, purge := range map[string]bool{
+		`{"serviceId":"` + svcID + `","purgeData":true}`:  true,
+		`{"serviceId":"` + svcID + `","purgeData":false}`: false,
+		`{"serviceId":"` + svcID + `"}`:                   false,
+	} {
+		fc := &fakeClient{}
+		if err := (Starter{Client: fc}).Start(context.Background(), store.EventTeardownRequested, []byte(payload)); err != nil {
+			t.Fatalf("%s: %v", payload, err)
+		}
+		o := fc.opts[0]
+		if o.ID != "teardown-"+svcID || o.TaskQueue != TaskQueue ||
+			o.WorkflowIDReusePolicy != enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE {
+			t.Fatalf("options %+v", o)
+		}
+		if in, ok := fc.args[0][0].(TeardownInput); !ok || in.ServiceID != svcID || in.PurgeData != purge {
+			t.Fatalf("%s: args %+v", payload, fc.args[0])
+		}
+	}
+	// A second event for the same service maps to the same workflow ID, and the
+	// server's "already started" is success.
+	already := serviceerror.NewWorkflowExecutionAlreadyStarted("exists", "req", "run")
+	if err := (Starter{Client: &fakeClient{err: already}}).Start(context.Background(), store.EventTeardownRequested, []byte(`{"serviceId":"`+svcID+`"}`)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStarterRejectsBadTeardownPayloadsPermanently(t *testing.T) {
+	for name, payload := range map[string]string{
+		"empty":            `{}`,
+		"not object":       `"x"`,
+		"malformed":        `{"serviceId":`,
+		"bad id":           `{"serviceId":"../etc"}`,
+		"uppercase id":     `{"serviceId":"` + "CM1A1B2C3D4E5F6G7H8I9J0K1" + `"}`,
+		"purge string":     `{"serviceId":"` + svcID + `","purgeData":"true"}`,
+		"purge number":     `{"serviceId":"` + svcID + `","purgeData":1}`,
+		"purge null":       `{"serviceId":"` + svcID + `","purgeData":null}`,
+		"purge object":     `{"serviceId":"` + svcID + `","purgeData":{}}`,
+		"unknown field":    `{"serviceId":"` + svcID + `","volume":"cp-vol-other"}`,
+		"trailing data":    `{"serviceId":"` + svcID + `"} {}`,
+		"duplicate purge":  `{"serviceId":"` + svcID + `","purgeData":false,"purgeData":true}`,
+		"deployment shape": `{"deploymentId":"` + depID + `"}`,
+	} {
+		fc := &fakeClient{}
+		err := (Starter{Client: fc}).Start(context.Background(), store.EventTeardownRequested, []byte(payload))
+		if !errors.Is(err, store.ErrOutboxPermanent) {
+			t.Errorf("%s: err = %v, want ErrOutboxPermanent", name, err)
+		}
+		if len(fc.opts) != 0 {
+			t.Errorf("%s: started a workflow", name)
 		}
 	}
 }

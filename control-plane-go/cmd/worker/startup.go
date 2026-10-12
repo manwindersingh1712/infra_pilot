@@ -59,9 +59,11 @@ type activityDeps struct {
 	Router  workflows.Router
 	Builder workflows.ImageBuilder
 	Logs    workflows.LogStarter
-	Metrics *metrics.Worker
-	Log     *slog.Logger
-	Cfg     workflows.ActivityConfig
+	// Temporal cancels in-flight deploy workflows during teardown.
+	Temporal workflows.WorkflowController
+	Metrics  *metrics.Worker
+	Log      *slog.Logger
+	Cfg      workflows.ActivityConfig
 }
 
 // newActivities builds Activities and refuses a nil collaborator or a zero
@@ -71,7 +73,7 @@ func newActivities(d activityDeps) (*workflows.Activities, error) {
 	for name, nilField := range map[string]bool{
 		"Store": d.Store == nil, "Secrets": d.Secrets == nil, "Docker": d.Docker == nil,
 		"Router": d.Router == nil, "Builder": d.Builder == nil, "Logs": d.Logs == nil,
-		"Metrics": d.Metrics == nil, "Log": d.Log == nil,
+		"Metrics": d.Metrics == nil, "Temporal": d.Temporal == nil, "Log": d.Log == nil,
 	} {
 		if nilField {
 			missing = append(missing, name)
@@ -87,7 +89,7 @@ func newActivities(d activityDeps) (*workflows.Activities, error) {
 	d.Cfg.HealthInterval = healthInterval
 	return &workflows.Activities{
 		Store: d.Store, Secrets: d.Secrets, Docker: d.Docker, Router: d.Router, Builder: d.Builder,
-		Logs: d.Logs, Metrics: d.Metrics, Log: d.Log, Cfg: d.Cfg,
+		Logs: d.Logs, Temporal: d.Temporal, Metrics: d.Metrics, Log: d.Log, Cfg: d.Cfg,
 	}, nil
 }
 

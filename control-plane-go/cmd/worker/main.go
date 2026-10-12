@@ -147,10 +147,11 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		Docker:  docker,
 		Router: runtime.Nginx{R: runner, RoutesDir: routesDir, Container: cfg.NginxContainer,
 			BaseDomain: cfg.ServiceBaseDomain, Port: cfg.NginxPort},
-		Builder: build.Builder{R: runner, Name: cfg.BuilderName, Memory: cfg.BuilderMemory, CPUs: cfg.BuilderCPUs, Log: logger},
-		Logs:    streamer,
-		Metrics: m,
-		Log:     logger,
+		Builder:  build.Builder{R: runner, Name: cfg.BuilderName, Memory: cfg.BuilderMemory, CPUs: cfg.BuilderCPUs, Log: logger},
+		Logs:     streamer,
+		Temporal: tc,
+		Metrics:  m,
+		Log:      logger,
 		Cfg: workflows.ActivityConfig{
 			RegistryHost: cfg.RegistryHost, BuildWorkdir: cfg.BuildWorkdir,
 			DefaultContainerPort: cfg.DefaultContainerPort,
@@ -165,6 +166,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 
 	w := worker.New(tc, workflows.TaskQueue, worker.Options{})
 	w.RegisterWorkflow(workflows.DeployWorkflow)
+	w.RegisterWorkflow(workflows.TeardownWorkflow)
 	w.RegisterActivity(acts)
 	if err := w.Start(); err != nil {
 		return err

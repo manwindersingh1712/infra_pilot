@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
 
@@ -33,6 +34,10 @@ type ContainerRuntime interface {
 	CreateVolume(ctx context.Context, name string) error
 	CopyIntoVolume(ctx context.Context, hostDir, volume string) error
 	Probe(ctx context.Context, network, host string, port int) error
+	// RemoveVolume deletes a named volume; a missing volume is not an error.
+	RemoveVolume(ctx context.Context, name string) error
+	// RemoveServiceContainers removes every container labelled with the service id.
+	RemoveServiceContainers(ctx context.Context, serviceID string) error
 	// UsedPorts always returns a usable (possibly empty) map; a non-nil error
 	// means the docker scan failed and the map may be incomplete.
 	UsedPorts(ctx context.Context) (map[int]bool, error)
@@ -56,7 +61,19 @@ type LogStarter interface {
 	Start(deploymentID, containerID string)
 }
 
+// WorkflowController is the part of the Temporal client TeardownWorkflow uses
+// to stop a service's in-flight deploy workflows. client.Client satisfies it.
+type WorkflowController interface {
+	CancelWorkflow(ctx context.Context, workflowID, runID string) error
+	DescribeWorkflowExecution(ctx context.Context, workflowID, runID string) (*workflowservice.DescribeWorkflowExecutionResponse, error)
+}
+
 type ActivityConfig struct {
+	// CancelPollInterval (default 1s) and CancelWaitTimeout (default 3m) bound
+	// how long teardown waits for cancelled deploy workflows to close.
+	CancelPollInterval time.Duration
+	CancelWaitTimeout  time.Duration
+
 	RegistryHost         string
 	BuildWorkdir         string
 	DefaultContainerPort int
@@ -74,9 +91,11 @@ type Activities struct {
 	Router  Router
 	Builder ImageBuilder
 	Logs    LogStarter
-	Metrics *metrics.Worker // may be nil
-	Log     *slog.Logger
-	Cfg     ActivityConfig
+	// Temporal cancels deploy workflows during teardown.
+	Temporal WorkflowController
+	Metrics  *metrics.Worker // may be nil
+	Log      *slog.Logger
+	Cfg      ActivityConfig
 }
 
 type ClaimInput struct{ DeploymentID, From, To string }

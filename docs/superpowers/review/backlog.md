@@ -337,3 +337,9 @@ Source: `review/plan2/task-11-product.md`. The backend is fine for users; the ri
 - Oversize `enc:v1:` values (> 8 MiB, ciphertext of a 6-8 MiB Node-era plain value) are reported `already_encrypted_large` and cannot be decrypt-verified by `encrypt-env` (documented in the runbook). The API limit is 32 KiB so only Node-era values are affected.
 - SEC-R3-2 (info): the in-flight `encrypted=N` count is best effort (can be one low). The `EnvMap` read in the in-flight check loads all of the service's values: a targeted SELECT would be lighter.
 - Runbook: `docs/superpowers/runbook/encrypt-env.md` is the cutover procedure for Task 18 (stop Node API first, backup DB + key, key fingerprint check, `--dry-run` until suspect=0 / too_large=0, `--yes`, repeat until conflicts=0, final dry-run). Release note section 'Env var encryption' links it.
+
+## Plan 2 Task 14 (deferred lows)
+- SEC-2 (low): unparsable right-most XFF entry (`ip:port`, `[v6]`) falls back to the proxy peer key (fails closed to one shared bucket); only reachable if the edge proxy does not overwrite the header.
+- SEC-3 (low, Task 18): nginx configs use `$proxy_add_x_forwarded_for`; set `X-Forwarded-For $remote_addr` and list only the nginx address in `TRUSTED_PROXIES` (not the Docker subnet).
+- PROD-5: decision recorded in decisions.md 2026-10-12 (Go default keepalive + stream write deadline accepted).
+- `APP_ENV` falls back to `NODE_ENV`: a stale `NODE_ENV=development` in a deployed `.env` enables dev login; consider a startup warning naming the source. PROD-7 (hide deleted services' deployments/logs/streams) still open for Task 18.

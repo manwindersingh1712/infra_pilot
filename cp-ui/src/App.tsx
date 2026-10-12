@@ -108,7 +108,8 @@ function LoginPage() {
   const navigate = useNavigate();
   const { login } = useAuth();
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(() => readSessionNotice());
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(() => readSessionNotice());
   // Show the notice once: forget it after the first render (idempotent, so
   // StrictMode running the effect twice is harmless).
   useEffect(() => {
@@ -124,6 +125,7 @@ function LoginPage() {
     }
     setLoading(true);
     setError(null);
+    setNotice(null);
     try {
       await login(email, password);
       navigate("/projects");
@@ -210,6 +212,23 @@ function LoginPage() {
         >
           Enter your email and password to access your account
         </p>
+
+        {notice && !error && (
+          <div
+            role="status"
+            style={{
+              background: "rgba(245,158,11,0.1)",
+              color: "#f59e0b",
+              padding: "12px",
+              borderRadius: "8px",
+              marginBottom: "24px",
+              fontSize: "14px",
+              border: "1px solid rgba(245,158,11,0.25)",
+            }}
+          >
+            {notice}
+          </div>
+        )}
 
         {error && (
           <div

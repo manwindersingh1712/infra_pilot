@@ -1064,3 +1064,89 @@ func TestEncryptEnvDefaultByteBudgetApplies(t *testing.T) {
 		t.Fatalf("res=%+v err=%v batches=%v", res, err, rows)
 	}
 }
+
+// A cancel that lands while the command reads (SIGTERM during a DB read) gives
+// the same "interrupted ... run again to resume" text and a non-zero exit, not
+// a bare "context canceled".
+func TestEncryptEnvCancelDuringReadIsInterrupted(t *testing.T) {
+	st, f, box := setup(t)
+	for i := range 6 {
+		put(t, st, f.ServiceID, fmt.Sprintf("K%d", i), "v")
+	}
+	// Pass 1: the very first read fails with context.Canceled.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var out bytes.Buffer
+	_, err := encryptEnv(ctx, st, box, encryptOptions{Yes: true}, &out)
+	if exitCode(err) != 1 || !errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "read env vars") ||
+		!strings.Contains(out.String(), "interrupted") || !strings.Contains(out.String(), "run again to resume") {
+		t.Fatalf("pass 1: err=%v out=%q", err, out.String())
+	}
+	// Pass 2: the signal arrives after the last write of the first batch, so
+	// the NEXT read fails with context.Canceled.
+	ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
+	out.Reset()
+	calls := 0
+	replace := func(c context.Context, svc, key, old, enc string) (bool, error) {
+		swapped, err := st.ReplaceEnvVarIfEquals(c, svc, key, old, enc)
+		if calls++; calls == 3 {
+			cancel()
+		}
+		return swapped, err
+	}
+	res, err := encryptEnv(ctx, st, box, encryptOptions{Yes: true, BatchSize: 3, replace: replace}, &out)
+	if exitCode(err) != 1 || strings.Contains(err.Error(), "read env vars") || res.Encrypted != 3 ||
+		!strings.Contains(out.String(), "encrypted=3 so far") || !strings.Contains(out.String(), "run again to resume") {
+		t.Fatalf("pass 2: res=%+v err=%v out=%q", res, err, out.String())
+	}
+	if res, _, err := doEncrypt(t, st, box, encryptOptions{}); err != nil || res.Encrypted+res.AlreadyEncrypted != 6 {
+		t.Fatalf("resume: res=%+v err=%v", res, err)
+	}
+}
+
+// "encrypted=N so far" counts a write only after it committed, and counts the
+// in-flight one when it did commit although the context was cancelled.
+func TestEncryptEnvInterruptedCountIsExact(t *testing.T) {
+	for _, committed := range []bool{true, false} {
+		t.Run(fmt.Sprintf("inflight committed=%v", committed), func(t *testing.T) {
+			st, f, box := setup(t)
+			put(t, st, f.ServiceID, "A", "va")
+			put(t, st, f.ServiceID, "B", "vb")
+			put(t, st, f.ServiceID, "C", "vc")
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			n := 0
+			replace := func(_ context.Context, svc, key, old, enc string) (bool, error) {
+				n++
+				if n < 2 {
+					return st.ReplaceEnvVarIfEquals(context.Background(), svc, key, old, enc)
+				}
+				// Second write: the signal arrives while the UPDATE is in flight.
+				if committed {
+					if _, err := st.ReplaceEnvVarIfEquals(context.Background(), svc, key, old, enc); err != nil {
+						t.Error(err)
+					}
+				}
+				cancel()
+				return false, context.Canceled
+			}
+			var out bytes.Buffer
+			res, err := encryptEnv(ctx, st, box, encryptOptions{Yes: true, replace: replace}, &out)
+			want := 1
+			if committed {
+				want = 2
+			}
+			enc := 0
+			for _, v := range raw(t, st, f.ServiceID) {
+				if secrets.IsEncrypted(v) {
+					enc++
+				}
+			}
+			line := fmt.Sprintf("encrypted=%d so far", want)
+			if exitCode(err) != 1 || res.Encrypted != want || enc != want || !strings.Contains(out.String(), line) {
+				t.Fatalf("res=%+v rows_encrypted=%d err=%v out=%q", res, enc, err, out.String())
+			}
+		})
+	}
+}

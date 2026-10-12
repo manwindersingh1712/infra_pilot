@@ -9,6 +9,7 @@ import (
 	"net"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -90,6 +91,9 @@ type encryptOptions struct {
 	// afterRead runs after each batch is read and before it is written. Tests
 	// use it to simulate a user saving a value through the API in between.
 	afterRead func(batch []store.EnvVar)
+	// replace is the compare-and-swap write; nil means st.ReplaceEnvVarIfEquals.
+	// Tests replace it to simulate a signal arriving while the UPDATE is in flight.
+	replace func(ctx context.Context, serviceID, key, oldValue, newValue string) (bool, error)
 }
 
 // encryptResult holds counts only. Nothing in it or in the printed output is
@@ -143,6 +147,24 @@ func encryptEnv(ctx context.Context, st *store.Store, box *secrets.Box, opt encr
 		return encryptResult{}, errUnknownTarget
 	}
 
+	var res encryptResult
+	// interrupted reports a cancelled context (SIGINT/SIGTERM), in a read or a
+	// write. Every write is its own CAS, so what was written stays valid and a
+	// re-run resumes. unverified marks an in-flight write whose outcome is unknown.
+	unverified := false
+	interrupted := func() error {
+		note := ""
+		if unverified {
+			note = " (the write in flight at the signal could not be verified)"
+		}
+		fmt.Fprintf(out, "interrupted: stopped before finishing (encrypted=%d so far%s); nothing further was written; run again to resume\n", res.Encrypted, note)
+		return fmt.Errorf("interrupted: %w", ctx.Err())
+	}
+	replace := opt.replace
+	if replace == nil {
+		replace = st.ReplaceEnvVarIfEquals
+	}
+
 	// Pass 1, read-only: classify every row before anything is written, so a
 	// wrong ENV_ENCRYPTION_KEY is caught while the table is still untouched.
 	var pre encryptResult
@@ -150,6 +172,9 @@ func encryptEnv(ctx context.Context, st *store.Store, box *secrets.Box, opt encr
 	for {
 		page, err := st.ListEnvVarsAfter(ctx, after, batch, maxBytes, maxBatch)
 		if err != nil {
+			if ctx.Err() != nil {
+				return pre, interrupted()
+			}
 			return pre, fmt.Errorf("read env vars: %w", err)
 		}
 		if len(page) == 0 {
@@ -194,18 +219,14 @@ func encryptEnv(ctx context.Context, st *store.Store, box *secrets.Box, opt encr
 	}
 
 	// Pass 2: the write pass (or the dry-run count).
-	var res encryptResult
 	res.Plain = pre.Plain
-	// interrupted reports a cancelled context (SIGINT/SIGTERM). Every write is
-	// its own CAS, so what was written stays valid and a re-run resumes.
-	interrupted := func() error {
-		fmt.Fprintf(out, "interrupted: stopped before finishing (encrypted=%d so far); nothing further was written; run again to resume\n", res.Encrypted)
-		return fmt.Errorf("interrupted: %w", ctx.Err())
-	}
 	after = ""
 	for {
 		page, err := st.ListEnvVarsAfter(ctx, after, batch, maxBytes, maxBatch)
 		if err != nil {
+			if ctx.Err() != nil {
+				return res, interrupted()
+			}
 			return res, fmt.Errorf("read env vars: %w", err)
 		}
 		if len(page) == 0 {
@@ -243,10 +264,18 @@ func encryptEnv(ctx context.Context, st *store.Store, box *secrets.Box, opt encr
 				fmt.Fprintf(out, "error: service %s: encrypt failed\n", v.ServiceID)
 				continue
 			}
-			swapped, err := st.ReplaceEnvVarIfEquals(ctx, v.ServiceID, v.Key, v.Value, enc)
+			swapped, err := replace(ctx, v.ServiceID, v.Key, v.Value, enc)
 			switch {
 			case err != nil:
 				if ctx.Err() != nil {
+					// The UPDATE may have committed before the cancel reached
+					// it: ask the database (on a fresh context) so the count is exact.
+					switch committed, verr := inflightCommitted(ctx, st, v.ServiceID, v.Key, enc); {
+					case verr != nil:
+						unverified = true
+					case committed:
+						res.Encrypted++
+					}
 					return res, interrupted()
 				}
 				res.Errors++
@@ -295,6 +324,19 @@ func connectFailure(target string, err error) error {
 		class = sqlState(err)
 	}
 	return fmt.Errorf("cannot connect to the database at %s (%s); check the target, user, password and database name in DATABASE_URL", target, class)
+}
+
+// inflightCommitted reports whether the row now holds enc (the ciphertext
+// just produced, unique because of its random nonce). It uses a fresh context
+// because the run's one is cancelled.
+func inflightCommitted(ctx context.Context, st *store.Store, serviceID, key, enc string) (bool, error) {
+	vctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	m, err := st.EnvMap(vctx, serviceID)
+	if err != nil {
+		return false, err
+	}
+	return m[key] == enc, nil
 }
 
 func sqlState(err error) string {

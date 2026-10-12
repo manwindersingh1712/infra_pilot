@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { LogViewer } from "./LogViewer";
 import { DeploymentStageTracker } from "./DeploymentStageTracker";
 import { apiFetch, humanizeApiError } from "../lib/api";
@@ -44,7 +44,10 @@ function EnvVarSection({ serviceId }: { serviceId: string }) {
   // endpoint returns masked values.
   const [revealed, setRevealed] = useState<Record<string, string> | null>(null);
 
+  // Responses for a service the panel no longer shows must be dropped.
+  const currentService = useRef(serviceId);
   useEffect(() => {
+    currentService.current = serviceId;
     loadEnvVars();
   }, [serviceId]);
 
@@ -54,6 +57,7 @@ function EnvVarSection({ serviceId }: { serviceId: string }) {
     setVisibleValues(new Set());
     try {
       const data = await apiFetch<EnvVar[]>(`/services/${serviceId}/env`);
+      if (currentService.current !== serviceId) return;
       setEnvVars(data);
     } catch (err) {
       setError(humanizeApiError(err));
@@ -95,6 +99,7 @@ function EnvVarSection({ serviceId }: { serviceId: string }) {
       try {
         setError(null);
         const data = await apiFetch<EnvVar[]>(`/services/${serviceId}/env?reveal=true`);
+        if (currentService.current !== serviceId) return;
         setRevealed(Object.fromEntries(data.map((v) => [v.key, v.value])));
       } catch (err) {
         setError(humanizeApiError(err));
@@ -946,7 +951,7 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
               )}
             </div>
           ) : activeTab === "env" ? (
-            <EnvVarSection serviceId={service.id} />
+            <EnvVarSection key={service.id} serviceId={service.id} />
           ) : activeTab === "connection" ? (
             <ConnectionSection
               service={service}

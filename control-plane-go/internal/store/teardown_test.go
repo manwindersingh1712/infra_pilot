@@ -86,7 +86,7 @@ func TestScrubDeletedService(t *testing.T) {
 	st.CreateConnection(ctx, keep.ServiceID, peer.ID, nil)
 
 	// A live service is never scrubbed.
-	if err := st.ScrubDeletedService(ctx, f.ServiceID); !errors.Is(err, store.ErrNotFound) {
+	if err := st.ScrubDeletedService(ctx, f.ServiceID, false); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("live service scrub err = %v", err)
 	}
 	if m, _ := st.EnvMap(ctx, f.ServiceID); len(m) != 1 {
@@ -95,7 +95,7 @@ func TestScrubDeletedService(t *testing.T) {
 
 	st.SoftDeleteService(ctx, f.ServiceID)
 	for range 2 { // idempotent
-		if err := st.ScrubDeletedService(ctx, f.ServiceID); err != nil {
+		if err := st.ScrubDeletedService(ctx, f.ServiceID, false); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -128,5 +128,73 @@ func TestListOpenDeploymentIDs(t *testing.T) {
 	ids, err := st.ListOpenDeploymentIDs(ctx, f.ServiceID)
 	if err != nil || len(ids) != 1 || ids[0] != d1.ID {
 		t.Fatalf("ids=%v err=%v", ids, err)
+	}
+}
+
+// Ruling 3: with keepGeneratedSecret a managed database keeps ONLY its generated
+// password row; everything else goes.
+func TestScrubDeletedServiceKeepsOnlyTheGeneratedPassword(t *testing.T) {
+	for _, c := range []struct{ typ, secret string }{
+		{store.TypeRedis, store.RedisPasswordEnv}, {store.TypeMongoDB, store.MongoPasswordEnv},
+	} {
+		for _, keep := range []bool{true, false} {
+			st, ctx := newStore(t), context.Background()
+			f := testutil.Seed(t, st, c.typ)
+			peer := testutil.Seed(t, st, store.TypeNodejs)
+			st.UpsertEnvVar(ctx, f.ServiceID, c.secret, "enc:v1:secret")
+			st.UpsertEnvVar(ctx, f.ServiceID, "OTHER", "enc:v1:o")
+			st.UpsertEnvVar(ctx, f.ServiceID, "API_TOKEN", "enc:v1:t")
+			st.UpsertEnvVar(ctx, peer.ServiceID, c.secret, "enc:v1:peer")
+			st.CreateConnection(ctx, f.ServiceID, peer.ServiceID, nil)
+			pool.Exec(ctx, `UPDATE "Service" SET "repoUrl" = 'https://u:t@example.com/x.git' WHERE "id" = $1`, f.ServiceID)
+			st.SoftDeleteService(ctx, f.ServiceID)
+			for range 2 { // idempotent
+				if err := st.ScrubDeletedService(ctx, f.ServiceID, keep); err != nil {
+					t.Fatal(err)
+				}
+			}
+			m, _ := st.EnvMap(ctx, f.ServiceID)
+			if keep && (len(m) != 1 || m[c.secret] != "enc:v1:secret") {
+				t.Errorf("%s keep: env = %v, want only %s with its ciphertext", c.typ, m, c.secret)
+			}
+			if !keep && len(m) != 0 {
+				t.Errorf("%s purge: env left %v", c.typ, m)
+			}
+			if pm, _ := st.EnvMap(ctx, peer.ServiceID); len(pm) != 1 {
+				t.Errorf("%s: another service's env rows changed: %v", c.typ, pm)
+			}
+			if conns, _ := st.ListProjectConnections(ctx, f.ProjectID); len(conns) != 0 {
+				t.Errorf("%s: connections left", c.typ)
+			}
+			if s, _ := st.GetServiceAnyState(ctx, f.ServiceID); s.RepoURL != nil {
+				t.Errorf("%s: repoUrl left", c.typ)
+			}
+		}
+	}
+}
+
+// Non-managed services ignore the flag, even when they use a reserved name.
+func TestScrubDeletedServiceIgnoresKeepForOtherTypes(t *testing.T) {
+	for _, typ := range []string{store.TypeNodejs, store.TypeDocker, store.TypeNextjs, store.TypeReact} {
+		st, ctx := newStore(t), context.Background()
+		f := testutil.Seed(t, st, typ)
+		st.UpsertEnvVar(ctx, f.ServiceID, store.RedisPasswordEnv, "enc:v1:a")
+		st.UpsertEnvVar(ctx, f.ServiceID, store.MongoPasswordEnv, "enc:v1:b")
+		st.SoftDeleteService(ctx, f.ServiceID)
+		if err := st.ScrubDeletedService(ctx, f.ServiceID, true); err != nil {
+			t.Fatal(err)
+		}
+		if m, _ := st.EnvMap(ctx, f.ServiceID); len(m) != 0 {
+			t.Errorf("%s kept rows: %v", typ, m)
+		}
+	}
+	// A redis service does not keep the Mongo name, nor a mongodb service the Redis name.
+	st, ctx := newStore(t), context.Background()
+	f := testutil.Seed(t, st, store.TypeRedis)
+	st.UpsertEnvVar(ctx, f.ServiceID, store.MongoPasswordEnv, "enc:v1:b")
+	st.SoftDeleteService(ctx, f.ServiceID)
+	st.ScrubDeletedService(ctx, f.ServiceID, true)
+	if m, _ := st.EnvMap(ctx, f.ServiceID); len(m) != 0 {
+		t.Fatalf("redis kept the mongo key: %v", m)
 	}
 }

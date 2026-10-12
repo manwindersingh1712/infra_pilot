@@ -320,7 +320,12 @@ func (s *Server) deleteService(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_purge_data")
 		return
 	}
-	_ = set
+	// A managed database is only deleted on an explicit choice: a bare DELETE
+	// must never destroy data, and "keep" must be a deliberate answer.
+	if !set && (svc.ServiceType == store.TypeMongoDB || svc.ServiceType == store.TypeRedis) {
+		writeError(w, http.StatusBadRequest, "purge_choice_required")
+		return
+	}
 	ctx := r.Context()
 	err := s.Store.InTx(ctx, func(tx *store.Store) error {
 		if err := tx.SoftDeleteService(ctx, svc.ID); err != nil {

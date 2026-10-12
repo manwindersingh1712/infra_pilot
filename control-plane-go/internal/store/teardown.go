@@ -43,18 +43,29 @@ func (s *Store) FailOpenDeployments(ctx context.Context, serviceID string) ([]st
 }
 
 // ScrubDeletedService removes what a soft delete leaves behind: the service's
-// env vars (ciphertext, including generated managed-DB passwords), its
-// connections, and its repo URL (which may embed a token). It refuses a
-// service that is not soft-deleted (ErrNotFound), so a misrouted event can
-// never strip a live service. Idempotent.
-func (s *Store) ScrubDeletedService(ctx context.Context, serviceID string) error {
+// env vars (ciphertext), its connections, and its repo URL (which may embed a
+// token). With keepGeneratedSecret, a mongodb or redis service keeps ONLY its
+// generated password row (as stored, still encrypted) so an operator can read a
+// volume that was kept; every other env row goes. Other service types ignore
+// the flag. It refuses a service that is not soft-deleted (ErrNotFound), so a
+// misrouted event can never strip a live service. Idempotent.
+func (s *Store) ScrubDeletedService(ctx context.Context, serviceID string, keepGeneratedSecret bool) error {
 	return s.InTx(ctx, func(tx *Store) error {
-		var one int
+		var serviceType string
 		if err := tx.db.QueryRow(ctx,
-			`SELECT 1 FROM "Service" WHERE "id" = $1 AND "deletedAt" IS NOT NULL FOR UPDATE`, serviceID).Scan(&one); err != nil {
+			`SELECT "serviceType" FROM "Service" WHERE "id" = $1 AND "deletedAt" IS NOT NULL FOR UPDATE`, serviceID).Scan(&serviceType); err != nil {
 			return noRows(err)
 		}
-		if _, err := tx.db.Exec(ctx, `DELETE FROM "EnvVar" WHERE "serviceId" = $1`, serviceID); err != nil {
+		keepKey := ""
+		if keepGeneratedSecret {
+			for _, k := range []string{RedisPasswordEnv, MongoPasswordEnv} {
+				if ReservedEnvKey(serviceType, k) {
+					keepKey = k
+				}
+			}
+		}
+		// keepKey "" matches no row name, so every row is deleted.
+		if _, err := tx.db.Exec(ctx, `DELETE FROM "EnvVar" WHERE "serviceId" = $1 AND "key" <> $2`, serviceID, keepKey); err != nil {
 			return err
 		}
 		if _, err := tx.db.Exec(ctx,

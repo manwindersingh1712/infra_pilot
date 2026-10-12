@@ -88,8 +88,9 @@ func TestTeardownServiceActivity(t *testing.T) {
 	if d, _ := e.st.GetDeployment(ctx, dq.ID); d.Status != store.StatusFailed {
 		t.Fatalf("open deployment status %q, want failed", d.Status)
 	}
-	if m, _ := e.st.EnvMap(ctx, f.ServiceID); len(m) != 0 {
-		t.Fatalf("env vars left: %v", m)
+	// purgeData=false on a managed DB keeps only the generated password row.
+	if m, _ := e.st.EnvMap(ctx, f.ServiceID); len(m) != 1 || m["REDIS_PASSWORD"] != "enc:v1:x" {
+		t.Fatalf("env vars after keep: %v", m)
 	}
 	if s, _ := e.st.GetServiceAnyState(ctx, f.ServiceID); s.RepoURL != nil {
 		t.Fatal("repoUrl not scrubbed")
@@ -102,6 +103,43 @@ func TestTeardownServiceActivity(t *testing.T) {
 	}
 	if !slices.Equal(e.docker.calls, []string{"rmservice " + f.ServiceID, "rmvolume cp-vol-" + f.ServiceID}) {
 		t.Fatalf("purge calls %v", e.docker.calls)
+	}
+	if m, _ := e.st.EnvMap(ctx, f.ServiceID); len(m) != 0 {
+		t.Fatalf("purge left env vars: %v", m)
+	}
+}
+
+// Ruling 3: the activity passes keepGeneratedSecret = !PurgeData.
+func TestTeardownServiceKeepsPasswordOnlyWithoutPurge(t *testing.T) {
+	for _, purge := range []bool{false, true} {
+		e := newEnv(t)
+		ctx := context.Background()
+		f := testutil.Seed(t, e.st, store.TypeMongoDB)
+		e.st.UpsertEnvVar(ctx, f.ServiceID, "MONGO_INITDB_ROOT_PASSWORD", "enc:v1:pw")
+		e.st.UpsertEnvVar(ctx, f.ServiceID, "EXTRA", "enc:v1:x")
+		e.st.SoftDeleteService(ctx, f.ServiceID)
+		if _, err := e.run(t, e.acts.TeardownService, TeardownInput{ServiceID: f.ServiceID, PurgeData: purge}); err != nil {
+			t.Fatal(err)
+		}
+		m, _ := e.st.EnvMap(ctx, f.ServiceID)
+		if !purge && (len(m) != 1 || m["MONGO_INITDB_ROOT_PASSWORD"] != "enc:v1:pw") {
+			t.Errorf("keep: %v", m)
+		}
+		if purge && len(m) != 0 {
+			t.Errorf("purge: %v", m)
+		}
+	}
+	// A docker-type service that happens to use REDIS_PASSWORD loses everything.
+	e := newEnv(t)
+	ctx := context.Background()
+	f := testutil.Seed(t, e.st, store.TypeDocker)
+	e.st.UpsertEnvVar(ctx, f.ServiceID, "REDIS_PASSWORD", "enc:v1:pw")
+	e.st.SoftDeleteService(ctx, f.ServiceID)
+	if _, err := e.run(t, e.acts.TeardownService, TeardownInput{ServiceID: f.ServiceID}); err != nil {
+		t.Fatal(err)
+	}
+	if m, _ := e.st.EnvMap(ctx, f.ServiceID); len(m) != 0 {
+		t.Fatalf("docker service kept rows: %v", m)
 	}
 }
 

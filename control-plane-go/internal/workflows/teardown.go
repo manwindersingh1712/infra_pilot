@@ -225,7 +225,7 @@ func (a *Activities) teardownService(ctx context.Context, in TeardownInput) erro
 			return err
 		}
 	}
-	return a.Store.ScrubDeletedService(ctx, in.ServiceID)
+	return a.Store.ScrubDeletedService(ctx, in.ServiceID, !in.PurgeData)
 }
 
 // removeLegacyData deletes the Node-era host directory <LegacyVolumeRoot>/<serviceId>

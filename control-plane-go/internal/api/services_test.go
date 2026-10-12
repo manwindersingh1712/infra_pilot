@@ -413,7 +413,7 @@ func TestDeleteServiceQueuesTeardown(t *testing.T) {
 		ev[0][1] != `{"purgeData": true, "serviceId": "`+f.ServiceID+`"}` {
 		t.Fatalf("outbox %v", ev)
 	}
-	rec = hs.do("DELETE", "/services/"+f.ServiceID, tok, nil)
+	rec = hs.do("DELETE", "/services/"+f.ServiceID+"?purgeData=false", tok, nil)
 	expectStatus(t, rec, 404)
 	expectBody(t, rec, `{"error":"service_not_found"}`)
 	if len(outboxEvents(t)) != 1 {
@@ -427,6 +427,14 @@ func TestDeleteServiceQueuesTeardown(t *testing.T) {
 
 func TestDeleteServiceDefaultsToKeepingData(t *testing.T) {
 	hs := newHarness(t)
+	for _, typ := range []string{store.TypeDocker, store.TypeNodejs, store.TypeNextjs, store.TypeReact} {
+		g := testutil.Seed(t, hs.st, typ)
+		expectStatus(t, hs.do("DELETE", "/services/"+g.ServiceID, hs.token(g.UserID), nil), 202)
+		ev := outboxEvents(t)
+		if last := ev[len(ev)-1][1]; last != `{"purgeData": false, "serviceId": "`+g.ServiceID+`"}` {
+			t.Errorf("%s: payload %s", typ, last)
+		}
+	}
 	for _, q := range []string{"", "?purgeData=", "?purgeData=false", "?other=1"} {
 		g := testutil.Seed(t, hs.st, store.TypeNodejs)
 		expectStatus(t, hs.do("DELETE", "/services/"+g.ServiceID+q, hs.token(g.UserID), nil), 202)
@@ -461,6 +469,43 @@ func TestDeleteServiceRejectsInvalidPurgeData(t *testing.T) {
 	expectStatus(t, hs.do("DELETE", "/services/"+f.ServiceID+"?purgeData=true", tok, nil), 202)
 }
 
+// Ruling 3: a managed database needs an explicit choice.
+func TestDeleteManagedServiceRequiresExplicitPurgeChoice(t *testing.T) {
+	hs := newHarness(t)
+	ctx := context.Background()
+	for _, typ := range []string{store.TypeRedis, store.TypeMongoDB} {
+		f := testutil.Seed(t, hs.st, typ)
+		tok := hs.token(f.UserID)
+		for _, q := range []string{"", "?purgeData=", "?other=1"} {
+			rec := hs.do("DELETE", "/services/"+f.ServiceID+q, tok, nil)
+			expectStatus(t, rec, 400)
+			expectBody(t, rec, `{"error":"purge_choice_required"}`)
+			if _, err := hs.st.GetService(ctx, f.ServiceID); err != nil {
+				t.Fatalf("%s %q: soft deleted: %v", typ, q, err)
+			}
+		}
+		if len(outboxEvents(t)) != 0 {
+			t.Fatalf("%s: outbox row written without a choice", typ)
+		}
+		// A foreign caller learns nothing: 404, not 400.
+		expectStatus(t, hs.do("DELETE", "/services/"+f.ServiceID, hs.token("someone-else"), nil), 404)
+		// A bad value is invalid_purge_data, not a missing choice.
+		rec := hs.do("DELETE", "/services/"+f.ServiceID+"?purgeData=yes", tok, nil)
+		expectBody(t, rec, `{"error":"invalid_purge_data"}`)
+	}
+	for _, c := range []struct{ typ, q, want string }{
+		{store.TypeRedis, "?purgeData=false", "false"}, {store.TypeRedis, "?purgeData=true", "true"},
+		{store.TypeMongoDB, "?purgeData=false", "false"}, {store.TypeMongoDB, "?purgeData=true", "true"},
+	} {
+		f := testutil.Seed(t, hs.st, c.typ)
+		expectStatus(t, hs.do("DELETE", "/services/"+f.ServiceID+c.q, hs.token(f.UserID), nil), 202)
+		ev := outboxEvents(t)
+		if last := ev[len(ev)-1][1]; last != `{"purgeData": `+c.want+`, "serviceId": "`+f.ServiceID+`"}` {
+			t.Errorf("%s %s: payload %s", c.typ, c.q, last)
+		}
+	}
+}
+
 func TestDeleteServiceRejectsBadIDs(t *testing.T) {
 	hs := newHarness(t)
 	f := testutil.Seed(t, hs.st, store.TypeRedis)
@@ -478,7 +523,7 @@ func TestDeleteServiceRejectsBadIDs(t *testing.T) {
 
 func TestConcurrentDeletesQueueOneTeardown(t *testing.T) {
 	hs := newHarness(t)
-	f := testutil.Seed(t, hs.st, store.TypeRedis)
+	f := testutil.Seed(t, hs.st, store.TypeNodejs)
 	tok := hs.token(f.UserID)
 	const n = 8
 	codes := make(chan int, n)
@@ -624,7 +669,7 @@ func failOutboxInserts(t *testing.T) {
 // STAFF-4a: the soft delete and the teardown event commit together.
 func TestDeleteServiceIsAtomicWithItsOutboxEvent(t *testing.T) {
 	hs := newHarness(t)
-	f := testutil.Seed(t, hs.st, store.TypeRedis)
+	f := testutil.Seed(t, hs.st, store.TypeNodejs)
 	failOutboxInserts(t)
 	expectStatus(t, hs.do("DELETE", "/services/"+f.ServiceID, hs.token(f.UserID), nil), 500)
 	if _, err := hs.st.GetService(context.Background(), f.ServiceID); err != nil {
@@ -699,7 +744,7 @@ func TestDeployRacingADeleteIs404(t *testing.T) {
 func TestDeleteRacingADeleteIs404(t *testing.T) {
 	var id string
 	hs := newHarnessWith(t, deleteAfterOwnershipCheck(t, &id))
-	f := testutil.Seed(t, hs.st, store.TypeRedis)
+	f := testutil.Seed(t, hs.st, store.TypeNodejs)
 	id = f.ServiceID
 	rec := hs.do("DELETE", "/services/"+f.ServiceID, hs.token(f.UserID), nil)
 	expectStatus(t, rec, 404)

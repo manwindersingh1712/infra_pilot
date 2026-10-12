@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"strings"
 	"sync"
 	"time"
 
@@ -37,6 +38,7 @@ type ipLimiter struct {
 	clients map[string]*list.Element // value: *client
 	lru     *list.List
 	now     func() time.Time // injectable for tests
+	trusted []netip.Prefix   // TRUSTED_PROXIES; empty means the key is always the TCP peer
 }
 
 type client struct {
@@ -105,11 +107,64 @@ func clientKey(remoteAddr string) string {
 	return addr.String()
 }
 
-// wrap rejects requests over the limit with 429. The client is the TCP peer;
-// X-Forwarded-For is not trusted.
+// requestClientKey is the limiter key for a request. The key is the TCP peer
+// unless the peer is in trusted; then it is the right-most X-Forwarded-For
+// entry that is not in trusted (the first address a trusted proxy did not
+// vouch for). If the header is absent, an entry does not parse, or every entry
+// is trusted, the peer is used. A peer outside trusted never has the header
+// honoured, so clients cannot mint buckets by forging it.
+func requestClientKey(r *http.Request, trusted []netip.Prefix) string {
+	peer := clientKey(r.RemoteAddr)
+	if len(trusted) == 0 || !inPrefixes(trusted, peerAddr(r.RemoteAddr)) {
+		return peer
+	}
+	var entries []string
+	for _, v := range r.Header.Values("X-Forwarded-For") {
+		entries = append(entries, strings.Split(v, ",")...)
+	}
+	for i := len(entries) - 1; i >= 0; i-- {
+		a, err := netip.ParseAddr(strings.TrimSpace(entries[i]))
+		if err != nil {
+			return peer
+		}
+		a = a.Unmap().WithZone("")
+		if !inPrefixes(trusted, a) {
+			return clientKey(a.String())
+		}
+	}
+	return peer
+}
+
+func peerAddr(remoteAddr string) netip.Addr {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	a, err := netip.ParseAddr(host)
+	if err != nil {
+		return netip.Addr{}
+	}
+	return a.Unmap().WithZone("")
+}
+
+func inPrefixes(ps []netip.Prefix, a netip.Addr) bool {
+	if !a.IsValid() {
+		return false
+	}
+	for _, p := range ps {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	return false
+}
+
+// wrap rejects requests over the limit with 429. The client is the TCP peer,
+// or, when the peer is a trusted proxy (TRUSTED_PROXIES), the right-most
+// untrusted X-Forwarded-For entry; see requestClientKey.
 func (l *ipLimiter) wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !l.allow(clientKey(r.RemoteAddr)) {
+		if !l.allow(requestClientKey(r, l.trusted)) {
 			w.Header().Set("Retry-After", "60")
 			writeError(w, http.StatusTooManyRequests, "too_many_requests")
 			return

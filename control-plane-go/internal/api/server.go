@@ -6,6 +6,8 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"net/netip"
+	"time"
 
 	"infrapilot/internal/auth"
 	"infrapilot/internal/logs"
@@ -30,20 +32,21 @@ type Tickets interface {
 }
 
 type Deps struct {
-	Store        *store.Store
-	Redis        Pinger
-	Signer       *auth.Signer
-	Secrets      *secrets.Box
-	Logs         *logs.Aggregator
-	Live         LiveLogs
-	Tickets      Tickets
-	Metrics      *metrics.API
-	Log          *slog.Logger
-	CORSOrigins  []string
-	DevLogin     bool // register POST /dev/login (development only; unset APP_ENV means production)
-	AuthBurst    int  // burst of the register/login limiter (10/min); 0 means 5
-	RefreshBurst int  // burst of the refresh/logout limiter (60/min); 0 means 20
-	Stream       StreamConfig
+	Store          *store.Store
+	Redis          Pinger
+	Signer         *auth.Signer
+	Secrets        *secrets.Box
+	Logs           *logs.Aggregator
+	Live           LiveLogs
+	Tickets        Tickets
+	Metrics        *metrics.API
+	Log            *slog.Logger
+	CORSOrigins    []string
+	TrustedProxies []netip.Prefix // TRUSTED_PROXIES; see requestClientKey
+	DevLogin       bool           // register POST /dev/login (development only; unset APP_ENV means production)
+	AuthBurst      int            // burst of the register/login limiter (10/min); 0 means 5
+	RefreshBurst   int            // burst of the refresh/logout limiter (60/min); 0 means 20
+	Stream         StreamConfig
 }
 
 type Server struct {
@@ -67,10 +70,15 @@ func newServer(d Deps) *Server {
 	if streamBurst <= 0 {
 		streamBurst = defaultStreamBurst
 	}
+	lim := func(burst int, every time.Duration) *ipLimiter {
+		l := newIPLimiter(burst, every)
+		l.trusted = d.TrustedProxies
+		return l
+	}
 	return &Server{Deps: d,
-		authLimit:    newIPLimiter(strict, strictEvery),
-		refreshLimit: newIPLimiter(refresh, refreshEvery),
-		streamLimit:  newIPLimiter(streamBurst, streamEvery),
+		authLimit:    lim(strict, strictEvery),
+		refreshLimit: lim(refresh, refreshEvery),
+		streamLimit:  lim(streamBurst, streamEvery),
 		streams:      newStreamSlots(d.Stream)}
 }
 

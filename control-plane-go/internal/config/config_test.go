@@ -287,3 +287,44 @@ func TestRedactURLMasksQueryValues(t *testing.T) {
 		}
 	}
 }
+
+func TestTrustedProxies(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		want    []string
+		wantErr string
+	}{
+		{"unset means none", "", nil, ""},
+		{"blank means none", "  , ", nil, ""},
+		{"cidr", "172.18.0.0/16", []string{"172.18.0.0/16"}, ""},
+		{"bare IPv4 is /32", "10.0.0.5", []string{"10.0.0.5/32"}, ""},
+		{"bare IPv6 is /128", "::1", []string{"::1/128"}, ""},
+		{"list with spaces", " 10.0.0.5 , fd00::/8 ", []string{"10.0.0.5/32", "fd00::/8"}, ""},
+		{"IPv4-mapped is unmapped", "::ffff:10.0.0.5", []string{"10.0.0.5/32"}, ""},
+		{"garbage", "nginx", nil, "TRUSTED_PROXIES"},
+		{"bad prefix length", "10.0.0.0/33", nil, "TRUSTED_PROXIES"},
+		{"one bad entry fails the list", "10.0.0.5,nope", nil, "TRUSTED_PROXIES"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg, err := Load(env(map[string]string{"DATABASE_URL": "postgres://x", "TRUSTED_PROXIES": c.in}))
+			if c.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), c.wantErr) {
+					t.Fatalf("err = %v, want containing %q", err, c.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got []string
+			for _, p := range cfg.TrustedProxies {
+				got = append(got, p.String())
+			}
+			if fmt.Sprint(got) != fmt.Sprint(c.want) {
+				t.Fatalf("got %v, want %v", got, c.want)
+			}
+		})
+	}
+}

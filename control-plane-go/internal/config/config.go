@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"slices"
@@ -23,6 +24,7 @@ type Config struct {
 	JWTSecret         string
 	EnvEncryptionKey  []byte // 32 bytes, from base64 ENV_ENCRYPTION_KEY
 	CORSOrigins       []string
+	TrustedProxies    []netip.Prefix // TRUSTED_PROXIES: reverse proxies whose X-Forwarded-For the API honours (default none)
 	APIMetricsAddr    string
 	WorkerMetricsAddr string
 
@@ -190,6 +192,14 @@ func Load(getenv func(string) string) (Config, error) {
 			c.EnvEncryptionKey = key
 		}
 	}
+	for _, raw := range splitList(getenv("TRUSTED_PROXIES")) {
+		p, err := parseProxy(raw)
+		if err != nil {
+			invalid = append(invalid, fmt.Sprintf("TRUSTED_PROXIES entry %q must be an IP address or CIDR", raw))
+			continue
+		}
+		c.TrustedProxies = append(c.TrustedProxies, p)
+	}
 	if c.DatabaseURL == "" {
 		invalid = append(invalid, "missing required env: DATABASE_URL")
 	}
@@ -239,6 +249,7 @@ func (c Config) LogValue() slog.Value {
 		slog.Bool("jwtSecretSet", c.JWTSecret != ""),
 		slog.Bool("envEncryptionKeySet", len(c.EnvEncryptionKey) > 0),
 		slog.Any("corsOrigins", c.CORSOrigins),
+		slog.Any("trustedProxies", c.TrustedProxies),
 		slog.String("temporalHostPort", c.TemporalHostPort),
 		slog.String("temporalNamespace", c.TemporalNamespace),
 		slog.String("redisURL", redactURL(c.RedisURL)),
@@ -276,6 +287,27 @@ func redactURL(raw string) string {
 	}
 	u.Fragment, u.RawFragment = "", ""
 	return u.Redacted()
+}
+
+// parseProxy accepts a CIDR or a bare address (/32 or /128). IPv4-mapped
+// IPv6 is unmapped so it matches the unmapped peer address.
+func parseProxy(s string) (netip.Prefix, error) {
+	if strings.Contains(s, "/") {
+		p, err := netip.ParsePrefix(s)
+		if err != nil {
+			return netip.Prefix{}, err
+		}
+		if p.Addr().Is4In6() {
+			return netip.Prefix{}, fmt.Errorf("IPv4-mapped prefix")
+		}
+		return p.Masked(), nil
+	}
+	a, err := netip.ParseAddr(s)
+	if err != nil {
+		return netip.Prefix{}, err
+	}
+	a = a.Unmap().WithZone("")
+	return netip.PrefixFrom(a, a.BitLen()), nil
 }
 
 func splitList(s string) []string {

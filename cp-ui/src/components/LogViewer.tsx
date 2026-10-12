@@ -1,5 +1,5 @@
 import { useRef, useEffect } from "react";
-import { useLogs, type LogEntry } from "../hooks/useLogs";
+import { useLogs, type LogEntry, type LogStatus } from "../hooks/useLogs";
 
 interface LogViewerProps {
   deploymentId: string;
@@ -17,6 +17,30 @@ const sourceLabels: Record<LogEntry["source"], string> = {
   system: "SYS"
 };
 
+const badges: Record<LogStatus, { label: string; color: string; rgb: string }> = {
+  live: { label: "Live", color: "#22c55e", rgb: "34,197,94" },
+  reconnecting: { label: "Reconnecting…", color: "#f59e0b", rgb: "245,158,11" },
+  disconnected: { label: "Disconnected", color: "#ef4444", rgb: "239,68,68" },
+};
+
+const headerButton = {
+  fontSize: 12,
+  padding: "6px 12px",
+  borderRadius: "4px",
+  border: "1px solid rgba(255,255,255,0.1)",
+  background: "rgba(255,255,255,0.05)",
+  color: "#e5e7eb",
+  cursor: "pointer",
+  transition: "background 0.2s",
+} as const;
+
+const hoverOn = (e: React.MouseEvent<HTMLButtonElement>) => {
+  e.currentTarget.style.background = "rgba(255,255,255,0.1)";
+};
+const hoverOff = (e: React.MouseEvent<HTMLButtonElement>) => {
+  e.currentTarget.style.background = "rgba(255,255,255,0.05)";
+};
+
 function formatTimestamp(timestamp: string): string {
   const date = new Date(timestamp);
   return date.toLocaleTimeString("en-US", {
@@ -28,7 +52,9 @@ function formatTimestamp(timestamp: string): string {
 }
 
 export function LogViewer({ deploymentId }: LogViewerProps) {
-  const { logs, meta, isConnected, error, clearLogs } = useLogs({ deploymentId });
+  const { logs, meta, status, everConnected, error, clearLogs, retry } = useLogs({ deploymentId });
+  const badge = badges[status];
+  const badgeLabel = status === "reconnecting" && !everConnected ? "Connecting…" : badge.label;
   const scrollRef = useRef<HTMLDivElement>(null);
   const shouldAutoScroll = useRef(true);
 
@@ -70,16 +96,18 @@ export function LogViewer({ deploymentId }: LogViewerProps) {
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <span style={{ fontWeight: 600, color: "#fff" }}>Logs</span>
           <span
+            role="status"
+            data-testid="log-status"
             style={{
               fontSize: 12,
               padding: "2px 8px",
               borderRadius: 4,
-              background: isConnected ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)",
-              color: isConnected ? "#22c55e" : "#ef4444",
-              border: `1px solid ${isConnected ? "rgba(34,197,94,0.2)" : "rgba(239,68,68,0.2)"}`,
+              background: `rgba(${badge.rgb},0.1)`,
+              color: badge.color,
+              border: `1px solid rgba(${badge.rgb},0.2)`,
             }}
           >
-            {isConnected ? "Live" : "Disconnected"}
+            {badgeLabel}
           </span>
           {meta && (
             <span style={{ fontSize: 12, color: "#6b7280" }}>
@@ -89,25 +117,12 @@ export function LogViewer({ deploymentId }: LogViewerProps) {
           )}
         </div>
         <div style={{ display: "flex", gap: 8 }}>
-          <button
-            onClick={clearLogs}
-            style={{
-              fontSize: 12,
-              padding: "6px 12px",
-              borderRadius: "4px",
-              border: "1px solid rgba(255,255,255,0.1)",
-              background: "rgba(255,255,255,0.05)",
-              color: "#e5e7eb",
-              cursor: "pointer",
-              transition: "background 0.2s",
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = "rgba(255,255,255,0.1)";
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = "rgba(255,255,255,0.05)";
-            }}
-          >
+          {status !== "live" && (
+            <button onClick={retry} style={headerButton} onMouseEnter={hoverOn} onMouseLeave={hoverOff}>
+              Retry
+            </button>
+          )}
+          <button onClick={clearLogs} style={headerButton} onMouseEnter={hoverOn} onMouseLeave={hoverOff}>
             Clear
           </button>
         </div>
@@ -116,12 +131,13 @@ export function LogViewer({ deploymentId }: LogViewerProps) {
       {/* Error message */}
       {error && (
         <div
+          role="alert"
           style={{
             padding: "12px 16px",
-            background: "rgba(239,68,68,0.1)",
-            color: "#ef4444",
+            background: `rgba(${badge.rgb},0.1)`,
+            color: badge.color,
             fontSize: 12,
-            borderBottom: "1px solid rgba(239,68,68,0.2)",
+            borderBottom: `1px solid rgba(${badge.rgb},0.2)`,
           }}
         >
           {error}

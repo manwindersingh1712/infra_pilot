@@ -1,4 +1,5 @@
-// Command migrate manages the Postgres schema: `migrate up`, `migrate status` or `migrate baseline`.
+// Command migrate manages the Postgres schema: `migrate up`, `migrate status`, `migrate baseline` or
+// `migrate encrypt-env [--dry-run]`.
 package main
 
 import (
@@ -10,6 +11,7 @@ import (
 	"path"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 	"github.com/pressly/goose/v3"
 
@@ -25,8 +27,12 @@ func main() {
 
 func run() error {
 	_ = godotenv.Load()
+	if len(os.Args) >= 2 && os.Args[1] == "encrypt-env" {
+		// Validates the key before it connects to the database.
+		return runEncryptEnv(context.Background(), os.Args[2:], os.Getenv, connectDB, os.Stdout)
+	}
 	if len(os.Args) != 2 {
-		return errors.New("usage: migrate up|status|baseline")
+		return errors.New("usage: migrate up|status|baseline|encrypt-env [--dry-run]")
 	}
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
@@ -51,8 +57,17 @@ func run() error {
 	case "baseline":
 		return db.MarkBaseline(ctx, pool)
 	default:
-		return fmt.Errorf("unknown command %q (want up|status|baseline)", os.Args[1])
+		return fmt.Errorf("unknown command %q (want up|status|baseline|encrypt-env)", os.Args[1])
 	}
+}
+
+// connectDB opens the pool and returns the func that closes it.
+func connectDB(ctx context.Context, url string) (*pgxpool.Pool, func(), error) {
+	pool, err := db.Connect(ctx, url)
+	if err != nil {
+		return nil, nil, err
+	}
+	return pool, pool.Close, nil
 }
 
 // printStatus writes one line per migration: "<version> <file> applied <time>"

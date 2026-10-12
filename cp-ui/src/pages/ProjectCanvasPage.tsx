@@ -15,7 +15,8 @@ import "@xyflow/react/dist/style.css";
 import { ServiceNode } from "../components/ServiceNode";
 import { CreateServiceModal } from "../components/CreateServiceModal";
 import { ServiceDetailsPanel } from "../components/ServiceDetailsPanel";
-import { apiFetch, humanizeApiError, logout } from "../lib/api";
+import { ApiError, apiFetch, humanizeApiError, logout } from "../lib/api";
+import { Toast } from "../components/Toast";
 
 const nodeTypes = {
   service: ServiceNode
@@ -34,7 +35,7 @@ interface ConnectionData {
   id: string;
   sourceId: string;
   targetId: string;
-  label?: string;
+  label?: string | null;
 }
 
 interface ProjectCanvasPageProps {
@@ -52,6 +53,8 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
   const [selectedService, setSelectedService] = useState<Service | null>(null);
   const [isPanelOpen, setIsPanelOpen] = useState(false);
   const [showUserDropdown, setShowUserDropdown] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+  const dismissToast = useCallback(() => setToast(null), []);
 
   // Load project and canvas data
   useEffect(() => {
@@ -150,6 +153,7 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
         );
       } catch (err) {
         console.error("Failed to update position:", err);
+        setToast(`Could not save the new position. ${humanizeApiError(err)}`);
       }
     },
     []
@@ -197,6 +201,7 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
       } catch (err) {
         setEdges(eds => eds.filter(e => e.id !== newEdge.id));
         console.error("Failed to create connection:", err);
+        setToast(`Could not connect the services. ${humanizeApiError(err)}`);
       }
     },
     [setEdges]
@@ -210,11 +215,19 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
           await apiFetch(`/services/connections/${edge.id}`, { method: "DELETE" });
           setConnections(prev => prev.filter(c => c.id !== edge.id));
         } catch (err) {
+          if (err instanceof ApiError && err.status === 404) {
+            // Already gone on the server: the removal the user asked for holds.
+            setConnections(prev => prev.filter(c => c.id !== edge.id));
+            continue;
+          }
           console.error("Failed to delete connection:", err);
+          // React Flow already removed the edge locally; put it back.
+          setEdges(eds => (eds.some(e => e.id === edge.id) ? eds : [...eds, edge]));
+          setToast(`Could not delete the connection. ${humanizeApiError(err)}`);
         }
       }
     },
-    []
+    [setEdges]
   );
 
   if (loading) {
@@ -617,6 +630,8 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
           setSelectedService(null);
         }}
       />
+
+      {toast && <Toast message={toast} onDismiss={dismissToast} />}
     </div>
   );
 }

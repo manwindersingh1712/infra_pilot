@@ -14,7 +14,7 @@ interface Connection {
   id: string;
   sourceId: string;
   targetId: string;
-  label?: string;
+  label?: string | null;
 }
 
 interface CanvasState {

@@ -40,7 +40,7 @@ func TestStartupLogHasNoSecrets(t *testing.T) {
 }
 
 func TestNewHTTPServerTimeouts(t *testing.T) {
-	srv := newHTTPServer("8081", nil)
+	srv := newHTTPServer(":8081", nil)
 	if srv.Addr != ":8081" {
 		t.Fatal(srv.Addr)
 	}
@@ -63,17 +63,18 @@ func TestNewHTTPServerTimeouts(t *testing.T) {
 	}
 }
 
-func TestCheckDevLogin(t *testing.T) {
-	if err := checkDevLogin(true, "development"); err != nil {
-		t.Fatal(err)
+func TestListenAddr(t *testing.T) {
+	cases := []struct {
+		devLogin bool
+		port     string
+		want     string
+	}{
+		{true, "8080", "127.0.0.1:8080"},
+		{false, "8080", ":8080"},
 	}
-	if err := checkDevLogin(false, "production"); err != nil {
-		t.Fatal(err)
-	}
-	if err := checkDevLogin(true, "production"); err == nil {
-		t.Fatal("dev login in production must be refused")
-	}
-	if err := checkDevLogin(true, ""); err == nil {
-		t.Fatal("dev login with an unknown env must be refused")
+	for _, c := range cases {
+		if got := listenAddr(c.devLogin, c.port); got != c.want {
+			t.Errorf("listenAddr(%v, %q) = %q, want %q", c.devLogin, c.port, got, c.want)
+		}
 	}
 }

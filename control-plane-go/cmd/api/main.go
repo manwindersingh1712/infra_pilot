@@ -4,7 +4,6 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -45,21 +44,21 @@ func main() {
 	}
 }
 
-// checkDevLogin refuses POST /dev/login outside development. cfg.IsDevelopment
-// is the only source of the flag today (unset APP_ENV means production), so
-// this guards against a later wiring change.
-func checkDevLogin(devLogin bool, appEnv string) error {
-	if devLogin && appEnv != "development" {
-		return fmt.Errorf("config: dev login is enabled but APP_ENV is %q", appEnv)
+// listenAddr is the API bind address. With dev login on (APP_ENV=development)
+// POST /dev/login mints tokens without credentials, so the API binds loopback
+// only; otherwise it binds every interface.
+func listenAddr(devLogin bool, port string) string {
+	if devLogin {
+		return "127.0.0.1:" + port
 	}
-	return nil
+	return ":" + port
 }
 
 // newHTTPServer builds the API server. WriteTimeout covers ordinary routes;
 // the log stream extends its own write deadline per request.
-func newHTTPServer(port string, h http.Handler) *http.Server {
+func newHTTPServer(addr string, h http.Handler) *http.Server {
 	return &http.Server{
-		Addr:              ":" + port,
+		Addr:              addr,
 		Handler:           h,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
@@ -78,9 +77,6 @@ func logStartup(logger *slog.Logger, cfg config.Config) {
 
 func run(cfg config.Config, logger *slog.Logger) error {
 	if err := cfg.RequireAPI(); err != nil {
-		return err
-	}
-	if err := checkDevLogin(cfg.IsDevelopment(), cfg.AppEnv); err != nil {
 		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -143,7 +139,11 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		Metrics: m, Log: logger, CORSOrigins: cfg.CORSOrigins, DevLogin: cfg.IsDevelopment(),
 		TrustedProxies: cfg.TrustedProxies, Stream: api.StreamConfig{Shutdown: streamCtx},
 	})
-	srv := newHTTPServer(cfg.APIPort, handler)
+	addr := listenAddr(cfg.IsDevelopment(), cfg.APIPort)
+	if cfg.IsDevelopment() {
+		logger.Warn("dev login is enabled: POST /dev/login needs no credentials, binding loopback only", "addr", addr)
+	}
+	srv := newHTTPServer(addr, handler)
 
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()

@@ -66,7 +66,18 @@ function refreshOnce(staleAccess: string): Promise<RefreshOutcome> {
     try {
       const run = () => refreshSession(deps, staleAccess);
       if (typeof navigator !== "undefined" && navigator.locks) {
-        return await navigator.locks.request("cp-refresh", run);
+        // request() can reject (SecurityError in sandboxed or opaque-origin
+        // contexts). `started` keeps a failure inside run() from running it
+        // a second time under the storage lock.
+        let started = false;
+        try {
+          return await navigator.locks.request("cp-refresh", () => {
+            started = true;
+            return run();
+          });
+        } catch (e) {
+          if (started) throw e;
+        }
       }
       return await withStorageLock(localStorage, run);
     } finally {

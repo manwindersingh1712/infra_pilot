@@ -141,3 +141,17 @@ func TestNewHandlerWiresTrustedProxiesIntoEveryLimiter(t *testing.T) {
 		})
 	}
 }
+
+// Metrics are served only on API_METRICS_ADDR; the API mux must not expose them.
+func TestMetricsNotOnAPIMux(t *testing.T) {
+	signer, err := auth.NewSigner("test-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(Deps{Signer: signer, Log: slog.New(slog.DiscardHandler)})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET /metrics = %d, want 404", rec.Code)
+	}
+}

@@ -201,3 +201,9 @@ func resolveRoutesDir(dir string, log *slog.Logger) string {
 	}
 	return abs
 }
+
+// logEncryptionKey logs the key's fingerprint, never the key, so an operator
+// can tell a wrong ENV_ENCRYPTION_KEY from a right one.
+func logEncryptionKey(logger *slog.Logger, key []byte) {
+	logger.Info("encryption key loaded", "envKeyFingerprint", secrets.Fingerprint(key))
+}

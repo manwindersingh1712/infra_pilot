@@ -74,7 +74,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 	logger.Info("git found", "version", gitVersion)
-	logger.Info("encryption key loaded", "envKeyFingerprint", secrets.Fingerprint(cfg.EnvEncryptionKey))
+	logEncryptionKey(logger, cfg.EnvEncryptionKey)
 
 	limits, err := runtime.NewLimits(cfg.ContainerMemory, cfg.ContainerCPUs, cfg.ContainerPids)
 	if err != nil {

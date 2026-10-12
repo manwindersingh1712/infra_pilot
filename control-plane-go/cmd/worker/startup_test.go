@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"log/slog"
 	"os"
@@ -311,4 +312,17 @@ func TestRegisterWorkflowsAndActivities(t *testing.T) {
 func runtimeFuncName(f any) string {
 	n := goruntime.FuncForPC(reflect.ValueOf(f).Pointer()).Name()
 	return n[strings.LastIndex(n, ".")+1:]
+}
+
+func TestLogEncryptionKeyFingerprint(t *testing.T) {
+	key := bytes.Repeat([]byte{0x5a}, 32)
+	var buf bytes.Buffer
+	logEncryptionKey(slog.New(slog.NewTextHandler(&buf, nil)), key)
+	out := buf.String()
+	if !strings.Contains(out, "envKeyFingerprint="+secrets.Fingerprint(key)) {
+		t.Fatalf("no fingerprint in %q", out)
+	}
+	if strings.Contains(out, string(key)) || strings.Contains(out, base64.StdEncoding.EncodeToString(key)) {
+		t.Fatalf("key material in %q", out)
+	}
 }

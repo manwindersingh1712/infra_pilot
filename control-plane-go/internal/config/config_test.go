@@ -302,6 +302,7 @@ func TestTrustedProxies(t *testing.T) {
 		{"bare IPv6 is /128", "::1", []string{"::1/128"}, ""},
 		{"list with spaces", " 10.0.0.5 , fd00::/8 ", []string{"10.0.0.5/32", "fd00::/8"}, ""},
 		{"IPv4-mapped is unmapped", "::ffff:10.0.0.5", []string{"10.0.0.5/32"}, ""},
+		{"IPv4-mapped CIDR is rejected", "::ffff:10.0.0.0/104", nil, "TRUSTED_PROXIES"},
 		{"garbage", "nginx", nil, "TRUSTED_PROXIES"},
 		{"bad prefix length", "10.0.0.0/33", nil, "TRUSTED_PROXIES"},
 		{"one bad entry fails the list", "10.0.0.5,nope", nil, "TRUSTED_PROXIES"},

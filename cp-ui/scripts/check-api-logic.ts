@@ -1,4 +1,4 @@
-// Run: node scripts/check-api-logic.ts   (Node 22.18+; no test framework needed)
+// Run: npm run check:logic  (node scripts/check-api-logic.ts)   (Node 22.18+; no test framework needed)
 import assert from "node:assert/strict";
 import { refreshSession, withStorageLock, type RefreshCallResult, type RefreshDeps } from "../src/lib/refresh.ts";
 import { isValidProjectName } from "../src/lib/projectName.ts";

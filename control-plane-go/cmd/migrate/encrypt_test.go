@@ -10,6 +10,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -63,6 +65,7 @@ func raw(t *testing.T, st *store.Store, svc string) map[string]string {
 func doEncrypt(t *testing.T, st *store.Store, box *secrets.Box, opt encryptOptions) (encryptResult, string, error) {
 	t.Helper()
 	var out bytes.Buffer
+	opt.Yes = true // the --yes gate has its own tests
 	res, err := encryptEnv(context.Background(), st, box, opt, &out)
 	return res, out.String(), err
 }
@@ -359,7 +362,7 @@ func TestRunEncryptEnvFlagsAndDryRun(t *testing.T) {
 		t.Fatal("positional argument accepted")
 	}
 	out.Reset()
-	if err := runEncryptEnv(context.Background(), nil, goodKeyEnv(nil), connect, &out); err != nil {
+	if err := runEncryptEnv(context.Background(), []string{"--yes"}, goodKeyEnv(nil), connect, &out); err != nil {
 		t.Fatal(err)
 	}
 	if !secrets.IsEncrypted(raw(t, st, f.ServiceID)["A"]) || strings.Contains(out.String(), "plain-a") {
@@ -595,10 +598,169 @@ func TestRunEncryptEnvAllowSuspectFlag(t *testing.T) {
 	if raw(t, st, f.ServiceID)["PLAIN"] != "p" {
 		t.Fatal("wrote despite suspect rows")
 	}
-	if err := runEncryptEnv(context.Background(), []string{"--allow-suspect"}, goodKeyEnv(nil), connect, &out); err != nil {
+	if err := runEncryptEnv(context.Background(), []string{"--allow-suspect", "--yes"}, goodKeyEnv(nil), connect, &out); err != nil {
 		t.Fatal(err)
 	}
 	if !secrets.IsEncrypted(raw(t, st, f.ServiceID)["PLAIN"]) {
 		t.Fatal("--allow-suspect did not proceed")
+	}
+}
+
+func TestTargetOf(t *testing.T) {
+	cases := map[string]string{
+		"postgresql://cp:cp@localhost:5432/control_plane?schema=public": "localhost:5432/control_plane",
+		"postgres://u:pw@db.internal/prod":                              "db.internal:5432/prod",
+		// Percent-encoded special characters in the password, and secrets in the query.
+		"postgres://cp:p%40ss%3Aw%2Frd%23%3F%26@db.example:6543/app?sslmode=disable&password=q-secret": "db.example:6543/app",
+		"postgres://cp:pw@[::1]:5433/app": "[::1]:5433/app",
+	}
+	for in, want := range cases {
+		got := targetOf(in)
+		if got != want {
+			t.Errorf("targetOf(%q) = %q, want %q", in, got, want)
+		}
+	}
+	for _, in := range []string{"", "host=db password=hunter2 dbname=x", "://nope", "postgres://cp:pw@/", "postgres://cp:pw@host/db name;drop"} {
+		got := targetOf(in)
+		if strings.Contains(got, "hunter2") || strings.Contains(got, "pw") || !strings.Contains(got, "not shown") {
+			t.Errorf("targetOf(%q) = %q", in, got)
+		}
+	}
+}
+
+func TestEncryptEnvPrintsTargetAndCountsFirst(t *testing.T) {
+	st, f, box := setup(t)
+	put(t, st, f.ServiceID, "A", "a")
+	_, out, err := doEncrypt(t, st, box, encryptOptions{DryRun: true, Target: "db.example:5432/app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(out, "\n")
+	if lines[0] != "target: db.example:5432/app" || !strings.HasPrefix(lines[1], "pre-check: scanned=1 plain=1") {
+		t.Fatalf("out=%q", out)
+	}
+}
+
+// The real run needs --yes. Without it nothing is written, the plan is
+// printed and the exit code is 2.
+func TestEncryptEnvRealRunNeedsYes(t *testing.T) {
+	st, f, box := setup(t)
+	put(t, st, f.ServiceID, "A", "a")
+	before := checksum(t)
+	var out bytes.Buffer
+	res, err := encryptEnv(context.Background(), st, box, encryptOptions{Target: "h:1/d"}, &out)
+	if exitCode(err) != 2 || res.Encrypted != 0 || checksum(t) != before {
+		t.Fatalf("err=%v code=%d res=%+v", err, exitCode(err), res)
+	}
+	for _, want := range []string{"would encrypt 1", "--dry-run", "--yes", "h:1/d"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("missing %q in %q", want, out.String())
+		}
+	}
+	// Dry run does not need it; --yes does the work.
+	if _, err := encryptEnv(context.Background(), st, box, encryptOptions{DryRun: true}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := encryptEnv(context.Background(), st, box, encryptOptions{Yes: true}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !secrets.IsEncrypted(raw(t, st, f.ServiceID)["A"]) {
+		t.Fatal("--yes did not write")
+	}
+}
+
+func TestExitCodes(t *testing.T) {
+	if exitCode(nil) != 0 || exitCode(errors.New("x")) != 1 || exitCode(errSuspect) != 1 ||
+		exitCode(fmt.Errorf("wrap: %w", errNeedYes)) != 2 {
+		t.Fatal("exit codes")
+	}
+}
+
+// The credentials in DATABASE_URL (password with special characters) and the
+// key never reach the output, on any path.
+func TestRunEncryptEnvNeverPrintsCredentials(t *testing.T) {
+	st, f, _ := setup(t)
+	put(t, st, f.ServiceID, "A", "plain-a")
+	const pw = "p%40ss%3Aw%2Frd%23"
+	const rawPw = "p@ss:w/rd#"
+	url := "postgres://cpuser:" + pw + "@db.example:6543/appdb?sslmode=disable&application_name=zzsecretapp"
+	connect := func(context.Context, string) (*pgxpool.Pool, func(), error) { return pool, func() {}, nil }
+	getenv := goodKeyEnv(map[string]string{"DATABASE_URL": url})
+	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{9}, 32))
+	for _, args := range [][]string{{"--dry-run"}, nil, {"--yes"}, {"--yes"}} {
+		var out bytes.Buffer
+		err := runEncryptEnv(context.Background(), args, getenv, connect, &out)
+		if exitCode(err) > 2 {
+			t.Fatal(err)
+		}
+		all := out.String()
+		if err != nil {
+			all += err.Error()
+		}
+		for _, bad := range []string{pw, rawPw, "p@ss", "cpuser", "zzsecretapp", "sslmode", url, key, "plain-a", "postgres://"} {
+			if strings.Contains(all, bad) {
+				t.Fatalf("args=%v: output contains %q: %q", args, bad, all)
+			}
+		}
+		if !strings.Contains(all, "target: db.example:6543/appdb") {
+			t.Fatalf("no target line: %q", all)
+		}
+	}
+}
+
+func TestRunWithoutYesExitsTwoAndWritesNothing(t *testing.T) {
+	st, f, _ := setup(t)
+	put(t, st, f.ServiceID, "A", "plain-a")
+	connect := func(context.Context, string) (*pgxpool.Pool, func(), error) { return pool, func() {}, nil }
+	var out bytes.Buffer
+	err := runEncryptEnv(context.Background(), nil, goodKeyEnv(nil), connect, &out)
+	if exitCode(err) != 2 || raw(t, st, f.ServiceID)["A"] != "plain-a" {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestDotenvNote(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/.env", []byte("DATABASE_URL=postgres://u:topsecret@h/d\nZZ_SENTINEL_VAR=hush\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	var out bytes.Buffer
+	loadDotenv(&out)
+	got := out.String()
+	if !strings.Contains(got, ".env") || !strings.Contains(got, filepath.Base(dir)) || strings.Contains(got, "topsecret") || strings.Contains(got, "hush") {
+		t.Fatalf("got %q", got)
+	}
+	_ = os.Unsetenv("ZZ_SENTINEL_VAR")
+	_ = os.Unsetenv("DATABASE_URL")
+	empty := t.TempDir()
+	t.Chdir(empty)
+	out.Reset()
+	loadDotenv(&out)
+	if out.Len() != 0 {
+		t.Fatalf("printed without a .env: %q", out.String())
+	}
+}
+
+// Through realMain with a real connection string: no --yes exits 2 and writes
+// nothing, --yes exits 0.
+func TestRealMainEncryptEnvExit2ThenZero(t *testing.T) {
+	st, f, _ := setup(t)
+	put(t, st, f.ServiceID, "A", "plain-a")
+	t.Chdir(t.TempDir())
+	t.Setenv("DATABASE_URL", pool.Config().ConnString())
+	t.Setenv("ENV_ENCRYPTION_KEY", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{9}, 32)))
+	var out, errb bytes.Buffer
+	if code := realMain(context.Background(), []string{"encrypt-env"}, &out, &errb); code != 2 {
+		t.Fatalf("code %d out=%q err=%q", code, out.String(), errb.String())
+	}
+	if raw(t, st, f.ServiceID)["A"] != "plain-a" {
+		t.Fatal("wrote without --yes")
+	}
+	if code := realMain(context.Background(), []string{"encrypt-env", "--yes"}, &out, &errb); code != 0 {
+		t.Fatalf("code %d err=%q", code, errb.String())
+	}
+	if !secrets.IsEncrypted(raw(t, st, f.ServiceID)["A"]) {
+		t.Fatal("not encrypted")
 	}
 }

@@ -1,5 +1,5 @@
 // Command migrate manages the Postgres schema: `migrate up`, `migrate status`, `migrate baseline` or
-// `migrate encrypt-env [--dry-run]`.
+// `migrate encrypt-env [--dry-run] [--yes] [--allow-suspect]`.
 package main
 
 import (
@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path"
+	"path/filepath"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -18,34 +19,49 @@ import (
 	"infrapilot/internal/db"
 )
 
-func main() {
-	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "migrate:", err)
-		os.Exit(1)
+func main() { os.Exit(realMain(context.Background(), os.Args[1:], os.Stdout, os.Stderr)) }
+
+// realMain runs the command and returns the process exit code.
+func realMain(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	err := run(ctx, args, stdout)
+	if err != nil {
+		fmt.Fprintln(stderr, "migrate:", err)
+	}
+	return exitCode(err)
+}
+
+// loadDotenv loads ./.env if present and says which file it was (path only):
+// a stray .env in the working directory can silently select the database.
+func loadDotenv(w io.Writer) {
+	if err := godotenv.Load(); err != nil {
+		return
+	}
+	if wd, err := os.Getwd(); err == nil {
+		fmt.Fprintf(w, "loaded env file: %s (values not shown)\n", filepath.Join(wd, ".env"))
 	}
 }
 
-func run() error {
-	_ = godotenv.Load()
-	if len(os.Args) >= 2 && os.Args[1] == "encrypt-env" {
+func run(ctx context.Context, args []string, stdout io.Writer) error {
+	if len(args) >= 1 && args[0] == "encrypt-env" {
+		loadDotenv(stdout)
 		// Validates the key before it connects to the database.
-		return runEncryptEnv(context.Background(), os.Args[2:], os.Getenv, connectDB, os.Stdout)
+		return runEncryptEnv(ctx, args[1:], os.Getenv, connectDB, stdout)
 	}
-	if len(os.Args) != 2 {
-		return errors.New("usage: migrate up|status|baseline|encrypt-env [--dry-run]")
+	_ = godotenv.Load()
+	if len(args) != 1 {
+		return errors.New("usage: migrate up|status|baseline, or migrate encrypt-env [--dry-run] [--yes] [--allow-suspect]")
 	}
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
 		return errors.New("DATABASE_URL is required")
 	}
-	ctx := context.Background()
 	pool, err := db.Connect(ctx, dbURL)
 	if err != nil {
 		return err
 	}
 	defer pool.Close()
 
-	switch os.Args[1] {
+	switch args[0] {
 	case "up":
 		return db.Migrate(ctx, pool)
 	case "status":
@@ -53,11 +69,11 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		return printStatus(os.Stdout, statuses)
+		return printStatus(stdout, statuses)
 	case "baseline":
 		return db.MarkBaseline(ctx, pool)
 	default:
-		return fmt.Errorf("unknown command %q (want up|status|baseline|encrypt-env)", os.Args[1])
+		return fmt.Errorf("unknown command %q (want up|status|baseline|encrypt-env)", args[0])
 	}
 }
 

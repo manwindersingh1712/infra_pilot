@@ -118,6 +118,13 @@ func (a *Activities) cancelServiceDeploys(ctx context.Context, in TeardownInput)
 	if err := checkServiceID(in.ServiceID); err != nil {
 		return err
 	}
+	// Same guard as TeardownService: only a soft-deleted service has its deploys cancelled.
+	if _, err := a.deletedService(ctx, in.ServiceID); err != nil {
+		if errors.Is(err, errNoService) {
+			return nil
+		}
+		return err
+	}
 	ids, err := a.Store.ListOpenDeploymentIDs(ctx, in.ServiceID)
 	if err != nil {
 		return err
@@ -165,6 +172,26 @@ func (a *Activities) cancelServiceDeploys(ctx context.Context, in TeardownInput)
 	return nil
 }
 
+// errNoService marks a well-formed id with no Service row (a no-op success).
+var errNoService = errors.New("service does not exist")
+
+// deletedService loads the service in any state and refuses (non-retryable
+// NotDeleted) one that is not soft-deleted, so a stray event can never touch a
+// live service. errNoService means there is no such row.
+func (a *Activities) deletedService(ctx context.Context, id string) (store.ServiceAnyState, error) {
+	svc, err := a.Store.GetServiceAnyState(ctx, id)
+	if errors.Is(err, store.ErrNotFound) {
+		return store.ServiceAnyState{}, errNoService
+	}
+	if err != nil {
+		return store.ServiceAnyState{}, err
+	}
+	if svc.DeletedAt == nil {
+		return store.ServiceAnyState{}, temporal.NewNonRetryableApplicationError("service is not deleted", "NotDeleted", nil)
+	}
+	return svc, nil
+}
+
 // TeardownService is idempotent: retries remove what is left, and a service
 // that is already torn down succeeds. It refuses a service that is not
 // soft-deleted, so a stray event can never remove a live service. The volume
@@ -178,16 +205,12 @@ func (a *Activities) teardownService(ctx context.Context, in TeardownInput) erro
 	if err := checkServiceID(in.ServiceID); err != nil {
 		return err
 	}
-	svc, err := a.Store.GetServiceAnyState(ctx, in.ServiceID)
-	if errors.Is(err, store.ErrNotFound) {
-		a.Log.Warn("teardown: service does not exist; nothing to do", "serviceId", in.ServiceID)
-		return nil
-	}
-	if err != nil {
+	if _, err := a.deletedService(ctx, in.ServiceID); err != nil {
+		if errors.Is(err, errNoService) {
+			a.Log.Warn("teardown: service does not exist; nothing to do", "serviceId", in.ServiceID)
+			return nil
+		}
 		return err
-	}
-	if svc.DeletedAt == nil {
-		return temporal.NewNonRetryableApplicationError("service is not deleted", "NotDeleted", nil)
 	}
 
 	// Deployments still queued/building/deploying will never run now.

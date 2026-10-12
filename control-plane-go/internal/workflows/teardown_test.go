@@ -270,6 +270,32 @@ func TestCancelServiceDeploysCancelsOpenWorkflowsAndWaits(t *testing.T) {
 	}
 }
 
+// SEC-7: a forged, misrouted or restarted event for a LIVE service must not
+// cancel its in-flight deploys.
+func TestCancelServiceDeploysRefusesLiveService(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	f := testutil.Seed(t, e.st, store.TypeNodejs)
+	d, _ := e.st.CreateDeployment(ctx, f.ServiceID, "main")
+	ft := &fakeTemporal{running: map[string]int{DeployWorkflowID(d.ID): 1}}
+	e.acts.Temporal = ft
+	e.acts.Cfg.CancelPollInterval = time.Millisecond
+	e.acts.Cfg.CancelWaitTimeout = time.Second
+	if _, err := e.run(t, e.acts.CancelServiceDeploys, TeardownInput{ServiceID: f.ServiceID}); !isNonRetryableType(err, "NotDeleted") {
+		t.Fatalf("live service: err = %v, want non-retryable NotDeleted", err)
+	}
+	if len(ft.cancelled) != 0 {
+		t.Fatalf("live service's deploys cancelled: %v", ft.cancelled)
+	}
+	// An unknown well-formed id stays a no-op success.
+	if _, err := e.run(t, e.acts.CancelServiceDeploys, TeardownInput{ServiceID: "cm0a1b2c3d4e5f6g7h8i9j0k1"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(ft.cancelled) != 0 {
+		t.Fatalf("cancelled for unknown service: %v", ft.cancelled)
+	}
+}
+
 func TestCancelServiceDeploysFailsRetryablyIfWorkflowWontClose(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()

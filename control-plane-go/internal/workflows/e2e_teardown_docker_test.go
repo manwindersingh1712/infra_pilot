@@ -236,7 +236,7 @@ func TestE2ETeardownRealDocker(t *testing.T) {
 		}
 	}
 	ce, ts := slices.Index(tr, "ACT cancel-end"), slices.Index(tr, "ACT teardown-start")
-	if depFailed < 0 || !(depFailed < ce && ce < ts) {
+	if depFailed < 0 || depFailed >= ce || ce >= ts {
 		t.Errorf("ordering wrong: %v", tr)
 	}
 	d, err := c.DescribeWorkflowExecution(ctx, workflows.TeardownWorkflowID(keep.id), "")

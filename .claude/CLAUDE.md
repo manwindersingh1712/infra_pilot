@@ -198,7 +198,7 @@ scripts/e2e-temporal.sh                   # real-Temporal e2e (kill-worker, canc
 
 Env vars the worker reads (`internal/config/config.go`; defaults in brackets):
 - Required: `DATABASE_URL`, `ENV_ENCRYPTION_KEY` (base64, 32 bytes: `openssl rand -base64 32`; back it up, it decrypts generated managed-DB passwords).
-- App/log: `APP_ENV` or `NODE_ENV` [production], `LOG_FORMAT` [text], `WORKER_METRICS_ADDR` [127.0.0.1:9091]. (API-only, Plan 2: `API_PORT`, `JWT_SECRET`, `CORS_ORIGINS`, `API_METRICS_ADDR`.)
+- App/log: `APP_ENV` or `NODE_ENV` [production], `LOG_FORMAT` [text], `WORKER_METRICS_ADDR` [127.0.0.1:9091]. (API-only: `API_PORT`, `JWT_SECRET`, `CORS_ORIGINS`, `API_METRICS_ADDR`, `TRUSTED_PROXIES`; see API Endpoints.)
 - API behind nginx, `TRUSTED_PROXIES` [empty]: comma-separated IPs or CIDRs of the reverse proxies whose `X-Forwarded-For` the API honours (right-most untrusted entry is the client). Empty means every client is keyed by its TCP peer, so behind nginx all clients share one login/refresh/stream rate-limit bucket. List ONLY the nginx container's address (a `/32`, e.g. `172.18.0.5`), not the Docker subnet: any other container on a listed subnet could forge the header. Nginx must send `proxy_set_header X-Forwarded-For $remote_addr;` (Plan 2 Task 18). With `APP_ENV=development` the API binds `127.0.0.1` only (dev login is on); otherwise it binds all interfaces.
 - Temporal: `TEMPORAL_HOST_PORT` [localhost:7233], `TEMPORAL_NAMESPACE` [default].
 - Stores: `REDIS_URL` [redis://localhost:6379; the dev stack uses redis://localhost:6380], `CLICKHOUSE_URL` [http://localhost:8123], `CLICKHOUSE_USER` [default], `CLICKHOUSE_PASSWORD`.
@@ -237,38 +237,53 @@ VITE_API_BASE=http://localhost:8080
 
 ## API Endpoints
 
+The Go API (`control-plane-go/cmd/api`, default port 8080) replaced the Node API. All routes except `/healthz`, `/readyz`, `/auth/*` and `/dev/login` need `Authorization: Bearer <access token>`. Resources of another user answer 404. Auth and refresh routes are rate limited per client IP (429 with `Retry-After`).
+
 ### Auth
-- `POST /dev/login` - Dev auth (returns JWT, auto-creates user)
-- `POST /auth/register`, `POST /auth/login` - User auth with bcrypt passwords
+- `POST /auth/register`, `POST /auth/login` - Email + password (bcrypt, 8 to 72 bytes). Returns `{token, refreshToken, user}`. The access token lasts 15 minutes.
+- `POST /auth/refresh` - Exchange a refresh token for a new access + refresh pair (rotating; 30 day lifetime, a short grace window for concurrent tabs)
+- `POST /auth/logout` - Revoke the refresh token family
+- `POST /dev/login` - Dev auth (auto-creates user); only registered when `APP_ENV=development`, and then the API binds loopback only
 
 ### Projects
 - `POST /projects` - Create project
 - `GET /projects` - List projects
+- `GET /projects/:id` - Get one project
 
 ### Services
 - `POST /services` - Create service (repoUrl required for docker/nodejs/nextjs/react)
 - `GET /services?projectId=` - List services
-- `POST /services/:id/deploy` - Trigger deployment (optional `commitSha`, defaults to `main` or `latest` for managed)
-- `GET /services/:id/env` - List env vars
-- `POST /services/:id/env` - Set env var
+- `DELETE /services/:id?purgeData=true|false` - Soft delete; returns 202 and queues a teardown (`purgeData=true` also erases a managed service's volume)
+- `POST /services/:id/deploy` - Trigger deployment (optional `commitSha`; without it a build uses the service's configured branch, managed services use `latest`)
+- `GET /services/:id/env` - List env vars (values masked; `?reveal=true` returns plain values)
+- `POST /services/:id/env` - Set env var (values stored AES-GCM encrypted; key charset restricted, value capped at 32 KiB)
 - `DELETE /services/:id/env/:key` - Delete env var
 
 ### Deployments
-- `GET /deployments` - List deployments
+- `GET /deployments?serviceId=` - List deployments (newest 50)
 
 ### Canvas
-- `GET /canvas/:projectId` - Get services and connections
-- `POST /canvas/:projectId/position/:serviceId` - Update node position `{x, y}`
-- `POST /canvas/connections` - Create connection `{sourceId, targetId}`
-- `DELETE /canvas/connections/:id` - Delete connection
+- `GET /projects/:id/canvas` - Get services and connections
+- `PUT /projects/:id/canvas` - Save node positions
+- `POST /projects/:id/canvas/auto-layout` - Compute and save a layout
+- `POST /services/:id/position` - Update node position `{x, y}`
+- `POST /services/connections` - Create connection `{sourceId, targetId}`
+- `DELETE /services/connections/:id` - Delete connection
 
 ### Logs
-- `GET /logs/:deploymentId` - Get deployment logs (auto-tiers: Redis for <10min, ClickHouse for older)
-- `GET /logs/deployments/:id/stream?ticket=` - Stream logs over SSE (ticket from `POST /logs/deployments/:id/stream-ticket`)
+- `GET /logs/deployments/:id` - Get deployment logs (`limit`, `search`, `after`, `before`; Redis for recent lines, ClickHouse for older)
+- `POST /logs/deployments/:id/stream-ticket` - Issue a single-use stream ticket (60 s)
+- `GET /logs/deployments/:id/stream?ticket=` - Stream logs over SSE (EventSource cannot send headers, so the ticket is the credential; never logged)
+- `GET /logs/health` - The caller's own open log streams
 
 ### Health
 - `GET /healthz` - Always returns `{ok: true}`
-- `GET /readyz` - Checks DB and AMQP connectivity, returns 503 if unhealthy
+- `GET /readyz` - Checks Postgres and Redis, returns 503 if either is unreachable
+
+### Go API environment (`internal/config/config.go`)
+- Required: `DATABASE_URL`, `JWT_SECRET` (a known placeholder is refused, and outside development it must be at least 32 bytes), `ENV_ENCRYPTION_KEY`.
+- `API_PORT` [8080], `CORS_ORIGINS` [http://localhost:5173; singular `CORS_ORIGIN` is the fallback; the UI must be opened as `localhost`, not `127.0.0.1`], `API_METRICS_ADDR` [127.0.0.1:9090], `TRUSTED_PROXIES` [empty: comma-separated IPs/CIDRs whose `X-Forwarded-For` is honoured; leave empty when nothing proxies the API].
+- The API also needs Redis (stream tickets, readiness) and ClickHouse (log queries; `Init` runs at startup) reachable. It logs `envKeyFingerprint` at startup.
 
 ## UI Architecture
 

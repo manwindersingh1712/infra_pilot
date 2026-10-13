@@ -5,9 +5,11 @@ interface ToastProps {
   message: string;
   onDismiss: () => void;
   durationMs?: number;
+  // "info" is a neutral notice (for example "Deleting…"); the default is an error.
+  tone?: "error" | "info";
 }
 
-export function Toast({ message, onDismiss, durationMs = 6000 }: ToastProps) {
+export function Toast({ message, onDismiss, durationMs = 6000, tone = "error" }: ToastProps) {
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -21,7 +23,7 @@ export function Toast({ message, onDismiss, durationMs = 6000 }: ToastProps) {
   return (
     <div
       ref={ref}
-      role="alert"
+      role={tone === "info" ? "status" : "alert"}
       style={{
         position: "fixed",
         bottom: "24px",
@@ -33,10 +35,10 @@ export function Toast({ message, onDismiss, durationMs = 6000 }: ToastProps) {
         alignItems: "flex-start",
         gap: "12px",
         padding: "12px 16px",
-        background: "#1f1315",
-        border: "1px solid rgba(239,68,68,0.4)",
+        background: tone === "info" ? "#111827" : "#1f1315",
+        border: tone === "info" ? "1px solid rgba(139,92,246,0.5)" : "1px solid rgba(239,68,68,0.4)",
         borderRadius: "10px",
-        color: "#fca5a5",
+        color: tone === "info" ? "#ddd6fe" : "#fca5a5",
         fontSize: "13px",
         lineHeight: 1.5,
         boxShadow: "0 10px 40px rgba(0,0,0,0.5)",

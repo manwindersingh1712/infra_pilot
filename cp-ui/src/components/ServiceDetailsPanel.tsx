@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { LogViewer } from "./LogViewer";
+import { DeleteServiceDialog } from "./DeleteServiceDialog";
 import { DeploymentStageTracker } from "./DeploymentStageTracker";
 import { apiFetch, humanizeApiError } from "../lib/api";
 import {
@@ -35,6 +36,10 @@ interface ServiceDetailsPanelProps {
   service: Service | null;
   isOpen: boolean;
   onClose: () => void;
+  // Called after the API accepted the delete; the page refreshes the canvas.
+  onDeleted?: () => void;
+  // Names of the services joined to this one on the canvas.
+  connectedNames?: string[];
 }
 
 function EnvVarSection({ serviceId }: { serviceId: string }) {
@@ -449,7 +454,7 @@ function ConnectionSection({ service, deployment }: { service: Service; deployme
   );
 }
 
-export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetailsPanelProps) {
+export function ServiceDetailsPanel({ service, isOpen, onClose, onDeleted, connectedNames = [] }: ServiceDetailsPanelProps) {
   const [activeTab, setActiveTab] = useState<"deployments" | "logs" | "env" | "connection">("deployments");
   const [deployments, setDeployments] = useState<Deployment[]>([]);
   const [loading, setLoading] = useState(false);
@@ -457,6 +462,10 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
   const [latestDeploymentId, setLatestDeploymentId] = useState<string | null>(null);
   const [expandedDeploymentIds, setExpandedDeploymentIds] = useState<Set<string>>(new Set());
   const [isHistoryExpanded, setIsHistoryExpanded] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  // Responses for a service the panel no longer shows are dropped.
+  const shownServiceId = useRef<string | undefined>(undefined);
+  shownServiceId.current = isOpen ? service?.id : undefined;
 
   // Reset deploymentId when service changes
   useEffect(() => {
@@ -464,6 +473,7 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
       setLatestDeploymentId(null);
       setDeployments([]);
       setActiveTab("deployments");
+      setDeleteOpen(false);
     }
   }, [service?.id]);
 
@@ -499,13 +509,15 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
 
   async function loadDeployments(showLoading = true) {
     if (!service) return;
+    const requestedFor = service.id;
     if (showLoading) setLoading(true);
     setError(null);
     try {
-      const data = await apiFetch<Deployment[]>(`/deployments?serviceId=${service.id}`);
+      const data = await apiFetch<Deployment[]>(`/deployments?serviceId=${requestedFor}`);
+      if (shownServiceId.current !== requestedFor) return;
       setDeployments(data.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
     } catch (err) {
-      setError(humanizeApiError(err));
+      if (shownServiceId.current === requestedFor) setError(humanizeApiError(err));
     } finally {
       if (showLoading) setLoading(false);
     }
@@ -826,6 +838,24 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
                 🚀 Deploy Latest
               </button>
 
+              <button
+                data-testid="delete-service"
+                onClick={() => setDeleteOpen(true)}
+                style={{
+                  width: "100%",
+                  padding: "10px",
+                  background: "rgba(239,68,68,0.1)",
+                  color: "#f87171",
+                  border: "1px solid rgba(239,68,68,0.3)",
+                  borderRadius: "8px",
+                  cursor: "pointer",
+                  fontSize: "13px",
+                  marginBottom: "20px",
+                }}
+              >
+                Delete service
+              </button>
+
               {loading ? (
                 <div style={{ textAlign: "center", padding: "40px", color: "#9ca3af" }}>
                   Loading deployments...
@@ -1011,6 +1041,19 @@ export function ServiceDetailsPanel({ service, isOpen, onClose }: ServiceDetails
           )}
         </div>
       </div>
+      {deleteOpen && (
+        <DeleteServiceDialog
+          key={service.id}
+          service={service}
+          connectedNames={connectedNames}
+          onCancel={() => setDeleteOpen(false)}
+          onDeleted={() => {
+            setDeleteOpen(false);
+            onDeleted?.();
+            onClose();
+          }}
+        />
+      )}
     </>
   );
 }

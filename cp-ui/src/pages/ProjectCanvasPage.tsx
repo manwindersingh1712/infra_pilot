@@ -17,6 +17,7 @@ import { CreateServiceModal } from "../components/CreateServiceModal";
 import { ServiceDetailsPanel } from "../components/ServiceDetailsPanel";
 import { ApiError, apiFetch, humanizeApiError, logout } from "../lib/api";
 import { Toast } from "../components/Toast";
+import { DELETING_NOTICE, connectedServiceNames } from "../lib/serviceActions";
 
 const nodeTypes = {
   service: ServiceNode
@@ -58,6 +59,9 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
   const [showUserDropdown, setShowUserDropdown] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const dismissToast = useCallback(() => setToast(null), []);
+  // A neutral notice (a delete was accepted); an error toast takes its place.
+  const [notice, setNotice] = useState<string | null>(null);
+  const dismissNotice = useCallback(() => setNotice(null), []);
 
   // Load project and canvas data
   useEffect(() => {
@@ -641,9 +645,24 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
           setIsPanelOpen(false);
           setSelectedService(null);
         }}
+        connectedNames={selectedService ? connectedServiceNames(selectedService.id, services, connections) : []}
+        onDeleted={() => {
+          // Hide the node and its edges at once; the refresh below confirms.
+          const gone = selectedService?.id;
+          if (gone) {
+            setServices((prev) => prev.filter((s) => s.id !== gone));
+            setConnections((prev) => prev.filter((c) => c.sourceId !== gone && c.targetId !== gone));
+          }
+          setNotice(DELETING_NOTICE);
+          void loadCanvasData(true);
+        }}
       />
 
-      {toast && <Toast message={toast} onDismiss={dismissToast} />}
+      {toast ? (
+        <Toast message={toast} onDismiss={dismissToast} />
+      ) : (
+        notice && <Toast message={notice} tone="info" durationMs={9000} onDismiss={dismissNotice} />
+      )}
     </div>
   );
 }

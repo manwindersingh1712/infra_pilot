@@ -14,7 +14,7 @@ import {
 import {
   DELETE_CLOSED, DELETING_NOTICE, beginDelete, buildConnectionRows, buildConnectionUrl, cancelDelete,
   classifyDeleteError, connectedServiceNames, deletePath, failDelete, openDelete, passwordEnvKey,
-  pickConnectionDeployment, MASK, NO_PASSWORD_TEXT, connectionPanelState, copyButtonLabel, deploymentsOf, shellQuote,
+  pickConnectionDeployment, MASK, NO_PASSWORD_TEXT, ARM_GUARD_MS, isDeliberateConfirm, safeEncodeURIComponent, connectionPanelState, copyButtonLabel, deploymentsOf, shellQuote,
   type ConnectionRow, type PasswordState, PURGE_ARMED_LABEL, PURGE_ARM_MS, PURGE_LABEL, disarmPurge, nextFocusIndex, shouldClosePanel, deleteFailedNotice, purgeButtonLabel,
 } from "../src/lib/serviceActions.ts";
 
@@ -45,7 +45,7 @@ await check("humanizeApiError maps every documented code", () => {
   const codes = [
     "invalid_request", "password_too_short", "password_too_long", "invalid_repo_url", "service_not_found",
     "invalid_env_var", "request_too_large", "too_many_requests", "too_many_streams", "invalid_ticket",
-    "purge_choice_required", "invalid_purge_data",
+    "purge_choice_required", "invalid_purge_data", "timeout",
   ];
   // A dropped code would fall back to the status text, so compare against
   // the fallback of an unmapped code with the same status (418 has no entry).
@@ -706,8 +706,8 @@ await check("delete dialog: managed databases need an explicit choice", () => {
     assert.equal(none.state, open);
     const arm = beginDelete(open, t, "purge");
     assert.deepEqual([arm.send, arm.purgeData], [false, false], "the first purge click only arms");
-    assert.deepEqual(arm.state, { phase: "confirm", error: null, armed: true });
-    const purge = beginDelete(arm.state, t, "purge");
+    assert.deepEqual(arm.state, { phase: "confirm", error: null, armed: true, armedAt: 0 });
+    const purge = beginDelete(arm.state, t, "purge", { now: ARM_GUARD_MS });
     assert.deepEqual([purge.send, purge.purgeData], [true, true]);
     assert.deepEqual(purge.state, { phase: "pending", purgeData: true });
     const keep = beginDelete(open, t, "keep");
@@ -726,7 +726,7 @@ await check("delete dialog: no second request while pending, cancel is blocked w
   assert.equal(beginDelete(DELETE_CLOSED, "nodejs", null).send, false);
   assert.equal(cancelDelete(pending), pending);
   assert.deepEqual(cancelDelete(openDelete()), DELETE_CLOSED);
-  assert.deepEqual(failDelete(pending, "boom"), { phase: "confirm", error: "boom", armed: false });
+  assert.deepEqual(failDelete(pending, "boom"), { phase: "confirm", error: "boom", armed: false, armedAt: 0 });
   assert.equal(failDelete(DELETE_CLOSED, "boom"), DELETE_CLOSED);
   const retry = beginDelete(failDelete(pending, "boom"), "redis", "keep");
   assert.equal(retry.send, true, "after an error the user can try again");
@@ -743,13 +743,54 @@ await check("two-step purge: arm, disarm, keep needs no arming, an error disarms
   const keep = beginDelete(armed, "redis", "keep");
   assert.deepEqual([keep.send, keep.purgeData], [true, false], "keep while armed deletes without erasing");
   assert.equal(disarmPurge(DELETE_CLOSED), DELETE_CLOSED);
-  const pending = beginDelete(armed, "redis", "purge").state;
+  const pending = beginDelete(armed, "redis", "purge", { now: ARM_GUARD_MS + 1 }).state;
   assert.equal(disarmPurge(pending), pending);
   const failed = failDelete(pending, "boom");
-  assert.equal(beginDelete(failed, "redis", "purge").send, false, "after an error the purge must be armed again");
+  assert.equal(beginDelete(failed, "redis", "purge", { now: 99999 }).send, false, "after an error the purge must be armed again");
   assert.equal(PURGE_ARM_MS, 5000);
   // stateless services have no purge step
   assert.equal(beginDelete(openDelete(), "nodejs", null).send, true);
+});
+
+await check("isDeliberateConfirm / beginDelete: the armed purge ignores fast, repeated and multi-click activation", () => {
+  assert.equal(ARM_GUARD_MS, 700);
+  assert.equal(isDeliberateConfirm(1000, { now: 1000 + ARM_GUARD_MS }), true);
+  assert.equal(isDeliberateConfirm(1000, { now: 1000 + ARM_GUARD_MS - 1 }), false);
+  assert.equal(isDeliberateConfirm(1000, { now: 1010 }), false);
+  assert.equal(isDeliberateConfirm(1000, { now: 5000, repeat: true }), false);
+  assert.equal(isDeliberateConfirm(1000, { now: 5000, detail: 2 }), false);
+  assert.equal(isDeliberateConfirm(1000, { now: 5000, detail: 3 }), false);
+  assert.equal(isDeliberateConfirm(1000, { now: 5000, detail: 1 }), true);
+  assert.equal(isDeliberateConfirm(1000, { now: 5000, detail: 0, repeat: false }), true);
+  const armed = beginDelete(openDelete(), "redis", "purge", { now: 1000 });
+  assert.equal(armed.send, false);
+  assert.equal(beginDelete(armed.state, "redis", "purge", { now: 1100 }).send, false, "a double-click is too fast");
+  assert.equal(beginDelete(armed.state, "redis", "purge", { now: 9000, repeat: true }).send, false, "key repeat");
+  assert.equal(beginDelete(armed.state, "redis", "purge", { now: 9000, detail: 2 }).send, false, "second click of a double-click");
+  assert.equal(beginDelete(armed.state, "redis", "purge", { now: 1100 }).state, armed.state, "an ignored click keeps the armed state");
+  const go = beginDelete(armed.state, "redis", "purge", { now: 1000 + ARM_GUARD_MS });
+  assert.deepEqual([go.send, go.purgeData], [true, true]);
+  assert.equal(beginDelete(armed.state, "redis", "keep", { now: 1001 }).send, true, "keep is not guarded");
+});
+
+await check("safeEncodeURIComponent replaces lone surrogates instead of throwing", () => {
+  assert.throws(() => encodeURIComponent("a\uD800b"), URIError);
+  assert.equal(safeEncodeURIComponent("a\uD800b"), "a%EF%BF%BDb");
+  assert.equal(safeEncodeURIComponent("a\uDC00"), "a%EF%BF%BD");
+  assert.equal(safeEncodeURIComponent("\uD83D\uDE00"), "%F0%9F%98%80", "a valid pair is kept");
+  assert.equal(safeEncodeURIComponent("p@ss/1"), "p%40ss%2F1");
+  assert.equal(safeEncodeURIComponent("\uD83D"), "%EF%BF%BD");
+  const rows = buildConnectionRows("redis", "a", null, { kind: "ready", password: "x\uD800y" }, true);
+  assert.equal(rows.find((r) => r.field === "url")?.copyValue, "redis://:x%EF%BF%BDy@svc-a:6379");
+  assert.equal(deletePath("a\uD800", false), "/services/a%EF%BF%BD?purgeData=false");
+});
+
+await check("timeout error: its own message, not the network one", () => {
+  const m = humanizeApiError(new ApiError(0, "timeout"));
+  assert.equal(m, "The server is taking too long to answer. Try again.");
+  assert.notEqual(m, humanizeApiError(new ApiError(0, "network_error")));
+  const o = classifyDeleteError(new ApiError(0, "timeout"));
+  assert.deepEqual(o, { kind: "error", message: m });
 });
 
 await check("nextFocusIndex: wraps at both ends, enters from outside", () => {

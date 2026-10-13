@@ -527,6 +527,12 @@ export function ServiceDetailsPanel({ service, isOpen, onClose, onDeleted, onDel
     }
   }, [service?.id]);
 
+  // Reopening starts on the Deployments tab, so no Connection tab (and no
+  // reveal request) is mounted from the old tab state.
+  useEffect(() => {
+    if (!isOpen) setActiveTab("deployments");
+  }, [isOpen]);
+
   // Load deployments whenever service changes or panel opens
   useEffect(() => {
     if (service && isOpen) {

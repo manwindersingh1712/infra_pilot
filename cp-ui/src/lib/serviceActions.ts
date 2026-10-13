@@ -68,6 +68,12 @@ const REDIS_PORT = 6379;
 export const MASK = "••••••••••";
 export const NO_PASSWORD_TEXT = "Redeploy to generate a password";
 
+// safeEncodeURIComponent: encodeURIComponent throws URIError on a lone
+// surrogate; replace those with U+FFFD first so a odd value cannot blank the tab.
+export function safeEncodeURIComponent(v: string): string {
+  return encodeURIComponent(v.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "\uFFFD"));
+}
+
 export function connectionHost(serviceId: string): string {
   return `svc-${serviceId}`;
 }
@@ -76,7 +82,7 @@ export function connectionHost(serviceId: string): string {
 // "@", ":" or "/" cannot change the URL's meaning. With mask the password is
 // drawn as dots instead.
 export function buildConnectionUrl(serviceType: string, host: string, port: number, password: string, mask = false): string {
-  const pw = mask ? MASK : encodeURIComponent(password);
+  const pw = mask ? MASK : safeEncodeURIComponent(password);
   return serviceType === "mongodb"
     ? `mongodb://admin:${pw}@${host}:${port}/?authSource=admin`
     : `redis://:${pw}@${host}:${port}`;
@@ -164,30 +170,52 @@ export type DeleteChoice = "purge" | "keep";
 
 export type DeleteState =
   | { phase: "closed" }
-  | { phase: "confirm"; error: string | null; armed: boolean }
+  | { phase: "confirm"; error: string | null; armed: boolean; armedAt: number }
   | { phase: "pending"; purgeData: boolean };
 
 export const DELETE_CLOSED: DeleteState = { phase: "closed" };
 
 export function openDelete(): DeleteState {
-  return { phase: "confirm", error: null, armed: false };
+  return { phase: "confirm", error: null, armed: false, armedAt: 0 };
 }
 
 // beginDelete moves confirm -> pending and says whether to send the request.
 // Anywhere else (a second click while pending, a click on a closed dialog) it
 // changes nothing and send is false, so one click path can never send twice.
 // A managed database needs an explicit choice; other types ignore it.
+// ARM_GUARD_MS: after the purge button is armed, activation is ignored for this
+// long, so a double-click or a held Enter cannot arm and erase in one go.
+export const ARM_GUARD_MS = 700;
+
+export interface ActivationInput {
+  now: number; // ms, any monotonic clock (performance.now())
+  repeat?: boolean; // keyboard auto-repeat
+  detail?: number; // click count of a mouse click (2 = the second click of a double-click)
+}
+
+// isDeliberateConfirm: the second purge action counts only if it is not a
+// key repeat, not part of a multi-click, and comes after the guard time.
+export function isDeliberateConfirm(armedAt: number, input: ActivationInput): boolean {
+  if (input.repeat) return false;
+  if ((input.detail ?? 0) > 1) return false;
+  return input.now - armedAt >= ARM_GUARD_MS;
+}
+
 export function beginDelete(
   state: DeleteState,
   serviceType: string,
-  choice: DeleteChoice | null
+  choice: DeleteChoice | null,
+  input: ActivationInput = { now: 0 }
 ): { state: DeleteState; send: boolean; purgeData: boolean } {
   if (state.phase !== "confirm") return { state, send: false, purgeData: false };
   let purgeData = false;
   if (isManagedDb(serviceType)) {
     if (choice === null) return { state, send: false, purgeData: false };
     // Erasing data takes two clicks: the first only arms the button.
-    if (choice === "purge" && !state.armed) return { state: { ...state, armed: true }, send: false, purgeData: false };
+    if (choice === "purge" && !state.armed) {
+      return { state: { ...state, armed: true, armedAt: input.now }, send: false, purgeData: false };
+    }
+    if (choice === "purge" && !isDeliberateConfirm(state.armedAt, input)) return { state, send: false, purgeData: false };
     purgeData = choice === "purge";
   }
   return { state: { phase: "pending", purgeData }, send: true, purgeData };
@@ -199,7 +227,7 @@ export function cancelDelete(state: DeleteState): DeleteState {
 }
 
 export function failDelete(state: DeleteState, message: string): DeleteState {
-  return state.phase === "pending" ? { phase: "confirm", error: message, armed: false } : state;
+  return state.phase === "pending" ? { phase: "confirm", error: message, armed: false, armedAt: 0 } : state;
 }
 
 // disarmPurge reverts an armed purge button (after 5 s, or on any other choice).
@@ -240,7 +268,7 @@ export function classifyDeleteError(err: unknown): DeleteOutcome {
 
 // deletePath sends purgeData as a literal boolean query value.
 export function deletePath(serviceId: string, purgeData: boolean): string {
-  return `/services/${encodeURIComponent(serviceId)}?purgeData=${purgeData ? "true" : "false"}`;
+  return `/services/${safeEncodeURIComponent(serviceId)}?purgeData=${purgeData ? "true" : "false"}`;
 }
 
 export const DELETING_NOTICE =

@@ -3,7 +3,7 @@ import { apiFetch } from "../lib/api";
 import {
   PURGE_ARM_MS, beginDelete, cancelDelete, classifyDeleteError, deletePath, disarmPurge, failDelete, isManagedDb,
   nextFocusIndex, openDelete, purgeButtonLabel,
-  type DeleteChoice, type DeleteState,
+  type ActivationInput, type DeleteChoice, type DeleteState,
 } from "../lib/serviceActions";
 
 interface DeleteServiceDialogProps {
@@ -97,8 +97,8 @@ export function DeleteServiceDialog({ service, connectedNames, onDeleted, onCanc
     return () => document.removeEventListener("keydown", onKey);
   }, [onCancel]);
 
-  async function submit(choice: DeleteChoice | null) {
-    const step = beginDelete(stateRef.current, service.serviceType, choice);
+  async function submit(choice: DeleteChoice | null, input?: ActivationInput) {
+    const step = beginDelete(stateRef.current, service.serviceType, choice, input);
     if (step.state !== stateRef.current) {
       stateRef.current = step.state;
       setState(step.state);
@@ -210,7 +210,11 @@ export function DeleteServiceDialog({ service, connectedNames, onDeleted, onCanc
               <button
                 data-testid="delete-purge"
                 disabled={pending}
-                onClick={() => void submit("purge")}
+                onClick={(e) => void submit("purge", { now: performance.now(), detail: e.detail })}
+                // A held Enter repeats keydown and would repeat the click.
+                onKeyDown={(e) => {
+                  if (e.repeat) e.preventDefault();
+                }}
                 style={{ ...buttonBase, ...disabledStyle, background: armed ? "rgba(239,68,68,0.45)" : "rgba(239,68,68,0.15)", color: armed ? "#fff" : "#fca5a5", border: "1px solid rgba(239,68,68,0.4)" }}
               >
                 {purgeButtonLabel(state)}

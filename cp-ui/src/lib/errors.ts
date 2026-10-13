@@ -66,6 +66,7 @@ const CODE_MESSAGES: Record<string, string> = {
   unauthorized: SESSION_EXPIRED_MESSAGE,
   session_expired: SESSION_EXPIRED_MESSAGE,
   refresh_unavailable: "Could not refresh your session right now. Try again in a moment.",
+  timeout: "The server is taking too long to answer. Try again.",
   network_error: "Cannot reach the server. Check your connection and try again.",
   unavailable: "The service is temporarily unavailable. Try again in a moment.",
   internal_error: "Something went wrong on our side. Try again in a moment.",

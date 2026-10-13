@@ -47,7 +47,7 @@ const deps: RefreshDeps = {
   readRefresh: () => localStorage.getItem(REFRESH_KEY),
   readAccess: getToken,
   call: async (refreshToken) => {
-    const res = await fetch(`${API_BASE}/auth/refresh`, {
+    const res = await timedFetch(`${API_BASE}/auth/refresh`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ refreshToken }),
@@ -106,14 +106,38 @@ function expireSession(): never {
   throw new ApiError(401, "session_expired");
 }
 
+// Every API request, including the token refresh, gives up after this long.
+// (Log streams use EventSource, not this client.) A timeout is not a network
+// error, not a refresh failure and never a sign-out: it surfaces as
+// ApiError(0, "timeout") and the caller may retry.
+export const REQUEST_TIMEOUT_MS = 30_000;
+
+async function timedFetch(url: string, init: RequestInit): Promise<Response> {
+  const ctl = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    ctl.abort();
+  }, REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...init, signal: ctl.signal });
+  } catch (e) {
+    if (timedOut) throw new ApiError(0, "timeout");
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function send(path: string, opts: RequestInit): Promise<Response> {
   const headers = new Headers(opts.headers);
   const token = getToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
   if (opts.body != null && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   try {
-    return await fetch(`${API_BASE}${path}`, { ...opts, headers });
-  } catch {
+    return await timedFetch(`${API_BASE}${path}`, { ...opts, headers });
+  } catch (e) {
+    if (e instanceof ApiError) throw e;
     throw new ApiError(0, "network_error");
   }
 }

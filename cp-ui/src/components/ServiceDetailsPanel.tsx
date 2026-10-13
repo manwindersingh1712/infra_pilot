@@ -707,8 +707,25 @@ export function ServiceDetailsPanel({ service, isOpen, onClose, onDeleted, onDel
               </p>
             </div>
           </div>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          <button
+            data-testid="delete-service"
+            onClick={() => setDeleteOpen(true)}
+            style={{
+              padding: "6px 12px",
+              background: "rgba(239,68,68,0.1)",
+              color: "#f87171",
+              border: "1px solid rgba(239,68,68,0.3)",
+              borderRadius: "8px",
+              cursor: "pointer",
+              fontSize: "13px",
+            }}
+          >
+            Delete service
+          </button>
           <button
             onClick={onClose}
+            aria-label="Close panel"
             style={{
               background: "none",
               border: "none",
@@ -730,6 +747,7 @@ export function ServiceDetailsPanel({ service, isOpen, onClose, onDeleted, onDel
           >
             ×
           </button>
+          </div>
         </div>
 
         {/* Tabs */}
@@ -892,24 +910,6 @@ export function ServiceDetailsPanel({ service, isOpen, onClose, onDeleted, onDel
                 }}
               >
                 🚀 Deploy Latest
-              </button>
-
-              <button
-                data-testid="delete-service"
-                onClick={() => setDeleteOpen(true)}
-                style={{
-                  width: "100%",
-                  padding: "10px",
-                  background: "rgba(239,68,68,0.1)",
-                  color: "#f87171",
-                  border: "1px solid rgba(239,68,68,0.3)",
-                  borderRadius: "8px",
-                  cursor: "pointer",
-                  fontSize: "13px",
-                  marginBottom: "20px",
-                }}
-              >
-                Delete service
               </button>
 
               {loading ? (

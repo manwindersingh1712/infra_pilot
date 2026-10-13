@@ -89,12 +89,20 @@ const STATUS_MESSAGES: Record<number, string> = {
   503: CODE_MESSAGES.unavailable,
 };
 
+// The 429 sentence; says how long to wait when the server sent Retry-After.
+export function rateLimitMessage(retryAfter?: number): string {
+  if (retryAfter === undefined || !Number.isFinite(retryAfter) || retryAfter < 1) return CODE_MESSAGES.too_many_requests;
+  const n = Math.ceil(retryAfter);
+  return `Too many requests. Wait about ${n} ${n === 1 ? "second" : "seconds"} and try again.`;
+}
+
 // humanizeApiError turns any thrown value into text a user can act on.
 // `overrides` lets a call site give a code a more specific message (for
 // example invalid_request in the create-project dialog).
 export function humanizeApiError(err: unknown, overrides: Record<string, string> = {}): string {
   if (err instanceof ApiError) {
     if (err.code && Object.hasOwn(overrides, err.code)) return overrides[err.code];
+    if (err.code === "too_many_requests") return rateLimitMessage(err.retryAfter);
     if (err.code && Object.hasOwn(CODE_MESSAGES, err.code)) return CODE_MESSAGES[err.code];
     if (Object.hasOwn(STATUS_MESSAGES, err.status)) return STATUS_MESSAGES[err.status];
     // A sentence the server wrote for people ("Connection already exists").

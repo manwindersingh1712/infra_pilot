@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { refreshSession, withStorageLock, type RefreshCallResult, type RefreshDeps } from "../src/lib/refresh.ts";
 import { isValidProjectName, projectNameTooLong } from "../src/lib/projectName.ts";
-import { ApiError, humanizeApiError, parseErrorCode, parseRetryAfter, SESSION_EXPIRED_MESSAGE } from "../src/lib/errors.ts";
+import { ApiError, humanizeApiError, rateLimitMessage, parseErrorCode, parseRetryAfter, SESSION_EXPIRED_MESSAGE } from "../src/lib/errors.ts";
 import {
   DEFAULT_RATE_LIMIT_WAIT_S, FAILED_OPENS_BEFORE_HINT, HIDDEN_STALE_MS, MAX_LINES, MIN_RESTART_GAP_MS, STABLE_MS,
   TOO_MANY_STREAMS_MESSAGE, attemptsAfterClose, backoffDelay, bufferAppend, bufferMerge, bufferReset,
@@ -608,6 +608,17 @@ await check("projectNameTooLong counts code points", () => {
   assert.equal(projectNameTooLong("x".repeat(101)), true);
   assert.equal(projectNameTooLong(" ".repeat(5) + "x".repeat(100) + " "), false, "trimmed");
   assert.equal(isValidProjectName("\u{1F600}".repeat(101)), false);
+});
+
+await check("429 message names the wait when Retry-After is known", () => {
+  const h = (e: ApiError) => humanizeApiError(e);
+  assert.equal(h(new ApiError(429, "too_many_requests", 60)), "Too many requests. Wait about 60 seconds and try again.");
+  assert.equal(h(new ApiError(429, "too_many_requests", 1)), "Too many requests. Wait about 1 second and try again.");
+  assert.equal(h(new ApiError(429, "too_many_requests", 2.2)), "Too many requests. Wait about 3 seconds and try again.");
+  assert.equal(h(new ApiError(429, "too_many_requests")), "Too many requests. Wait a moment and try again.");
+  assert.equal(h(new ApiError(429, "too_many_requests", 0)), "Too many requests. Wait a moment and try again.");
+  assert.equal(rateLimitMessage(Number.NaN), "Too many requests. Wait a moment and try again.");
+  assert.match(h(new ApiError(429, "too_many_streams", 9)), /limit/);
 });
 
 // ---- serviceActions.ts

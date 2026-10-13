@@ -50,6 +50,7 @@ func main() {
 }
 
 func run(cfg config.Config, logger *slog.Logger) error {
+	cfg.WarnIfLegacyEnv(logger)
 	if err := cfg.RequireWorker(); err != nil {
 		return err
 	}

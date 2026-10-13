@@ -119,6 +119,7 @@ func logStartup(logger *slog.Logger, cfg config.Config, addr string) {
 }
 
 func run(cfg config.Config, logger *slog.Logger) error {
+	cfg.WarnIfLegacyEnv(logger)
 	if err := cfg.RequireAPI(); err != nil {
 		return err
 	}

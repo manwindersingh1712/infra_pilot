@@ -16,8 +16,11 @@ import (
 )
 
 type Config struct {
-	AppEnv    string // development | production (APP_ENV, falling back to NODE_ENV; unset means production)
-	LogFormat string // text | json
+	AppEnv string // development | production (APP_ENV, falling back to NODE_ENV; unset means production)
+	// AppEnvSource names where AppEnv came from: "APP_ENV", "NODE_ENV" (the
+	// Node-era fallback) or "default" (neither set). Never a value.
+	AppEnvSource string
+	LogFormat    string // text | json
 
 	APIPort           string
 	DatabaseURL       string
@@ -129,15 +132,30 @@ func Load(getenv func(string) string) (Config, error) {
 		return v
 	}
 
+	appEnvSource := "default"
+	switch {
+	case strings.TrimSpace(getenv("APP_ENV")) != "":
+		appEnvSource = "APP_ENV"
+	case strings.TrimSpace(getenv("NODE_ENV")) != "":
+		appEnvSource = "NODE_ENV"
+	}
 	appEnv := oneOf("APP_ENV (or NODE_ENV)", str("APP_ENV", str("NODE_ENV", "production")), "development", "production")
+	corsRaw := str("CORS_ORIGINS", str("CORS_ORIGIN", ""))
+	if corsRaw == "" && appEnv == "production" {
+		invalid = append(invalid, "CORS_ORIGINS is required when APP_ENV=production: set it to the exact origin(s) of the UI, e.g. https://app.example.com")
+	}
+	if corsRaw == "" {
+		corsRaw = "http://localhost:5173"
+	}
 	c := Config{
-		AppEnv:    appEnv,
-		LogFormat: oneOf("LOG_FORMAT", str("LOG_FORMAT", "text"), "text", "json"),
+		AppEnv:       appEnv,
+		AppEnvSource: appEnvSource,
+		LogFormat:    oneOf("LOG_FORMAT", str("LOG_FORMAT", "text"), "text", "json"),
 
 		APIPort:           port("API_PORT", "8080"),
 		DatabaseURL:       strings.TrimSpace(getenv("DATABASE_URL")),
 		JWTSecret:         strings.TrimSpace(getenv("JWT_SECRET")),
-		CORSOrigins:       splitList(str("CORS_ORIGINS", str("CORS_ORIGIN", "http://localhost:5173"))),
+		CORSOrigins:       splitList(corsRaw),
 		APIMetricsAddr:    str("API_METRICS_ADDR", "127.0.0.1:9090"),
 		WorkerMetricsAddr: str("WORKER_METRICS_ADDR", "127.0.0.1:9091"),
 
@@ -243,6 +261,7 @@ func (c Config) RequireAPI() error {
 func (c Config) LogValue() slog.Value {
 	return slog.GroupValue(
 		slog.String("appEnv", c.AppEnv),
+		slog.String("appEnvSource", c.AppEnvSource),
 		slog.String("logFormat", c.LogFormat),
 		slog.String("apiPort", c.APIPort),
 		slog.String("databaseURL", redactURL(c.DatabaseURL)),
@@ -318,4 +337,15 @@ func splitList(s string) []string {
 		}
 	}
 	return out
+}
+
+// WarnIfLegacyEnv logs a WARN when AppEnv came from the NODE_ENV fallback: a
+// stale NODE_ENV=development in a deployed .env would otherwise enable dev
+// login silently. It names the variable, never a secret.
+func (c Config) WarnIfLegacyEnv(logger *slog.Logger) {
+	if c.AppEnvSource != "NODE_ENV" {
+		return
+	}
+	logger.Warn("APP_ENV is not set; the environment mode comes from the NODE_ENV fallback. Set APP_ENV explicitly",
+		"source", c.AppEnvSource, "appEnv", c.AppEnv)
 }

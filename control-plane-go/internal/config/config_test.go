@@ -16,10 +16,23 @@ func env(m map[string]string) func(string) string {
 
 var validKey = base64.StdEncoding.EncodeToString(make([]byte, 32))
 
+// withCORS returns m plus a CORS_ORIGINS value when m sets none: production
+// refuses to start without one, and most tests are not about CORS.
+func withCORS(m map[string]string) map[string]string {
+	out := map[string]string{}
+	for k, v := range m {
+		out[k] = v
+	}
+	if out["CORS_ORIGINS"] == "" && out["CORS_ORIGIN"] == "" {
+		out["CORS_ORIGINS"] = "https://app.test"
+	}
+	return out
+}
+
 // mustLoad fails the test if Load returns an error.
 func mustLoad(t *testing.T, m map[string]string) Config {
 	t.Helper()
-	c, err := Load(env(m))
+	c, err := Load(env(withCORS(m)))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -61,7 +74,7 @@ func TestLoadAppliesDefaults(t *testing.T) {
 		{"NginxRoutesDir", c.NginxRoutesDir, "infra/nginx/conf.d/routes"},
 		{"NginxContainer", c.NginxContainer, "cp_nginx"},
 		{"ServiceBaseDomain", c.ServiceBaseDomain, "localhost"},
-		{"CORSOrigins", strings.Join(c.CORSOrigins, ","), "http://localhost:5173"},
+		{"CORSOrigins", strings.Join(c.CORSOrigins, ","), "https://app.test"}, // supplied by withCORS
 		{"IsDevelopment", c.IsDevelopment(), false},
 	}
 	for _, ck := range checks {
@@ -309,7 +322,7 @@ func TestTrustedProxies(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			cfg, err := Load(env(map[string]string{"DATABASE_URL": "postgres://x", "TRUSTED_PROXIES": c.in}))
+			cfg, err := Load(env(withCORS(map[string]string{"DATABASE_URL": "postgres://x", "TRUSTED_PROXIES": c.in})))
 			if c.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), c.wantErr) {
 					t.Fatalf("err = %v, want containing %q", err, c.wantErr)
@@ -327,5 +340,88 @@ func TestTrustedProxies(t *testing.T) {
 				t.Fatalf("got %v, want %v", got, c.want)
 			}
 		})
+	}
+}
+
+func TestCORSOriginsProductionRequiresExplicitValue(t *testing.T) {
+	with := func(kv ...string) map[string]string {
+		m := map[string]string{"DATABASE_URL": "x"}
+		for i := 0; i < len(kv); i += 2 {
+			m[kv[i]] = kv[i+1]
+		}
+		return m
+	}
+	for name, m := range map[string]map[string]string{
+		"APP_ENV=production":     with("APP_ENV", "production"),
+		"env unset":              with(),
+		"NODE_ENV=production":    with("NODE_ENV", "production"),
+		"blank value":            with("APP_ENV", "production", "CORS_ORIGINS", "  "),
+		"blank value, blank old": with("APP_ENV", "production", "CORS_ORIGINS", " ", "CORS_ORIGIN", " "),
+	} {
+		_, err := Load(env(m))
+		if err == nil || !strings.Contains(err.Error(), "CORS_ORIGINS is required when APP_ENV=production") {
+			t.Errorf("%s: err = %v, want the CORS_ORIGINS requirement", name, err)
+		}
+	}
+	for name, m := range map[string]map[string]string{
+		"production with CORS_ORIGINS": with("APP_ENV", "production", "CORS_ORIGINS", "https://ui.test"),
+		"production with legacy name":  with("APP_ENV", "production", "CORS_ORIGIN", "https://ui.test"),
+	} {
+		if _, err := Load(env(m)); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	// Development keeps the localhost default.
+	c, err := Load(env(with("APP_ENV", "development")))
+	if err != nil || strings.Join(c.CORSOrigins, ",") != "http://localhost:5173" {
+		t.Fatalf("development default: %v %v", c.CORSOrigins, err)
+	}
+	c, err = Load(env(with("NODE_ENV", "development")))
+	if err != nil || strings.Join(c.CORSOrigins, ",") != "http://localhost:5173" {
+		t.Fatalf("NODE_ENV=development default: %v %v", c.CORSOrigins, err)
+	}
+}
+
+func TestAppEnvSourceNamesTheVariable(t *testing.T) {
+	for name, tc := range map[string]struct {
+		env  map[string]string
+		want string
+	}{
+		"APP_ENV":           {map[string]string{"APP_ENV": "development"}, "APP_ENV"},
+		"NODE_ENV fallback": {map[string]string{"NODE_ENV": "development"}, "NODE_ENV"},
+		"APP_ENV wins":      {map[string]string{"APP_ENV": "production", "NODE_ENV": "development"}, "APP_ENV"},
+		"blank APP_ENV":     {map[string]string{"APP_ENV": " ", "NODE_ENV": "production"}, "NODE_ENV"},
+		"neither":           {map[string]string{}, "default"},
+	} {
+		tc.env["DATABASE_URL"] = "x"
+		if got := mustLoad(t, tc.env).AppEnvSource; got != tc.want {
+			t.Errorf("%s: AppEnvSource %q, want %q", name, got, tc.want)
+		}
+	}
+}
+
+func TestWarnIfLegacyEnv(t *testing.T) {
+	logOf := func(m map[string]string) string {
+		var buf bytes.Buffer
+		mustLoad(t, m).WarnIfLegacyEnv(slog.New(slog.NewTextHandler(&buf, nil)))
+		return buf.String()
+	}
+	out := logOf(map[string]string{"DATABASE_URL": "x", "NODE_ENV": "development", "JWT_SECRET": "super-secret-value"})
+	for _, want := range []string{"level=WARN", "NODE_ENV", "APP_ENV"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("warning lacks %q: %s", want, out)
+		}
+	}
+	if strings.Contains(out, "super-secret-value") {
+		t.Errorf("warning leaks a secret: %s", out)
+	}
+	for name, m := range map[string]map[string]string{
+		"APP_ENV set":  {"DATABASE_URL": "x", "APP_ENV": "development"},
+		"APP_ENV+NODE": {"DATABASE_URL": "x", "APP_ENV": "production", "NODE_ENV": "development"},
+		"neither":      {"DATABASE_URL": "x"},
+	} {
+		if out := logOf(m); out != "" {
+			t.Errorf("%s: unexpected log: %s", name, out)
+		}
 	}
 }

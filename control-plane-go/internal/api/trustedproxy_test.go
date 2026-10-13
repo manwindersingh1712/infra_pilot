@@ -45,6 +45,14 @@ func TestRequestClientKey(t *testing.T) {
 		{"empty entry falls back to the peer", trusted, "172.18.0.2:1234", []string{"198.51.100.7,"}, "172.18.0.2"},
 		{"IPv6 client keeps the /64 reduction", trusted, "172.18.0.2:1234", []string{"2001:db8:1:2:aaaa:bbbb:cccc:dddd"}, "2001:db8:1:2::/64"},
 		{"IPv4-mapped trusted peer", trusted, "[::ffff:172.18.0.2]:1234", []string{"198.51.100.7"}, "198.51.100.7"},
+		{"ip:port entry is accepted with the port stripped", trusted, "172.18.0.2:1234", []string{"198.51.100.7:51234"}, "198.51.100.7"},
+		{"[v6]:port entry is accepted", trusted, "172.18.0.2:1234", []string{"[2001:db8:1:2:aaaa:bbbb:cccc:dddd]:443"}, "2001:db8:1:2::/64"},
+		{"bracketed v6 without a port is accepted", trusted, "172.18.0.2:1234", []string{"[2001:db8:1:2::9]"}, "2001:db8:1:2::/64"},
+		{"ip:port after a trusted hop", trusted, "172.18.0.2:1234", []string{"198.51.100.7:80, 10.0.0.5:99"}, "198.51.100.7"},
+		{"trusted ip:port hop is skipped", trusted, "172.18.0.2:1234", []string{"10.0.0.5:99"}, "172.18.0.2"},
+		{"host:port garbage still falls back", trusted, "172.18.0.2:1234", []string{"198.51.100.7, evil.test:80"}, "172.18.0.2"},
+		{"bad port still falls back", trusted, "172.18.0.2:1234", []string{"198.51.100.7:http"}, "172.18.0.2"},
+		{"unbracketed v6 with port is garbage", trusted, "172.18.0.2:1234", []string{"198.51.100.7, ::1:80:90:xyz"}, "172.18.0.2"},
 		{"IPv4-mapped XFF entry is unmapped", trusted, "172.18.0.2:1234", []string{"::ffff:198.51.100.7"}, "198.51.100.7"},
 	}
 	for _, c := range cases {

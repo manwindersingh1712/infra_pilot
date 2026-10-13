@@ -146,16 +146,36 @@ func requestClientKey(r *http.Request, trusted []netip.Prefix) string {
 		entries = append(entries, strings.Split(v, ",")...)
 	}
 	for i := len(entries) - 1; i >= 0; i-- {
-		a, err := netip.ParseAddr(strings.TrimSpace(entries[i]))
-		if err != nil {
+		a, ok := parseForwardedEntry(entries[i])
+		if !ok {
 			return peer
 		}
-		a = a.Unmap().WithZone("")
 		if !inPrefixes(trusted, a) {
 			return clientKey(a.String())
 		}
 	}
 	return peer
+}
+
+// parseForwardedEntry reads one X-Forwarded-For entry: a bare address, or the
+// forms some proxies emit, ip:port, [v6]:port and [v6]; the port is dropped.
+// Anything else (host names, "unknown", garbage) does not parse.
+func parseForwardedEntry(raw string) (netip.Addr, bool) {
+	s := strings.TrimSpace(raw)
+	if a, err := netip.ParseAddr(s); err == nil {
+		return a.Unmap().WithZone(""), true
+	}
+	if ap, err := netip.ParseAddrPort(s); err == nil {
+		return ap.Addr().Unmap().WithZone(""), true
+	}
+	if inner, ok := strings.CutPrefix(s, "["); ok {
+		if inner, ok = strings.CutSuffix(inner, "]"); ok {
+			if a, err := netip.ParseAddr(inner); err == nil {
+				return a.Unmap().WithZone(""), true
+			}
+		}
+	}
+	return netip.Addr{}, false
 }
 
 func peerAddr(remoteAddr string) netip.Addr {

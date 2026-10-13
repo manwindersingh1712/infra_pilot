@@ -3,8 +3,10 @@ package api
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/mail"
+	"strings"
 	"sync"
 	"unicode/utf8"
 
@@ -216,6 +218,31 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// loopbackHost reports whether a Host header names this machine: localhost,
+// 127.0.0.1 or [::1], with any port.
+func loopbackHost(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	} else {
+		host = strings.TrimSuffix(strings.TrimPrefix(hostport, "["), "]")
+	}
+	return strings.EqualFold(host, "localhost") || host == "127.0.0.1" || host == "::1"
+}
+
+// devHostOnly refuses a request whose Host is not loopback. /dev/login needs no
+// credentials, so a hostile page that rebinds its DNS name to 127.0.0.1 must
+// not be able to call it from the developer's browser.
+func devHostOnly(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !loopbackHost(r.Host) {
+			writeError(w, http.StatusForbidden, "forbidden_host")
+			return
+		}
+		next(w, r)
+	}
 }
 
 // devLogin finds or creates dev@local. Registered only when Deps.DevLogin is

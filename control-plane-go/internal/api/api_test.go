@@ -198,6 +198,10 @@ func (hs *harness) doFrom(remoteAddr, method, path, token string, body io.Reader
 	}
 	req := httptest.NewRequest(method, path, body)
 	req.RemoteAddr = remoteAddr
+	req.Host = "localhost:8080" // a dev-mode request from the developer's own machine
+	if h, ok := hdr["Host"]; ok {
+		req.Host = h // r.Host is not read from the header map
+	}
 	req.Header.Set("Content-Type", "application/json")
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)

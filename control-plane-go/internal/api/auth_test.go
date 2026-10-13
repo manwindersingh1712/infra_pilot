@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -502,6 +503,41 @@ func TestDevLoginOnlyInDevelopment(t *testing.T) {
 	rec := prod.do("POST", "/dev/login", "", nil)
 	if rec.Code != 404 && rec.Code != 405 {
 		t.Fatalf("dev login reachable in production: %d", rec.Code)
+	}
+}
+
+// DNS rebinding: a hostile page that rebinds its name to 127.0.0.1 reaches the
+// dev API with its own Host. Only /dev/login, which needs no credentials, is
+// gated on the Host.
+func TestDevLoginRejectsNonLoopbackHost(t *testing.T) {
+	hs := newHarness(t)
+	for _, host := range []string{
+		"localhost", "localhost:8080", "LOCALHOST:5173", "127.0.0.1", "127.0.0.1:8080", "[::1]", "[::1]:8080",
+	} {
+		if rec := hs.doRaw("POST", "/dev/login", "", nil, map[string]string{"Host": host}); rec.Code != 200 {
+			t.Errorf("Host %q: %d %s", host, rec.Code, rec.Body.String())
+		}
+	}
+	for _, host := range []string{
+		"evil.example", "evil.example:8080", "localhost.evil.example", "evil-localhost", "127.0.0.2:8080",
+		"127.0.0.1.evil.example", "0.0.0.0:8080", "[::2]:8080", "192.168.1.5:8080", "localhost@evil.example", "",
+	} {
+		rec := hs.doRaw("POST", "/dev/login", "", nil, map[string]string{"Host": host})
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("Host %q: %d, want 403", host, rec.Code)
+			continue
+		}
+		expectBody(t, rec, `{"error":"forbidden_host"}`)
+		if strings.Contains(rec.Body.String(), "token") {
+			t.Errorf("Host %q: 403 body carries a token", host)
+		}
+	}
+	// Other routes are not Host-gated (nginx and the UI proxy use other names).
+	if rec := hs.doRaw("POST", "/auth/login", "", nil, map[string]string{"Host": "api.example.test"}); rec.Code == http.StatusForbidden {
+		t.Fatal("/auth/login must not check the Host")
+	}
+	if rec := hs.doRaw("GET", "/healthz", "", nil, map[string]string{"Host": "api.example.test"}); rec.Code != 200 {
+		t.Fatalf("/healthz with a foreign Host: %d", rec.Code)
 	}
 }
 

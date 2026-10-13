@@ -117,7 +117,7 @@ func (s *Server) routes(mux router) {
 	mux.Handle("POST /auth/refresh", refresh(s.refresh))
 	mux.Handle("POST /auth/logout", refresh(s.logout))
 	if s.DevLogin {
-		mux.HandleFunc("POST /dev/login", s.devLogin)
+		mux.HandleFunc("POST /dev/login", devHostOnly(s.devLogin))
 	}
 
 	mux.Handle("POST /projects", s.private(s.createProject))

@@ -89,8 +89,9 @@ func (s *Server) createService(w http.ResponseWriter, r *http.Request) {
 	if body.Branch != nil {
 		branch = *body.Branch
 	}
+	name, nameOK := cleanName(body.Name)
 	switch {
-	case body.ProjectID == "" || !validProjectName(body.Name) || !store.ValidServiceType(typ) ||
+	case body.ProjectID == "" || !nameOK || !store.ValidServiceType(typ) ||
 		gitsrc.ValidBranch(branch) != nil:
 		writeError(w, http.StatusBadRequest, "invalid_request")
 		return
@@ -105,7 +106,7 @@ func (s *Server) createService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	svc, err := s.Store.CreateService(r.Context(), store.NewService{
-		ProjectID: body.ProjectID, Name: body.Name, ServiceType: typ, RepoURL: body.RepoURL, Branch: branch,
+		ProjectID: body.ProjectID, Name: name, ServiceType: typ, RepoURL: body.RepoURL, Branch: branch,
 	})
 	if err != nil {
 		s.internalError(w, r, err)

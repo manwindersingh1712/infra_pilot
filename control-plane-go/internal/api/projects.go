@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"regexp"
+	"strings"
 	"unicode"
 	"unicode/utf8"
 
@@ -41,6 +42,13 @@ func validProjectName(name string) bool {
 	return true
 }
 
+// cleanName trims surrounding white space (Unicode, as the UI does) and
+// validates the result. Callers store the returned name, never the raw input.
+func cleanName(raw string) (string, bool) {
+	name := strings.TrimSpace(raw)
+	return name, validProjectName(name)
+}
+
 func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Name string `json:"name"`
@@ -49,11 +57,12 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 		writeDecodeError(w, err, "invalid_request")
 		return
 	}
-	if !validProjectName(body.Name) {
+	name, ok := cleanName(body.Name)
+	if !ok {
 		writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	p, err := s.Store.CreateProject(r.Context(), body.Name, userID(r))
+	p, err := s.Store.CreateProject(r.Context(), name, userID(r))
 	if errors.Is(err, store.ErrNoSuchUser) {
 		// A validly signed token for a user that no longer exists.
 		writeError(w, http.StatusUnauthorized, "unauthorized")

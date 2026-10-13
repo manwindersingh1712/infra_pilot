@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"infrapilot/internal/store"
+	"infrapilot/internal/testutil"
 	"regexp"
 	"strings"
 	"testing"
@@ -185,4 +187,51 @@ func TestStoredOddNamesStillLoad(t *testing.T) {
 			t.Fatalf("%s: name %q want %q", k, got, n)
 		}
 	}
+}
+
+// Names are trimmed before validation and storage (Plan 2 Task 15 backlog).
+func TestProjectAndServiceNamesAreTrimmed(t *testing.T) {
+	hs := newHarness(t)
+	f := testutil.Seed(t, hs.st, store.TypeNodejs)
+	tok := hs.token(f.UserID)
+
+	for name, c := range map[string]struct{ in, want string }{
+		"spaces":              {"  Shop  ", "Shop"},
+		"tabs and newline":    {"\t\nShop\n", "Shop"},
+		"no-break space":      {" Shop ", "Shop"},
+		"ideographic space":   {"　商店　", "商店"},
+		"inner space kept":    {" My  Shop ", "My  Shop"},
+		"multi-byte, 2 runes": {" 😀😀 ", "😀😀"},
+	} {
+		rec := hs.do("POST", "/projects", tok, map[string]any{"name": c.in})
+		expectStatus(t, rec, 200)
+		if got := decode[map[string]any](t, rec)["name"]; got != c.want {
+			t.Errorf("project %s: stored %q, want %q", name, got, c.want)
+		}
+		rec = hs.do("POST", "/services", tok, map[string]any{"projectId": f.ProjectID, "name": c.in, "serviceType": "redis"})
+		expectStatus(t, rec, 200)
+		if got := decode[map[string]any](t, rec)["name"]; got != c.want {
+			t.Errorf("service %s: stored %q, want %q", name, got, c.want)
+		}
+	}
+
+	// Validation sees the trimmed name: padding cannot satisfy the length bounds.
+	for name, in := range map[string]string{
+		"padded one rune":         "   x   ",
+		"only spaces":             "      ",
+		"one multi-byte rune":     " 😀 ",
+		"padded over the maximum": " " + strings.Repeat("é", 101) + " ",
+	} {
+		rec := hs.do("POST", "/projects", tok, map[string]any{"name": in})
+		if rec.Code != 400 {
+			t.Errorf("project %s: status %d", name, rec.Code)
+		}
+		rec = hs.do("POST", "/services", tok, map[string]any{"projectId": f.ProjectID, "name": in, "serviceType": "redis"})
+		if rec.Code != 400 {
+			t.Errorf("service %s: status %d", name, rec.Code)
+		}
+	}
+	// 100 multi-byte runes plus padding is still accepted (limit counts runes).
+	long := strings.Repeat("é", 100)
+	expectStatus(t, hs.do("POST", "/projects", tok, map[string]any{"name": "  " + long + "  "}), 200)
 }

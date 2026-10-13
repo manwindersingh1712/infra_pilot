@@ -41,10 +41,10 @@ func (s *syncBuffer) String() string {
 	return s.b.String()
 }
 
-const (
-	testJWT = "run-test-jwt-secret-value-0123456789abcdef"
-	testKey = "cnVuLXRlc3QtZW5jcnlwdGlvbi1rZXktMzItYnl0ZXM=" // 32 bytes
-)
+const testJWT = "run-test-jwt-secret-value-0123456789abcdef"
+
+// testKey is a throwaway 32-byte ENV_ENCRYPTION_KEY, built at run time.
+var testKey = base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, 32))
 
 func loadCfg(t *testing.T, env map[string]string) config.Config {
 	t.Helper()

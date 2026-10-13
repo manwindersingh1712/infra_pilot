@@ -18,3 +18,7 @@
 # (sub "user_123", no exp) signed with the throwaway test key "test-secret"; the test asserts it
 # is rejected. No real key or user.
 a49bfda002e35cd9199bc0032c409b16b75c6430:control-plane-go/internal/auth/auth_test.go:jwt:13
+
+# control-plane-go/cmd/api/run_test.go:46, commit 3c83907: a throwaway 32-byte test encryption key literal
+# for the run() lifecycle test (no real key). The next commit builds it at run time instead.
+3c83907211a206bb918dce0ad41cc5522164880b:control-plane-go/cmd/api/run_test.go:generic-api-key:46

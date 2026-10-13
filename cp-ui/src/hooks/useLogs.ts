@@ -171,6 +171,10 @@ export function useLogs({ deploymentId }: UseLogsOptions) {
       const old = source;
       source = es;
       old?.close();
+      // The old stream's health says nothing about the new one: until it opens,
+      // a refusal must count as a failure (noteClosed sees connected=false).
+      connected = false;
+      openedAt = 0;
       let opened = false;
 
       es.onopen = () => {

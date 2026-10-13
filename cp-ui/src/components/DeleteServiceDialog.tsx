@@ -230,8 +230,8 @@ export function DeleteServiceDialog({ service, connectedNames, onDeleted, onCanc
               >
                 Delete service, keep data volume on disk
                 <span style={{ display: "block", marginTop: "4px", fontSize: "12px", fontWeight: 400, color: "#9ca3af" }}>
-                  The data stays on the server disk and is not reachable from Infra Pilot. The password is deleted, so
-                  it cannot be restored.
+                  The data stays on the server disk but is no longer reachable from Infra Pilot, and the service cannot
+                  be restored from here. Only the server administrator can recover or erase the data.
                 </span>
               </button>
             </>

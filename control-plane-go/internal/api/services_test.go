@@ -3,7 +3,9 @@ package api
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log/slog"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -751,5 +753,86 @@ func TestDeleteRacingADeleteIs404(t *testing.T) {
 	expectBody(t, rec, `{"error":"service_not_found"}`)
 	if len(outboxEvents(t)) != 0 {
 		t.Fatal("the raced delete queued a teardown")
+	}
+}
+
+// Contract: GET /services/:id/env?reveal=true&keys=A,B decrypts only the listed
+// keys; every other key stays listed with the masked placeholder. Unknown keys
+// are ignored, at most 50 keys, and reveal without keys keeps revealing all.
+func TestRevealKeyFilter(t *testing.T) {
+	var buf bytes.Buffer
+	hs := newHarnessWith(t, func(d *Deps) { d.Log = slog.New(slog.NewTextHandler(&buf, nil)) })
+	f := testutil.Seed(t, hs.st, store.TypeNodejs)
+	tok := hs.token(f.UserID)
+	base := "/services/" + f.ServiceID + "/env"
+	for k, v := range map[string]string{"A": "value-a", "B": "value-b", "C": "value-c"} {
+		expectStatus(t, hs.do("POST", base, tok, map[string]any{"key": k, "value": v}), 200)
+	}
+	byKey := func(rec *httptest.ResponseRecorder) map[string]string {
+		t.Helper()
+		expectStatus(t, rec, 200)
+		out := map[string]string{}
+		for _, e := range decode[[]map[string]any](t, rec) {
+			out[e["key"].(string)] = e["value"].(string)
+		}
+		return out
+	}
+	eq := func(name string, got, want map[string]string) {
+		t.Helper()
+		if len(got) != len(want) {
+			t.Errorf("%s: got %v, want %v", name, got, want)
+			return
+		}
+		for k, v := range want {
+			if got[k] != v {
+				t.Errorf("%s: got %v, want %v", name, got, want)
+				return
+			}
+		}
+	}
+	const m = "********"
+	eq("one key", byKey(hs.do("GET", base+"?reveal=true&keys=B", tok, nil)), map[string]string{"A": m, "B": "value-b", "C": m})
+	eq("two keys, spaces and empties", byKey(hs.do("GET", base+"?reveal=true&keys=A,%20C,,", tok, nil)), map[string]string{"A": "value-a", "B": m, "C": "value-c"})
+	eq("unknown keys ignored", byKey(hs.do("GET", base+"?reveal=true&keys=NOPE,B,%00,%ff", tok, nil)), map[string]string{"A": m, "B": "value-b", "C": m})
+	eq("duplicates", byKey(hs.do("GET", base+"?reveal=true&keys=B,B,B", tok, nil)), map[string]string{"A": m, "B": "value-b", "C": m})
+	eq("empty keys reveals nothing", byKey(hs.do("GET", base+"?reveal=true&keys=", tok, nil)), map[string]string{"A": m, "B": m, "C": m})
+	eq("keys without reveal stays masked", byKey(hs.do("GET", base+"?keys=B", tok, nil)), map[string]string{"A": m, "B": m, "C": m})
+	eq("reveal=false with keys", byKey(hs.do("GET", base+"?reveal=false&keys=B", tok, nil)), map[string]string{"A": m, "B": m, "C": m})
+	eq("reveal without keys is unchanged", byKey(hs.do("GET", base+"?reveal=true", tok, nil)), map[string]string{"A": "value-a", "B": "value-b", "C": "value-c"})
+
+	// Only the requested values are decrypted: a corrupt value under another key
+	// cannot make the filtered reveal fail.
+	if _, err := hs.st.UpsertEnvVar(context.Background(), f.ServiceID, "BROKEN", "enc:v1:not-valid"); err != nil {
+		t.Fatal(err)
+	}
+	eq("other keys are not decrypted", byKey(hs.do("GET", base+"?reveal=true&keys=A", tok, nil)),
+		map[string]string{"A": "value-a", "B": m, "C": m, "BROKEN": m})
+	expectStatus(t, hs.do("GET", base+"?reveal=true", tok, nil), 500) // unfiltered reveal still decrypts everything
+
+	// 50 keys are accepted, 51 are refused.
+	names := make([]string, 51)
+	for i := range names {
+		names[i] = fmt.Sprintf("K%d", i)
+	}
+	expectStatus(t, hs.do("GET", base+"?reveal=true&keys="+strings.Join(names[:50], ","), tok, nil), 200)
+	rec := hs.do("GET", base+"?reveal=true&keys="+strings.Join(names, ","), tok, nil)
+	expectStatus(t, rec, 400)
+	expectBody(t, rec, `{"error":"invalid_request"}`)
+
+	// Ownership is unchanged, and the audit log still holds ids only.
+	expectStatus(t, hs.do("GET", base+"?reveal=true&keys=A", hs.token("intruder"), nil), 404)
+	buf.Reset()
+	rec = hs.do("GET", base+"?reveal=true&keys=A", tok, nil)
+	expectStatus(t, rec, 200)
+	out := buf.String()
+	for _, want := range []string{"env revealed", "serviceId=" + f.ServiceID, "userId=" + f.UserID} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log lacks %q: %s", want, out)
+		}
+	}
+	for _, leak := range []string{"value-a", "keys", "BROKEN"} {
+		if strings.Contains(out, leak) {
+			t.Errorf("log leaks %q: %s", leak, out)
+		}
 	}
 }

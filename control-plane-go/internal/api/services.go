@@ -195,19 +195,51 @@ func defaultRef(svc store.Service) string {
 	return "HEAD"
 }
 
+// maxRevealKeys is the most keys one filtered reveal may name.
+const maxRevealKeys = 50
+
+// parseRevealKeys splits the comma separated keys parameter. Blank entries are
+// dropped and duplicates collapse, but more than maxRevealKeys entries is
+// refused. The result is never nil, so an empty list reveals nothing.
+func parseRevealKeys(raw string) (map[string]bool, bool) {
+	set := map[string]bool{}
+	n := 0
+	for _, k := range strings.Split(raw, ",") {
+		if k = strings.TrimSpace(k); k == "" {
+			continue
+		}
+		if n++; n > maxRevealKeys {
+			return nil, false
+		}
+		set[k] = true
+	}
+	return set, true
+}
+
 func (s *Server) getServiceEnv(w http.ResponseWriter, r *http.Request) {
 	svc, ok := s.ownedService(w, r)
 	if !ok {
 		return
+	}
+	q := r.URL.Query()
+	reveal := q.Get("reveal") == "true"
+	// keys=A,B narrows a reveal to those keys (the Connection tab asks for the
+	// password key only). Without a keys parameter every value is revealed.
+	var only map[string]bool
+	if _, filtered := q["keys"]; reveal && filtered {
+		var ok bool
+		if only, ok = parseRevealKeys(q.Get("keys")); !ok {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
 	}
 	vars, err := s.Store.ListEnvVars(r.Context(), svc.ID)
 	if err != nil {
 		s.internalError(w, r, err)
 		return
 	}
-	reveal := r.URL.Query().Get("reveal") == "true"
 	for i := range vars {
-		if !reveal {
+		if !reveal || (only != nil && !only[vars[i].Key]) {
 			vars[i].Value = maskedValue
 			continue
 		}

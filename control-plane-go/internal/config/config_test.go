@@ -16,23 +16,10 @@ func env(m map[string]string) func(string) string {
 
 var validKey = base64.StdEncoding.EncodeToString(make([]byte, 32))
 
-// withCORS returns m plus a CORS_ORIGINS value when m sets none: production
-// refuses to start without one, and most tests are not about CORS.
-func withCORS(m map[string]string) map[string]string {
-	out := map[string]string{}
-	for k, v := range m {
-		out[k] = v
-	}
-	if out["CORS_ORIGINS"] == "" && out["CORS_ORIGIN"] == "" {
-		out["CORS_ORIGINS"] = "https://app.test"
-	}
-	return out
-}
-
 // mustLoad fails the test if Load returns an error.
 func mustLoad(t *testing.T, m map[string]string) Config {
 	t.Helper()
-	c, err := Load(env(withCORS(m)))
+	c, err := Load(env(m))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -74,7 +61,7 @@ func TestLoadAppliesDefaults(t *testing.T) {
 		{"NginxRoutesDir", c.NginxRoutesDir, "infra/nginx/conf.d/routes"},
 		{"NginxContainer", c.NginxContainer, "cp_nginx"},
 		{"ServiceBaseDomain", c.ServiceBaseDomain, "localhost"},
-		{"CORSOrigins", strings.Join(c.CORSOrigins, ","), "https://app.test"}, // supplied by withCORS
+		{"CORSOrigins", strings.Join(c.CORSOrigins, ","), "http://localhost:5173"},
 		{"IsDevelopment", c.IsDevelopment(), false},
 	}
 	for _, ck := range checks {
@@ -234,7 +221,11 @@ func TestRequireAPI(t *testing.T) {
 		{"production short", map[string]string{"ENV_ENCRYPTION_KEY": validKey, "JWT_SECRET": "s"}, "at least 32 bytes"},
 		{"production dev placeholder", map[string]string{"ENV_ENCRYPTION_KEY": validKey, "JWT_SECRET": "dev-secret-change-me"}, "placeholder"},
 		{"production example placeholder", map[string]string{"ENV_ENCRYPTION_KEY": validKey, "JWT_SECRET": "generate-with-openssl-rand-base64-32"}, "placeholder"},
-		{"production strong", map[string]string{"ENV_ENCRYPTION_KEY": validKey, "JWT_SECRET": strong}, ""},
+		{"production strong", map[string]string{"ENV_ENCRYPTION_KEY": validKey, "JWT_SECRET": strong, "CORS_ORIGINS": "https://ui.test"}, ""},
+		{"production without CORS_ORIGINS", map[string]string{"ENV_ENCRYPTION_KEY": validKey, "JWT_SECRET": strong}, "CORS_ORIGINS is required when APP_ENV=production"},
+		{"production blank CORS_ORIGINS", map[string]string{"ENV_ENCRYPTION_KEY": validKey, "JWT_SECRET": strong, "CORS_ORIGINS": "  ", "CORS_ORIGIN": " "}, "CORS_ORIGINS is required when APP_ENV=production"},
+		{"NODE_ENV=production without CORS_ORIGINS", map[string]string{"NODE_ENV": "production", "ENV_ENCRYPTION_KEY": validKey, "JWT_SECRET": strong}, "CORS_ORIGINS is required when APP_ENV=production"},
+		{"production with the legacy CORS_ORIGIN", map[string]string{"ENV_ENCRYPTION_KEY": validKey, "JWT_SECRET": strong, "CORS_ORIGIN": "https://ui.test"}, ""},
 		{"development placeholder ok", map[string]string{"APP_ENV": "development", "ENV_ENCRYPTION_KEY": validKey, "JWT_SECRET": "dev-secret-change-me"}, ""},
 		{"development short ok", map[string]string{"APP_ENV": "development", "ENV_ENCRYPTION_KEY": validKey, "JWT_SECRET": "s"}, ""},
 	}
@@ -322,7 +313,7 @@ func TestTrustedProxies(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			cfg, err := Load(env(withCORS(map[string]string{"DATABASE_URL": "postgres://x", "TRUSTED_PROXIES": c.in})))
+			cfg, err := Load(env(map[string]string{"DATABASE_URL": "postgres://x", "TRUSTED_PROXIES": c.in}))
 			if c.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), c.wantErr) {
 					t.Fatalf("err = %v, want containing %q", err, c.wantErr)
@@ -343,42 +334,22 @@ func TestTrustedProxies(t *testing.T) {
 	}
 }
 
-func TestCORSOriginsProductionRequiresExplicitValue(t *testing.T) {
-	with := func(kv ...string) map[string]string {
-		m := map[string]string{"DATABASE_URL": "x"}
-		for i := 0; i < len(kv); i += 2 {
-			m[kv[i]] = kv[i+1]
-		}
-		return m
-	}
-	for name, m := range map[string]map[string]string{
-		"APP_ENV=production":     with("APP_ENV", "production"),
-		"env unset":              with(),
-		"NODE_ENV=production":    with("NODE_ENV", "production"),
-		"blank value":            with("APP_ENV", "production", "CORS_ORIGINS", "  "),
-		"blank value, blank old": with("APP_ENV", "production", "CORS_ORIGINS", " ", "CORS_ORIGIN", " "),
-	} {
-		_, err := Load(env(m))
-		if err == nil || !strings.Contains(err.Error(), "CORS_ORIGINS is required when APP_ENV=production") {
-			t.Errorf("%s: err = %v, want the CORS_ORIGINS requirement", name, err)
+// Development keeps the localhost default; Load itself (used by the worker and
+// migrate) never requires CORS_ORIGINS.
+func TestCORSOriginsDefaultAndWorkerNeedsNone(t *testing.T) {
+	for _, m := range []map[string]string{{}, {"APP_ENV": "development"}, {"NODE_ENV": "development"}, {"APP_ENV": "production"}} {
+		m["DATABASE_URL"] = "x"
+		if got := strings.Join(mustLoad(t, m).CORSOrigins, ","); got != "http://localhost:5173" {
+			t.Errorf("%v: CORSOrigins %q", m, got)
 		}
 	}
-	for name, m := range map[string]map[string]string{
-		"production with CORS_ORIGINS": with("APP_ENV", "production", "CORS_ORIGINS", "https://ui.test"),
-		"production with legacy name":  with("APP_ENV", "production", "CORS_ORIGIN", "https://ui.test"),
-	} {
-		if _, err := Load(env(m)); err != nil {
-			t.Errorf("%s: %v", name, err)
-		}
+	dev := mustLoad(t, map[string]string{"DATABASE_URL": "x", "APP_ENV": "development", "ENV_ENCRYPTION_KEY": validKey, "JWT_SECRET": "s"})
+	if err := dev.RequireAPI(); err != nil {
+		t.Fatalf("development without CORS_ORIGINS: %v", err)
 	}
-	// Development keeps the localhost default.
-	c, err := Load(env(with("APP_ENV", "development")))
-	if err != nil || strings.Join(c.CORSOrigins, ",") != "http://localhost:5173" {
-		t.Fatalf("development default: %v %v", c.CORSOrigins, err)
-	}
-	c, err = Load(env(with("NODE_ENV", "development")))
-	if err != nil || strings.Join(c.CORSOrigins, ",") != "http://localhost:5173" {
-		t.Fatalf("NODE_ENV=development default: %v %v", c.CORSOrigins, err)
+	prod := mustLoad(t, map[string]string{"DATABASE_URL": "x", "ENV_ENCRYPTION_KEY": validKey})
+	if err := prod.RequireWorker(); err != nil {
+		t.Fatalf("worker in production without CORS_ORIGINS: %v", err)
 	}
 }
 

@@ -63,13 +63,14 @@ func TestRunRefusesMissingSecrets(t *testing.T) {
 		env  map[string]string
 		want string
 	}{
-		"no ENV_ENCRYPTION_KEY":   {map[string]string{"JWT_SECRET": testJWT}, "ENV_ENCRYPTION_KEY"},
-		"no JWT_SECRET":           {map[string]string{"ENV_ENCRYPTION_KEY": key}, "JWT_SECRET"},
-		"placeholder JWT":         {map[string]string{"ENV_ENCRYPTION_KEY": key, "JWT_SECRET": "dev-secret-change-me", "APP_ENV": "production", "CORS_ORIGINS": "https://ui.test"}, "placeholder"},
-		"short JWT in production": {map[string]string{"ENV_ENCRYPTION_KEY": key, "JWT_SECRET": "short", "APP_ENV": "production", "CORS_ORIGINS": "https://ui.test"}, "at least 32"},
+		"no ENV_ENCRYPTION_KEY":           {map[string]string{"JWT_SECRET": testJWT}, "ENV_ENCRYPTION_KEY"},
+		"no JWT_SECRET":                   {map[string]string{"ENV_ENCRYPTION_KEY": key}, "JWT_SECRET"},
+		"placeholder JWT":                 {map[string]string{"ENV_ENCRYPTION_KEY": key, "JWT_SECRET": "dev-secret-change-me", "APP_ENV": "production"}, "placeholder"},
+		"production without CORS_ORIGINS": {map[string]string{"ENV_ENCRYPTION_KEY": key, "JWT_SECRET": testJWT, "APP_ENV": "production"}, "CORS_ORIGINS is required"},
+		"short JWT in production":         {map[string]string{"ENV_ENCRYPTION_KEY": key, "JWT_SECRET": "short", "APP_ENV": "production"}, "at least 32"},
 	}
 	for name, c := range cases {
-		env := map[string]string{"DATABASE_URL": "postgres://cp:pw@127.0.0.1:1/x", "API_METRICS_ADDR": "127.0.0.1:0", "CORS_ORIGINS": "https://ui.test"}
+		env := map[string]string{"DATABASE_URL": "postgres://cp:pw@127.0.0.1:1/x", "API_METRICS_ADDR": "127.0.0.1:0"}
 		for k, v := range c.env {
 			env[k] = v
 		}

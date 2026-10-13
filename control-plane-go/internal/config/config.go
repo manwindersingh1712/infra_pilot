@@ -16,6 +16,8 @@ import (
 )
 
 type Config struct {
+	corsExplicit bool // CORS_ORIGINS (or the legacy CORS_ORIGIN) was set; see RequireAPI
+
 	AppEnv string // development | production (APP_ENV, falling back to NODE_ENV; unset means production)
 	// AppEnvSource names where AppEnv came from: "APP_ENV", "NODE_ENV" (the
 	// Node-era fallback) or "default" (neither set). Never a value.
@@ -141,10 +143,8 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	appEnv := oneOf("APP_ENV (or NODE_ENV)", str("APP_ENV", str("NODE_ENV", "production")), "development", "production")
 	corsRaw := str("CORS_ORIGINS", str("CORS_ORIGIN", ""))
-	if corsRaw == "" && appEnv == "production" {
-		invalid = append(invalid, "CORS_ORIGINS is required when APP_ENV=production: set it to the exact origin(s) of the UI, e.g. https://app.example.com")
-	}
-	if corsRaw == "" {
+	corsExplicit := corsRaw != ""
+	if !corsExplicit {
 		corsRaw = "http://localhost:5173"
 	}
 	c := Config{
@@ -156,6 +156,7 @@ func Load(getenv func(string) string) (Config, error) {
 		DatabaseURL:       strings.TrimSpace(getenv("DATABASE_URL")),
 		JWTSecret:         strings.TrimSpace(getenv("JWT_SECRET")),
 		CORSOrigins:       splitList(corsRaw),
+		corsExplicit:      corsExplicit,
 		APIMetricsAddr:    str("API_METRICS_ADDR", "127.0.0.1:9090"),
 		WorkerMetricsAddr: str("WORKER_METRICS_ADDR", "127.0.0.1:9091"),
 
@@ -251,6 +252,11 @@ func (c Config) RequireAPI() error {
 		}
 		if len(c.JWTSecret) < 32 {
 			return fmt.Errorf("config: JWT_SECRET must be at least 32 bytes outside development, got %d", len(c.JWTSecret))
+		}
+		// Load defaults CORS to the dev UI origin; only the API enforces that
+		// production names its own (the worker and migrate share Load).
+		if !c.corsExplicit {
+			return fmt.Errorf("config: CORS_ORIGINS is required when APP_ENV=production: set it to the exact origin(s) of the UI, e.g. https://app.example.com")
 		}
 	}
 	return nil

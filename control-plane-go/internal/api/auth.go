@@ -223,10 +223,8 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 // loopbackHost reports whether a Host header names this machine: localhost,
 // 127.0.0.1 or [::1], with any port.
 func loopbackHost(hostport string) bool {
-	host := hostport
-	if h, _, err := net.SplitHostPort(hostport); err == nil {
-		host = h
-	} else {
+	host, _, err := net.SplitHostPort(hostport)
+	if err != nil { // no port: a bare name, or a bracketed v6 literal
 		host = strings.TrimSuffix(strings.TrimPrefix(hostport, "["), "]")
 	}
 	return strings.EqualFold(host, "localhost") || host == "127.0.0.1" || host == "::1"

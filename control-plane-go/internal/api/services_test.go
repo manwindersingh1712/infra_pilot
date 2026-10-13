@@ -825,12 +825,12 @@ func TestRevealKeyFilter(t *testing.T) {
 	rec = hs.do("GET", base+"?reveal=true&keys=A", tok, nil)
 	expectStatus(t, rec, 200)
 	out := buf.String()
-	for _, want := range []string{"env revealed", "serviceId=" + f.ServiceID, "userId=" + f.UserID} {
+	for _, want := range []string{"env revealed", "serviceId=" + f.ServiceID, "userId=" + f.UserID, "filtered=true", "revealedKeys=1"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("log lacks %q: %s", want, out)
 		}
 	}
-	for _, leak := range []string{"value-a", "keys", "BROKEN"} {
+	for _, leak := range []string{"value-a", "keys=", "BROKEN"} {
 		if strings.Contains(out, leak) {
 			t.Errorf("log leaks %q: %s", leak, out)
 		}

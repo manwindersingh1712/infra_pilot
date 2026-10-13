@@ -521,6 +521,7 @@ func TestDevLoginRejectsNonLoopbackHost(t *testing.T) {
 	for _, host := range []string{
 		"evil.example", "evil.example:8080", "localhost.evil.example", "evil-localhost", "127.0.0.2:8080",
 		"127.0.0.1.evil.example", "0.0.0.0:8080", "[::2]:8080", "192.168.1.5:8080", "localhost@evil.example", "",
+		"127.0.0.1:80@evil.example", "localhost:abc", "localhost:", "[::1]:8x",
 	} {
 		rec := hs.doRaw("POST", "/dev/login", "", nil, map[string]string{"Host": host})
 		if rec.Code != http.StatusForbidden {

@@ -223,9 +223,11 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 // loopbackHost reports whether a Host header names this machine: localhost,
 // 127.0.0.1 or [::1], with any port.
 func loopbackHost(hostport string) bool {
-	host, _, err := net.SplitHostPort(hostport)
+	host, port, err := net.SplitHostPort(hostport)
 	if err != nil { // no port: a bare name, or a bracketed v6 literal
 		host = strings.TrimSuffix(strings.TrimPrefix(hostport, "["), "]")
+	} else if !allDigits(port) { // "127.0.0.1:80@evil" is not a port
+		return false
 	}
 	return strings.EqualFold(host, "localhost") || host == "127.0.0.1" || host == "::1"
 }
@@ -257,4 +259,17 @@ func (s *Server) devLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"token": access, "refreshToken": refresh, "userId": u.ID})
+}
+
+// allDigits reports whether s is a non-empty string of ASCII digits.
+func allDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }

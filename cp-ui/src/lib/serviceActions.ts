@@ -30,12 +30,25 @@ export function pickConnectionDeployment<T extends DeploymentLike>(deployments: 
   return best;
 }
 
+const IN_PROGRESS = new Set(["queued", "building", "deploying"]);
+
+export type StatusTone = "success" | "failed" | "pending" | "neutral";
+
+// deploymentBadge words and colours a deployment's status badge. A row that is
+// "deployed" with stoppedAt set was superseded (its container was stopped), so
+// it reads "Stopped" in neutral grey instead of a green "deployed".
+export function deploymentBadge(status: string, stoppedAt?: string | null): { label: string; tone: StatusTone } {
+  if (status === "deployed") return stoppedAt ? { label: "Stopped", tone: "neutral" } : { label: "deployed", tone: "success" };
+  if (status === "failed") return { label: status, tone: "failed" };
+  if (IN_PROGRESS.has(status)) return { label: status, tone: "pending" };
+  return { label: status, tone: "neutral" };
+}
+
 export type ConnectionPanelState<T> =
   | { kind: "live"; deployment: T }
   | { kind: "deploying" }
   | { kind: "none" };
 
-const IN_PROGRESS = new Set(["queued", "building", "deploying"]);
 
 // connectionPanelState: a live deployment wins; otherwise "deploying" while a
 // deployment is queued, building or deploying; "none" (Not running) only when

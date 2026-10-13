@@ -13,7 +13,7 @@ import {
 } from "../src/lib/logStream.ts";
 
 import {
-  DELETE_CLOSED, DELETING_NOTICE, beginDelete, buildConnectionRows, buildConnectionUrl, cancelDelete,
+  DELETE_CLOSED, DELETING_NOTICE, beginDelete, buildConnectionRows, deploymentBadge, buildConnectionUrl, cancelDelete,
   classifyDeleteError, connectedServiceNames, deletePath, failDelete, openDelete, passwordEnvKey,
   pickConnectionDeployment, MASK, NO_PASSWORD_TEXT, ARM_GUARD_MS, isDeliberateConfirm, safeEncodeURIComponent, connectionPanelState, copyButtonLabel, deploymentsOf, shellQuote,
   type ConnectionRow, type PasswordState, PURGE_ARMED_LABEL, PURGE_ARM_MS, PURGE_LABEL, disarmPurge, nextFocusIndex, shouldClosePanel, deleteFailedNotice, purgeButtonLabel,
@@ -901,6 +901,15 @@ await check("connectedServiceNames: both directions, once each, never itself", (
   assert.deepEqual(connectedServiceNames("a", services, conns), ["B", "C"]);
   assert.deepEqual(connectedServiceNames("d", services, conns), ["C"]);
   assert.deepEqual(connectedServiceNames("b", services, []), []);
+});
+
+await check("deploymentBadge: a stopped deployed row reads Stopped, not a green deployed", () => {
+  assert.deepEqual(deploymentBadge("deployed", null), { label: "deployed", tone: "success" });
+  assert.deepEqual(deploymentBadge("deployed", undefined), { label: "deployed", tone: "success" });
+  assert.deepEqual(deploymentBadge("deployed", "2026-10-13T10:00:00Z"), { label: "Stopped", tone: "neutral" });
+  assert.deepEqual(deploymentBadge("failed", "2026-10-13T10:00:00Z"), { label: "failed", tone: "failed" });
+  for (const st of ["queued", "building", "deploying"]) assert.deepEqual(deploymentBadge(st, null), { label: st, tone: "pending" });
+  assert.deepEqual(deploymentBadge("weird", null), { label: "weird", tone: "neutral" });
 });
 
 console.log(`ok: ${passed} checks passed`);

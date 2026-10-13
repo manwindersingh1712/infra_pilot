@@ -1,8 +1,11 @@
+import { deploymentBadge } from "../lib/serviceActions";
+
 interface Deployment {
   id: string;
   status: string;
   commitSha: string;
   createdAt: string;
+  stoppedAt?: string | null;
   runtimeUrl?: string | null;
 }
 
@@ -101,8 +104,9 @@ function isManagedDbService(serviceType: string): boolean {
 export function DeploymentStageTracker({ deployment, isExpanded, onToggle, onViewLogs, serviceType }: DeploymentStageTrackerProps) {
   const isDbService = serviceType ? isManagedDbService(serviceType) : false;
   const isPending = deployment.status === "queued" || deployment.status === "building" || deployment.status === "deploying";
-  const isSuccessful = deployment.status === "deployed";
-  const isFailed = deployment.status === "failed";
+  const badge = deploymentBadge(deployment.status, deployment.stoppedAt);
+  const isSuccessful = badge.tone === "success";
+  const isFailed = badge.tone === "failed";
 
   const getStatusColor = () => {
     if (isSuccessful) return { bg: "rgba(34, 197, 94, 0.1)", text: "#22c55e", border: "rgba(34, 197, 94, 0.2)" };
@@ -151,7 +155,7 @@ export function DeploymentStageTracker({ deployment, isExpanded, onToggle, onVie
             }}
           >
             {isPending && <Spinner />}
-            {deployment.status}
+            {badge.label}
           </span>
 
           {/* Commit Info */}

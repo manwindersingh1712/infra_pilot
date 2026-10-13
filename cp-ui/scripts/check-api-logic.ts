@@ -5,7 +5,7 @@ import { isValidProjectName, projectNameTooLong } from "../src/lib/projectName.t
 import { newServiceOverlaps } from "../src/lib/canvasLayout.ts";
 import { ApiError, humanizeApiError, rateLimitMessage, parseErrorCode, parseRetryAfter, SESSION_EXPIRED_MESSAGE } from "../src/lib/errors.ts";
 import {
-  DEFAULT_RATE_LIMIT_WAIT_S, FAILED_OPENS_BEFORE_HINT, HIDDEN_STALE_MS, MAX_LINES, MIN_RESTART_GAP_MS, STABLE_MS,
+  DEFAULT_RATE_LIMIT_WAIT_S, MAX_SILENT_IN_WINDOW, SILENT_WINDOW_MS, recentSilent, FAILED_OPENS_BEFORE_HINT, HIDDEN_STALE_MS, MAX_LINES, MIN_RESTART_GAP_MS, STABLE_MS,
   TOO_MANY_STREAMS_MESSAGE, attemptsAfterClose, backoffDelay, bufferAppend, bufferMerge, bufferReset,
   classifyTicketError, emptyStateText, endDelay, entryKey, initialMode, latestMs, newBuffer, nextFailedOpens,
   parseEndEvent, parseHistoryEvent, parseLogEvent, parseTicketResponse, planAfterEnd, restartDelay, showCapHint,
@@ -484,6 +484,28 @@ await check("planAfterEnd: max_duration is silent only for a stream that lived l
   // the backoff grows with the attempt count, to the 30 s cap
   assert.equal(planAfterEnd({ ...base, msSinceOpen: 0, attempts: 3, rand: 1 }).delayMs, backoffDelay(3, 1));
   assert.equal(planAfterEnd({ ...base, msSinceOpen: 0, attempts: 40, rand: 1 }).delayMs, 30_000);
+});
+
+await check("planAfterEnd: silent reconnects are capped at 3 per 5 minutes", () => {
+  const base = { reason: "max_duration" as const, msSinceOpen: 10_100, msSinceLastSilent: 10_100, attempts: 0, rand: 0.5 };
+  assert.equal(MAX_SILENT_IN_WINDOW, 3);
+  for (const n of [0, 1, 2]) assert.equal(planAfterEnd({ ...base, silentInWindow: n }).silent, true, `n=${n}`);
+  for (const n of [3, 4, 100]) {
+    const p = planAfterEnd({ ...base, silentInWindow: n });
+    assert.equal(p.silent, false, `n=${n}`);
+    assert.equal(p.countAttempt, true);
+    assert.ok(p.delayMs >= 500);
+  }
+  // omitted means none yet
+  assert.equal(planAfterEnd(base).silent, true);
+  // a stream that lived an hour is also limited once the budget is spent
+  assert.equal(planAfterEnd({ ...base, msSinceOpen: 3_600_000, msSinceLastSilent: Infinity, silentInWindow: 3 }).silent, false);
+});
+
+await check("recentSilent keeps only reconnects inside the 5 minute window", () => {
+  const now = 1_000_000_000;
+  assert.deepEqual(recentSilent([], now), []);
+  assert.deepEqual(recentSilent([now - SILENT_WINDOW_MS - 1, now - SILENT_WINDOW_MS, now - SILENT_WINDOW_MS + 1, now], now), [now - SILENT_WINDOW_MS + 1, now]);
 });
 
 await check("planAfterEnd: shutdown waits 1-3 s, never less than the backoff, and counts", () => {

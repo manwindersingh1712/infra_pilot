@@ -194,6 +194,18 @@ export function latestMs(entries: LogEntry[], floor = -Infinity): number {
 // least this old, for a max_duration end to reconnect at once and silently.
 export const STABLE_MS = 10_000;
 
+// A hostile or broken server that ends every stream just after STABLE_MS would
+// keep the silent path alive forever. At most MAX_SILENT_IN_WINDOW silent
+// reconnects are allowed per SILENT_WINDOW_MS; after that the normal backoff
+// applies.
+export const SILENT_WINDOW_MS = 5 * 60_000;
+export const MAX_SILENT_IN_WINDOW = 3;
+
+// recentSilent keeps the silent-reconnect times that are still inside the window.
+export function recentSilent(times: number[], now: number): number[] {
+  return times.filter((t) => now - t < SILENT_WINDOW_MS && t <= now);
+}
+
 export interface EndPlan {
   delayMs: number;
   // Reconnect without touching the badge.
@@ -205,6 +217,7 @@ export interface EndPlan {
 // planAfterEnd decides the reconnect after an `end` event.
 //   max_duration, stream lived >= 10 s and no silent reconnect in the last 10 s:
 //       immediately, silently, not counted (the routine 1 h cap)
+//   max_duration after 3 silent reconnects in the last 5 minutes: backoff
 //   max_duration otherwise (a server or proxy ending streams early): backoff
 //   shutdown (or unknown): 1-3 s, never less than the backoff, counted
 export function planAfterEnd(input: {
@@ -213,9 +226,16 @@ export function planAfterEnd(input: {
   msSinceLastSilent: number;
   attempts: number;
   rand: number;
+  // Silent reconnects already made in the last SILENT_WINDOW_MS.
+  silentInWindow?: number;
 }): EndPlan {
-  const { reason, msSinceOpen, msSinceLastSilent, attempts, rand } = input;
-  if (reason === "max_duration" && msSinceOpen >= STABLE_MS && msSinceLastSilent >= STABLE_MS) {
+  const { reason, msSinceOpen, msSinceLastSilent, attempts, rand, silentInWindow = 0 } = input;
+  if (
+    reason === "max_duration" &&
+    msSinceOpen >= STABLE_MS &&
+    msSinceLastSilent >= STABLE_MS &&
+    silentInWindow < MAX_SILENT_IN_WINDOW
+  ) {
     return { delayMs: 0, silent: true, countAttempt: false };
   }
   const backoff = backoffDelay(attempts, rand);

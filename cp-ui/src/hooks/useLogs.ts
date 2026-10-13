@@ -3,7 +3,7 @@ import { API_BASE, apiFetch, getToken } from "../lib/api";
 import {
   BAD_TICKET_MESSAGE, OPEN_FAILED_MESSAGE, TOO_MANY_STREAMS_MESSAGE, attemptsAfterClose, backoffDelay,
   bufferAppend, bufferMerge, bufferReset, classifyTicketError, initialMode, latestMs, newBuffer, nextFailedOpens,
-  parseEndEvent, parseHistoryEvent, parseLogEvent, parseTicketResponse, planAfterEnd, restartDelay, showCapHint,
+  parseEndEvent, parseHistoryEvent, parseLogEvent, parseTicketResponse, planAfterEnd, recentSilent, restartDelay, showCapHint,
   visibleAction, type LogEntry, type LogMeta,
 } from "../lib/logStream";
 
@@ -57,6 +57,7 @@ export function useLogs({ deploymentId }: UseLogsOptions) {
     let source: EventSource | null = null;
     let openedAt = 0;
     let lastSilentAt = -Infinity;
+    let silentTimes: number[] = []; // silent reconnects inside the last 5 minutes
     let lastRestartAt = -Infinity;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let hiddenTimer: ReturnType<typeof setTimeout> | undefined;
@@ -235,7 +236,9 @@ export function useLogs({ deploymentId }: UseLogsOptions) {
         if (source !== es) return;
         const reason = parseEndEvent((ev as MessageEvent<string>).data);
         const now = Date.now();
+        silentTimes = recentSilent(silentTimes, now);
         const plan = planAfterEnd({
+          silentInWindow: silentTimes.length,
           reason,
           msSinceOpen: now - openedAt,
           msSinceLastSilent: now - lastSilentAt,
@@ -250,6 +253,7 @@ export function useLogs({ deploymentId }: UseLogsOptions) {
           // The routine 1 h cap: reopen at once and silently (the badge keeps
           // saying Live and no attempt is counted).
           lastSilentAt = now;
+          silentTimes.push(now);
         } else {
           setStatus("reconnecting");
         }

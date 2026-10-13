@@ -25,3 +25,7 @@
 
 # ignore Implementation md
 IMPLEMENTATION_PLAN.md
+# Stray go build outputs (go build ./cmd/x in control-plane-go); cmd/* sources stay tracked
+/control-plane-go/api
+/control-plane-go/worker
+/control-plane-go/migrate

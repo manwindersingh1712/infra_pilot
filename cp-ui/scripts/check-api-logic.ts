@@ -15,7 +15,7 @@ import {
   DELETE_CLOSED, DELETING_NOTICE, beginDelete, buildConnectionRows, buildConnectionUrl, cancelDelete,
   classifyDeleteError, connectedServiceNames, deletePath, failDelete, openDelete, passwordEnvKey,
   pickConnectionDeployment, MASK, NO_PASSWORD_TEXT, connectionPanelState, copyButtonLabel, deploymentsOf, shellQuote,
-  type ConnectionRow, type PasswordState, PURGE_ARMED_LABEL, PURGE_ARM_MS, PURGE_LABEL, disarmPurge, nextFocusIndex, purgeButtonLabel,
+  type ConnectionRow, type PasswordState, PURGE_ARMED_LABEL, PURGE_ARM_MS, PURGE_LABEL, disarmPurge, nextFocusIndex, shouldClosePanel, deleteFailedNotice, purgeButtonLabel,
 } from "../src/lib/serviceActions.ts";
 
 let passed = 0;
@@ -787,6 +787,14 @@ await check("deletePath sends a literal boolean and encodes the id", () => {
   assert.equal(deletePath("a/b?c", false), "/services/a%2Fb%3Fc?purgeData=false");
   assert.match(DELETING_NOTICE, /^Deleting/);
   assert.doesNotMatch(DELETING_NOTICE, /Deleted/);
+});
+
+await check("shouldClosePanel and deleteFailedNotice", () => {
+  assert.equal(shouldClosePanel("a", "a"), true);
+  assert.equal(shouldClosePanel("b", "a"), false, "another service's panel stays open");
+  assert.equal(shouldClosePanel(undefined, "a"), false);
+  assert.equal(deleteFailedNotice("db", "Cannot reach the server."), "Could not delete “db”. Cannot reach the server.");
+  assert.equal(deleteFailedNotice("db", "Something odd"), "Could not delete “db”. Something odd.");
 });
 
 await check("connectedServiceNames: both directions, once each, never itself", () => {

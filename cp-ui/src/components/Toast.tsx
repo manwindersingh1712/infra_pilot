@@ -7,9 +7,11 @@ interface ToastProps {
   durationMs?: number;
   // "info" is a neutral notice (for example "Deleting…"); the default is an error.
   tone?: "error" | "info";
+  // Rendered in the normal flow of a parent that positions a stack of toasts.
+  stacked?: boolean;
 }
 
-export function Toast({ message, onDismiss, durationMs = 6000, tone = "error" }: ToastProps) {
+export function Toast({ message, onDismiss, durationMs = 6000, tone = "error", stacked = false }: ToastProps) {
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -25,12 +27,9 @@ export function Toast({ message, onDismiss, durationMs = 6000, tone = "error" }:
       ref={ref}
       role={tone === "info" ? "status" : "alert"}
       style={{
-        position: "fixed",
-        bottom: "24px",
-        left: "50%",
-        marginLeft: "-180px",
-        width: "360px",
-        zIndex: 200,
+        ...(stacked
+          ? { width: "100%" }
+          : { position: "fixed", bottom: "24px", left: "50%", marginLeft: "-180px", width: "360px", zIndex: 200 }),
         display: "flex",
         alignItems: "flex-start",
         gap: "12px",

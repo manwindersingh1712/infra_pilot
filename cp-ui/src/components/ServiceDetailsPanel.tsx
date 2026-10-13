@@ -4,7 +4,7 @@ import { DeleteServiceDialog } from "./DeleteServiceDialog";
 import { DeploymentStageTracker } from "./DeploymentStageTracker";
 import { apiFetch, humanizeApiError } from "../lib/api";
 import {
-  buildConnectionRows, connectionPanelState, copyButtonLabel, deploymentsOf, isManagedDb, passwordEnvKey,
+  buildConnectionRows, connectionPanelState, copyButtonLabel, deploymentsOf, isManagedDb, passwordEnvKey, shouldClosePanel,
   type CopyResult, type PasswordState,
 } from "../lib/serviceActions";
 
@@ -37,8 +37,10 @@ interface ServiceDetailsPanelProps {
   service: Service | null;
   isOpen: boolean;
   onClose: () => void;
-  // Called after the API accepted the delete; the page refreshes the canvas.
-  onDeleted?: () => void;
+  // Called after the API accepted the delete of service `id`; the page refreshes the canvas.
+  onDeleted?: (id: string) => void;
+  // A delete failed after its dialog was gone; the page shows the message.
+  onDeleteFailed?: (name: string, message: string) => void;
   // Names of the services joined to this one on the canvas.
   connectedNames?: string[];
 }
@@ -502,7 +504,7 @@ function ConnectionSection({
   );
 }
 
-export function ServiceDetailsPanel({ service, isOpen, onClose, onDeleted, connectedNames = [] }: ServiceDetailsPanelProps) {
+export function ServiceDetailsPanel({ service, isOpen, onClose, onDeleted, onDeleteFailed, connectedNames = [] }: ServiceDetailsPanelProps) {
   const [activeTab, setActiveTab] = useState<"deployments" | "logs" | "env" | "connection">("deployments");
   const [deployments, setDeployments] = useState<Deployment[]>([]);
   const [loading, setLoading] = useState(false);
@@ -1096,11 +1098,17 @@ export function ServiceDetailsPanel({ service, isOpen, onClose, onDeleted, conne
           service={service}
           connectedNames={connectedNames}
           onCancel={() => setDeleteOpen(false)}
+          // The confirmed delete always updates the canvas, even if this dialog
+          // is gone; the panel closes only if it still shows the deleted service.
           onDeleted={() => {
-            setDeleteOpen(false);
-            onDeleted?.();
-            onClose();
+            const id = service.id;
+            onDeleted?.(id);
+            if (shouldClosePanel(shownServiceId.current, id)) {
+              setDeleteOpen(false);
+              onClose();
+            }
           }}
+          onFailed={(message) => onDeleteFailed?.(service.name, message)}
         />
       )}
     </>

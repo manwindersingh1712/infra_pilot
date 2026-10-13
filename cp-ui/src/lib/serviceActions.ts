@@ -261,3 +261,15 @@ export function connectedServiceNames(
   linked.delete(serviceId);
   return services.filter((s) => linked.has(s.id)).map((s) => s.name);
 }
+
+// shouldClosePanel: after a confirmed delete the panel closes only if it still
+// shows the deleted service; another service's panel must stay open.
+export function shouldClosePanel(shownServiceId: string | undefined, deletedServiceId: string): boolean {
+  return shownServiceId === deletedServiceId;
+}
+
+// deleteFailedNotice is the toast text for a delete that failed after its
+// dialog was already gone.
+export function deleteFailedNotice(name: string, message: string): string {
+  return `Could not delete “${name}”. ${/[.!?]$/.test(message) ? message : message + "."}`;
+}

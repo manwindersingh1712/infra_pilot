@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ReactFlow,
   Background,
@@ -17,7 +17,7 @@ import { CreateServiceModal } from "../components/CreateServiceModal";
 import { ServiceDetailsPanel } from "../components/ServiceDetailsPanel";
 import { ApiError, apiFetch, humanizeApiError, logout } from "../lib/api";
 import { Toast } from "../components/Toast";
-import { DELETING_NOTICE, connectedServiceNames } from "../lib/serviceActions";
+import { DELETING_NOTICE, connectedServiceNames, deleteFailedNotice } from "../lib/serviceActions";
 
 const nodeTypes = {
   service: ServiceNode
@@ -61,6 +61,7 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
   const dismissToast = useCallback(() => setToast(null), []);
   // A neutral notice (a delete was accepted); an error toast takes its place.
   const [notice, setNotice] = useState<string | null>(null);
+  const loadSeq = useRef(0);
   const dismissNotice = useCallback(() => setNotice(null), []);
 
   // Load project and canvas data
@@ -73,6 +74,9 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
   // unmount open dialogs (Create Service keeps its state across a refresh).
   async function loadCanvasData(background = false) {
     if (!projectId) return;
+    // Only the newest request may write state: an older response that arrives
+    // late must not bring back a node that was just deleted.
+    const seq = ++loadSeq.current;
     if (!background) {
       setLoading(true);
       setError(null);
@@ -81,12 +85,14 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
     try {
       // Load project name
       const project = await apiFetch<{ name: string }>(`/projects/${projectId}`);
+      if (seq !== loadSeq.current) return;
       setProjectName(project.name);
 
       // Load canvas data
       const canvas = await apiFetch<{ services: Service[]; connections: ConnectionData[] }>(
         `/projects/${projectId}/canvas`
       );
+      if (seq !== loadSeq.current) return;
       setServices(canvas.services);
       setConnections(canvas.connections);
 
@@ -95,6 +101,7 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
         setIsCreateModalOpen(true);
       }
     } catch (err) {
+      if (seq !== loadSeq.current) return;
       if (background) {
         setToast(`Could not refresh the canvas. ${sentence(humanizeApiError(err))}`);
       } else {
@@ -646,22 +653,33 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
           setSelectedService(null);
         }}
         connectedNames={selectedService ? connectedServiceNames(selectedService.id, services, connections) : []}
-        onDeleted={() => {
+        onDeleted={(gone) => {
           // Hide the node and its edges at once; the refresh below confirms.
-          const gone = selectedService?.id;
-          if (gone) {
-            setServices((prev) => prev.filter((s) => s.id !== gone));
-            setConnections((prev) => prev.filter((c) => c.sourceId !== gone && c.targetId !== gone));
-          }
+          setServices((prev) => prev.filter((s) => s.id !== gone));
+          setConnections((prev) => prev.filter((c) => c.sourceId !== gone && c.targetId !== gone));
           setNotice(DELETING_NOTICE);
           void loadCanvasData(true);
         }}
+        onDeleteFailed={(name, message) => setToast(deleteFailedNotice(name, message))}
       />
 
-      {toast ? (
-        <Toast message={toast} onDismiss={dismissToast} />
-      ) : (
-        notice && <Toast message={notice} tone="info" durationMs={9000} onDismiss={dismissNotice} />
+      {(toast || notice) && (
+        <div
+          style={{
+            position: "fixed",
+            bottom: "24px",
+            left: "50%",
+            marginLeft: "-180px",
+            width: "360px",
+            zIndex: 200,
+            display: "flex",
+            flexDirection: "column",
+            gap: "8px",
+          }}
+        >
+          {notice && <Toast stacked message={notice} tone="info" durationMs={9000} onDismiss={dismissNotice} />}
+          {toast && <Toast stacked message={toast} onDismiss={dismissToast} />}
+        </div>
       )}
     </div>
   );

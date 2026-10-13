@@ -4,7 +4,7 @@ import { DeleteServiceDialog } from "./DeleteServiceDialog";
 import { DeploymentStageTracker } from "./DeploymentStageTracker";
 import { apiFetch, humanizeApiError } from "../lib/api";
 import {
-  buildConnectionRows, connectionPanelState, copyButtonLabel, deploymentBadge, deploymentsOf, isManagedDb, passwordEnvKey, shouldClosePanel,
+  buildConnectionRows, connectionPanelState, copyButtonLabel, deploymentBadge, deploymentsOf, isManagedDb, passwordEnvKey, revealKeysPath, shouldClosePanel,
   type CopyResult, type PasswordState,
 } from "../lib/serviceActions";
 
@@ -331,7 +331,7 @@ function ConnectionSection({
   useEffect(() => {
     if (deploymentId === null) return;
     let cancelled = false;
-    apiFetch<EnvVar[]>(`/services/${service.id}/env?reveal=true`)
+    apiFetch<EnvVar[]>(revealKeysPath(service.id, [passwordKey]))
       .then((vars) => {
         if (!cancelled) setPassword({ kind: "ready", password: vars.find((v) => v.key === passwordKey)?.value ?? "" });
       })

@@ -165,6 +165,13 @@ export function passwordEnvKey(serviceType: string): string {
   return serviceType === "mongodb" ? "MONGO_INITDB_ROOT_PASSWORD" : "REDIS_PASSWORD";
 }
 
+// revealKeysPath is the env request that reveals only the named keys; every
+// other value comes back masked. The Connection tab asks for its password key
+// alone, so no other secret of the service is decrypted for it.
+export function revealKeysPath(serviceId: string, keys: string[]): string {
+  return `/services/${encodeURIComponent(serviceId)}/env?reveal=true&keys=${keys.map(encodeURIComponent).join(",")}`;
+}
+
 export type CopyResult = { field: string; ok: boolean } | null;
 
 // copyButtonLabel: "Copied!" only after the clipboard write succeeded.

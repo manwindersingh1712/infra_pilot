@@ -14,7 +14,7 @@ import {
 } from "../src/lib/logStream.ts";
 
 import {
-  DELETE_CLOSED, DELETING_NOTICE, beginDelete, buildConnectionRows, deploymentBadge, buildConnectionUrl, cancelDelete,
+  DELETE_CLOSED, DELETING_NOTICE, beginDelete, buildConnectionRows, deploymentBadge, revealKeysPath, buildConnectionUrl, cancelDelete,
   classifyDeleteError, connectedServiceNames, deletePath, failDelete, openDelete, passwordEnvKey,
   pickConnectionDeployment, MASK, NO_PASSWORD_TEXT, ARM_GUARD_MS, isDeliberateConfirm, safeEncodeURIComponent, connectionPanelState, copyButtonLabel, deploymentsOf, shellQuote,
   type ConnectionRow, type PasswordState, PURGE_ARMED_LABEL, PURGE_ARM_MS, PURGE_LABEL, disarmPurge, nextFocusIndex, shouldClosePanel, deleteFailedNotice, purgeButtonLabel,
@@ -929,6 +929,14 @@ await check("repoUrlProblem rejects ssh/git@/file/http and accepts https", () =>
   }
   assert.equal(repoUrlProblem("http://github.com/a/b"), REPO_URL_HTTP_MESSAGE);
   assert.equal(REPO_URL_HINT, "Public https:// URLs only");
+});
+
+await check("revealKeysPath asks only for the named keys", () => {
+  assert.equal(revealKeysPath("s1", ["REDIS_PASSWORD"]), "/services/s1/env?reveal=true&keys=REDIS_PASSWORD");
+  assert.equal(revealKeysPath("s1", ["A", "B"]), "/services/s1/env?reveal=true&keys=A,B");
+  assert.equal(revealKeysPath("a/b", ["K y"]), "/services/a%2Fb/env?reveal=true&keys=K%20y");
+  assert.equal(revealKeysPath("s1", [passwordEnvKey("mongodb")]), "/services/s1/env?reveal=true&keys=MONGO_INITDB_ROOT_PASSWORD");
+  assert.equal(revealKeysPath("s1", [passwordEnvKey("redis")]), "/services/s1/env?reveal=true&keys=REDIS_PASSWORD");
 });
 
 console.log(`ok: ${passed} checks passed`);

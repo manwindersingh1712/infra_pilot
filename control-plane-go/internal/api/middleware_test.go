@@ -661,3 +661,41 @@ func TestRateLimitRetryAfterIsTimeToNextToken(t *testing.T) {
 		t.Fatalf("token should have refilled, got %d", c)
 	}
 }
+
+// SEC-R2-3: every CORS answer (simple, preflight, listed or not) carries
+// Vary: Origin and never Access-Control-Allow-Credentials.
+func TestCORSVaryOriginAndNoCredentialsEverywhere(t *testing.T) {
+	h := withCORS([]string{"http://localhost:5173"}, okHandler())
+	for _, origin := range []string{"http://localhost:5173", "https://evil.test", ""} {
+		for _, preflight := range []bool{false, true} {
+			method := http.MethodGet
+			if preflight {
+				method = http.MethodOptions
+			}
+			req := httptest.NewRequest(method, "/projects", nil)
+			if origin != "" {
+				req.Header.Set("Origin", origin)
+			}
+			if preflight {
+				req.Header.Set("Access-Control-Request-Method", "POST")
+			}
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			hd := rec.Header()
+			if _, present := hd["Access-Control-Allow-Credentials"]; present {
+				t.Errorf("origin %q preflight=%v: Allow-Credentials present", origin, preflight)
+			}
+			varyOrigin := false
+			for _, v := range hd.Values("Vary") {
+				for _, f := range strings.Split(v, ",") {
+					if strings.EqualFold(strings.TrimSpace(f), "Origin") {
+						varyOrigin = true
+					}
+				}
+			}
+			if !varyOrigin {
+				t.Errorf("origin %q preflight=%v: Vary %v lacks Origin", origin, preflight, hd.Values("Vary"))
+			}
+		}
+	}
+}

@@ -5,10 +5,18 @@
 import { ApiError, humanizeApiError } from "./errors.ts";
 
 export interface DeploymentLike {
+  serviceId?: string;
   status: string;
   stoppedAt: string | null;
   hostPort: number | null;
   createdAt: string;
+}
+
+// deploymentsOf keeps only the rows that belong to serviceId. The panel state
+// can briefly hold the previous service's rows right after a switch; nothing
+// (and above all no password request) may be driven by them.
+export function deploymentsOf<T extends DeploymentLike>(serviceId: string, deployments: T[]): T[] {
+  return deployments.filter((d) => d.serviceId === serviceId);
 }
 
 // pickConnectionDeployment returns the newest deployment that is deployed and
@@ -22,61 +30,128 @@ export function pickConnectionDeployment<T extends DeploymentLike>(deployments: 
   return best;
 }
 
+export type ConnectionPanelState<T> =
+  | { kind: "live"; deployment: T }
+  | { kind: "deploying" }
+  | { kind: "none" };
+
+const IN_PROGRESS = new Set(["queued", "building", "deploying"]);
+
+// connectionPanelState: a live deployment wins; otherwise "deploying" while a
+// deployment is queued, building or deploying; "none" (Not running) only when
+// nothing is on its way.
+export function connectionPanelState<T extends DeploymentLike>(deployments: T[]): ConnectionPanelState<T> {
+  const live = pickConnectionDeployment(deployments);
+  if (live) return { kind: "live", deployment: live };
+  if (deployments.some((d) => IN_PROGRESS.has(d.status) && !d.stoppedAt)) return { kind: "deploying" };
+  return { kind: "none" };
+}
+
+export type PasswordState =
+  | { kind: "loading" }
+  | { kind: "ready"; password: string } // "" = the service has no stored password
+  | { kind: "failed"; message: string };
+
 export interface ConnectionRow {
   label: string;
+  // What is drawn: masked while the secret is hidden.
   value: string;
+  // What Copy puts on the clipboard (the real value), or null when there is nothing to copy.
+  copyValue: string | null;
   field: string;
+  // Rows that contain the password, so the tab can mask them together.
+  secret: boolean;
 }
 
 const MONGO_PORT = 27017;
 const REDIS_PORT = 6379;
+export const MASK = "••••••••••";
+export const NO_PASSWORD_TEXT = "Redeploy to generate a password";
 
 export function connectionHost(serviceId: string): string {
   return `svc-${serviceId}`;
 }
 
 // buildConnectionUrl: the password is percent-encoded so characters such as
-// "@", ":" or "/" cannot change the URL's meaning.
-export function buildConnectionUrl(serviceType: string, host: string, port: number, password: string): string {
-  const pw = encodeURIComponent(password);
+// "@", ":" or "/" cannot change the URL's meaning. With mask the password is
+// drawn as dots instead.
+export function buildConnectionUrl(serviceType: string, host: string, port: number, password: string, mask = false): string {
+  const pw = mask ? MASK : encodeURIComponent(password);
   return serviceType === "mongodb"
     ? `mongodb://admin:${pw}@${host}:${port}/?authSource=admin`
     : `redis://:${pw}@${host}:${port}`;
 }
 
-// buildConnectionRows lists what to show for a deployed managed database.
-// passwordPending is true until the reveal request finished; password is ""
-// when the service has none stored. The Local URL row exists only when the
-// deployment published a host port.
+// shellQuote wraps a value in single quotes for a POSIX shell. encodeURIComponent
+// leaves ' alone, so a password containing one must still not end the quote.
+export function shellQuote(v: string): string {
+  return `'${v.replace(/'/g, `'\\''`)}'`;
+}
+
+// buildConnectionRows lists what to show for a live managed database. Until
+// the password is ready, or when the service has none, no URL row exists, so
+// there is never a copyable URL that cannot authenticate. Secret rows are
+// masked unless revealed; Copy always carries the real value.
 export function buildConnectionRows(
   serviceType: string,
   serviceId: string,
   hostPort: number | null,
-  password: string | null
+  password: PasswordState,
+  revealed: boolean
 ): ConnectionRow[] {
   const isMongo = serviceType === "mongodb";
   const port = isMongo ? MONGO_PORT : REDIS_PORT;
   const host = connectionHost(serviceId);
-  const pw = password ?? "";
-  const rows: ConnectionRow[] = [
-    { label: "Host", value: host, field: "host" },
-    { label: "Port", value: String(port), field: "port" },
-  ];
-  if (isMongo) rows.push({ label: "User", value: "admin", field: "user" });
-  rows.push({
-    label: "Password",
-    value: password === null ? "Loading…" : pw === "" ? "Not available" : pw,
-    field: "password",
-  });
-  rows.push({ label: "URL", value: buildConnectionUrl(serviceType, host, port, pw), field: "url" });
-  if (hostPort) {
-    rows.push({ label: "Local URL", value: buildConnectionUrl(serviceType, "localhost", hostPort, pw), field: "local" });
+  const plain = (label: string, value: string, field: string): ConnectionRow => ({ label, value, copyValue: value, field, secret: false });
+  const rows: ConnectionRow[] = [plain("Host", host, "host"), plain("Port", String(port), "port")];
+  if (isMongo) rows.push(plain("User", "admin", "user"));
+  if (password.kind === "loading") {
+    rows.push({ label: "Password", value: "Loading…", copyValue: null, field: "password", secret: false });
+    return rows;
   }
+  if (password.kind === "failed") {
+    rows.push({ label: "Password", value: "Could not load", copyValue: null, field: "password", secret: false });
+    return rows;
+  }
+  const pw = password.password;
+  if (pw === "") {
+    rows.push({ label: "Password", value: NO_PASSWORD_TEXT, copyValue: null, field: "password", secret: false });
+    return rows;
+  }
+  const secret = (label: string, real: string, masked: string, field: string): ConnectionRow => ({
+    label,
+    value: revealed ? real : masked,
+    copyValue: real,
+    field,
+    secret: true,
+  });
+  rows.push(secret("Password", pw, MASK, "password"));
+  const url = buildConnectionUrl(serviceType, host, port, pw);
+  rows.push(secret("URL", url, buildConnectionUrl(serviceType, host, port, pw, true), "url"));
+  let cliUrl = url;
+  let cliMasked = buildConnectionUrl(serviceType, host, port, pw, true);
+  if (hostPort) {
+    const local = buildConnectionUrl(serviceType, "localhost", hostPort, pw);
+    const localMasked = buildConnectionUrl(serviceType, "localhost", hostPort, pw, true);
+    rows.push(secret("Local URL", local, localMasked, "local"));
+    cliUrl = local;
+    cliMasked = localMasked;
+  }
+  const tool = isMongo ? "mongosh" : "redis-cli -u";
+  rows.push(secret("CLI", `${tool} ${shellQuote(cliUrl)}`, `${tool} ${shellQuote(cliMasked)}`, "cli"));
   return rows;
 }
 
 export function passwordEnvKey(serviceType: string): string {
   return serviceType === "mongodb" ? "MONGO_INITDB_ROOT_PASSWORD" : "REDIS_PASSWORD";
+}
+
+export type CopyResult = { field: string; ok: boolean } | null;
+
+// copyButtonLabel: "Copied!" only after the clipboard write succeeded.
+export function copyButtonLabel(result: CopyResult, field: string): string {
+  if (!result || result.field !== field) return "Copy";
+  return result.ok ? "Copied!" : "Copy failed";
 }
 
 // ---- delete

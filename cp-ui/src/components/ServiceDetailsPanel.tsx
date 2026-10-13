@@ -4,7 +4,8 @@ import { DeleteServiceDialog } from "./DeleteServiceDialog";
 import { DeploymentStageTracker } from "./DeploymentStageTracker";
 import { apiFetch, humanizeApiError } from "../lib/api";
 import {
-  buildConnectionRows, isManagedDb, passwordEnvKey, pickConnectionDeployment,
+  buildConnectionRows, connectionPanelState, copyButtonLabel, deploymentsOf, isManagedDb, passwordEnvKey,
+  type CopyResult, type PasswordState,
 } from "../lib/serviceActions";
 
 interface Deployment {
@@ -300,36 +301,47 @@ function EnvVarSection({ serviceId }: { serviceId: string }) {
   );
 }
 
-function ConnectionSection({ service, deployment }: { service: Service; deployment: Deployment | null }) {
-  const [copiedField, setCopiedField] = useState<string | null>(null);
-  // null = not loaded yet; "" = the service has no stored password.
-  const [password, setPassword] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+function ConnectionSection({
+  service,
+  deployments,
+  loading,
+}: {
+  service: Service;
+  // Only this service's own rows (see deploymentsOf).
+  deployments: Deployment[];
+  loading: boolean;
+}) {
+  const [copied, setCopied] = useState<CopyResult>(null);
+  const [password, setPassword] = useState<PasswordState>({ kind: "loading" });
+  const [revealed, setRevealed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const passwordKey = passwordEnvKey(service.serviceType);
-  const deploymentId = deployment?.id ?? null;
+  const state = connectionPanelState(deployments);
+  const live = state.kind === "live" ? state.deployment : null;
+  const deploymentId = live?.id ?? null;
 
   // The generated password comes from the reveal endpoint, only while a live
-  // deployment is shown. A response that arrives after the service or the
-  // deployment changed is dropped, and the value is cleared when this tab
-  // unmounts. It is never logged and never put in a URL of this page.
+  // deployment of THIS service is shown. A response that arrives after the
+  // service or the deployment changed is dropped, and the value is cleared when
+  // this tab unmounts. It is never logged and never put in a URL of this page.
   useEffect(() => {
     if (deploymentId === null) return;
     let cancelled = false;
     apiFetch<EnvVar[]>(`/services/${service.id}/env?reveal=true`)
       .then((vars) => {
-        if (!cancelled) setPassword(vars.find((v) => v.key === passwordKey)?.value ?? "");
+        if (!cancelled) setPassword({ kind: "ready", password: vars.find((v) => v.key === passwordKey)?.value ?? "" });
       })
       .catch((err) => {
-        if (!cancelled) setError(humanizeApiError(err));
+        if (!cancelled) setPassword({ kind: "failed", message: humanizeApiError(err) });
       });
     return () => {
       cancelled = true;
-      setPassword(null);
-      setError(null);
+      setPassword({ kind: "loading" });
+      setRevealed(false);
     };
-  }, [service.id, passwordKey, deploymentId]);
+  }, [service.id, passwordKey, deploymentId, attempt]);
 
   useEffect(
     () => () => {
@@ -339,10 +351,19 @@ function ConnectionSection({ service, deployment }: { service: Service; deployme
   );
 
   function copyToClipboard(text: string, field: string) {
-    void navigator.clipboard?.writeText(text).catch(() => undefined);
-    setCopiedField(field);
-    if (copyTimer.current) clearTimeout(copyTimer.current);
-    copyTimer.current = setTimeout(() => setCopiedField(null), 2000);
+    const done = (ok: boolean) => {
+      setCopied({ field, ok });
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+      copyTimer.current = setTimeout(() => setCopied(null), 2000);
+    };
+    if (!navigator.clipboard?.writeText) {
+      done(false);
+      return;
+    }
+    navigator.clipboard.writeText(text).then(
+      () => done(true),
+      () => done(false)
+    );
   }
 
   const rowStyle: React.CSSProperties = {
@@ -384,10 +405,17 @@ function ConnectionSection({ service, deployment }: { service: Service; deployme
     whiteSpace: "nowrap",
   };
 
-  if (!deployment) {
+  if (!live) {
+    const notice =
+      loading && deployments.length === 0
+        ? { title: "Loading…", detail: "" }
+        : state.kind === "deploying"
+          ? { title: "Deploying…", detail: "Connection details appear when the deployment finishes." }
+          : { title: "Not running.", detail: "Deploy the service to see connection details." };
     return (
       <div style={{ padding: "20px" }}>
         <div
+          data-testid="connection-empty"
           style={{
             textAlign: "center",
             padding: "40px",
@@ -397,14 +425,15 @@ function ConnectionSection({ service, deployment }: { service: Service; deployme
             border: "1px solid rgba(255,255,255,0.1)",
           }}
         >
-          <p>Not running.</p>
-          <p style={{ fontSize: "14px" }}>Deploy the service to see connection details.</p>
+          <p>{notice.title}</p>
+          {notice.detail && <p style={{ fontSize: "14px" }}>{notice.detail}</p>}
         </div>
       </div>
     );
   }
 
-  const connectionRows = buildConnectionRows(service.serviceType, service.id, deployment.hostPort, password);
+  const connectionRows = buildConnectionRows(service.serviceType, service.id, live.hostPort, password, revealed);
+  const hasSecrets = connectionRows.some((r) => r.secret);
 
   return (
     <div style={{ padding: "20px", display: "flex", flexDirection: "column", gap: "10px" }}>
@@ -419,24 +448,43 @@ function ConnectionSection({ service, deployment }: { service: Service; deployme
       >
         <p style={{ margin: 0, fontSize: "13px", color: "#c4b5fd", lineHeight: 1.5 }}>
           Services in this project reach this database at the host below. It is not exposed to the internet
-          {deployment.hostPort ? "; in development it is also available on localhost." : "."}
+          {live.hostPort ? "; in development it is also available on localhost." : "."}
         </p>
       </div>
-      {error && (
-        <p role="alert" style={{ margin: 0, fontSize: "13px", color: "#f87171" }}>
-          Could not load the password. {error}
-        </p>
+      {password.kind === "failed" && (
+        <div
+          role="alert"
+          data-testid="reveal-error"
+          style={{ display: "flex", alignItems: "center", gap: "12px", fontSize: "13px", color: "#f87171" }}
+        >
+          <span style={{ flex: 1 }}>Could not load the password. {password.message}</span>
+          <button
+            data-testid="reveal-retry"
+            onClick={() => {
+              setPassword({ kind: "loading" });
+              setAttempt((n) => n + 1);
+            }}
+            style={copyButtonStyle}
+          >
+            Retry
+          </button>
+        </div>
+      )}
+      {hasSecrets && (
+        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+          <button data-testid="reveal-toggle" onClick={() => setRevealed((v) => !v)} style={copyButtonStyle}>
+            {revealed ? "Hide secrets" : "Reveal secrets"}
+          </button>
+        </div>
       )}
 
-      {connectionRows.map((row) => {
-        const unavailable = row.field === "password" && (password === null || password === "");
-        return (
-          <div key={row.field} style={rowStyle} data-field={row.field}>
-            <span style={labelStyle}>{row.label}</span>
-            <span style={valueStyle}>{row.value}</span>
+      {connectionRows.map((row) => (
+        <div key={row.field} style={rowStyle} data-field={row.field}>
+          <span style={labelStyle}>{row.label}</span>
+          <span style={valueStyle}>{row.value}</span>
+          {row.copyValue !== null && (
             <button
-              onClick={() => copyToClipboard(row.value, row.field)}
-              disabled={unavailable || (password === null && (row.field === "url" || row.field === "local"))}
+              onClick={() => copyToClipboard(row.copyValue ?? "", row.field)}
               style={copyButtonStyle}
               onMouseEnter={(e) => {
                 e.currentTarget.style.background = "rgba(255,255,255,0.1)";
@@ -445,11 +493,11 @@ function ConnectionSection({ service, deployment }: { service: Service; deployme
                 e.currentTarget.style.background = "rgba(255,255,255,0.05)";
               }}
             >
-              {copiedField === row.field ? "Copied!" : "Copy"}
+              {copyButtonLabel(copied, row.field)}
             </button>
-          </div>
-        );
-      })}
+          )}
+        </div>
+      ))}
     </div>
   );
 }
@@ -1014,7 +1062,8 @@ export function ServiceDetailsPanel({ service, isOpen, onClose, onDeleted, conne
             <ConnectionSection
               key={service.id}
               service={service}
-              deployment={pickConnectionDeployment(deployments)}
+              deployments={deploymentsOf(service.id, deployments)}
+              loading={loading}
             />
           ) : (
             <div style={{ padding: "20px", height: "100%", boxSizing: "border-box" }}>

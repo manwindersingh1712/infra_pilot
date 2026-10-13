@@ -14,7 +14,8 @@ import {
 import {
   DELETE_CLOSED, DELETING_NOTICE, beginDelete, buildConnectionRows, buildConnectionUrl, cancelDelete,
   classifyDeleteError, connectedServiceNames, deletePath, failDelete, openDelete, passwordEnvKey,
-  pickConnectionDeployment,
+  pickConnectionDeployment, MASK, NO_PASSWORD_TEXT, connectionPanelState, copyButtonLabel, deploymentsOf, shellQuote,
+  type ConnectionRow, type PasswordState,
 } from "../src/lib/serviceActions.ts";
 
 let passed = 0;
@@ -620,24 +621,81 @@ await check("buildConnectionUrl percent-encodes the password", () => {
   assert.equal(buildConnectionUrl("redis", "svc-a", 6379, ""), "redis://:@svc-a:6379");
 });
 
-await check("buildConnectionRows: host, user, password states and Local URL only with a host port", () => {
-  const by = (rows: ReturnType<typeof buildConnectionRows>, f: string) => rows.find((r) => r.field === f)?.value;
-  const redis = buildConnectionRows("redis", "abc", null, "s3cr@t");
-  assert.deepEqual(redis.map((r) => r.field), ["host", "port", "password", "url"]);
-  assert.equal(by(redis, "host"), "svc-abc");
-  assert.equal(by(redis, "port"), "6379");
-  assert.equal(by(redis, "url"), "redis://:s3cr%40t@svc-abc:6379");
-  const mongo = buildConnectionRows("mongodb", "abc", 20001, "pw");
-  assert.deepEqual(mongo.map((r) => r.field), ["host", "port", "user", "password", "url", "local"]);
-  assert.equal(by(mongo, "port"), "27017");
-  assert.equal(by(mongo, "user"), "admin");
-  assert.equal(by(mongo, "local"), "mongodb://admin:pw@localhost:20001/?authSource=admin");
-  assert.equal(by(redis, "password"), "s3cr@t");
-  assert.equal(by(buildConnectionRows("redis", "abc", null, null), "password"), "Loading…");
-  assert.equal(by(buildConnectionRows("redis", "abc", null, ""), "password"), "Not available");
-  assert.equal(buildConnectionRows("redis", "abc", 0, "x").some((r) => r.field === "local"), false);
+await check("buildConnectionRows: masked by default, Copy carries the real value", () => {
+  const rows = (t: string, port: number | null, pw: PasswordState, rev: boolean) => buildConnectionRows(t, "abc", port, pw, rev);
+  const by = (rs: ConnectionRow[], f: string) => rs.find((r) => r.field === f);
+  const ready = { kind: "ready", password: "s3cr@t" } as const;
+  const hidden = rows("redis", null, ready, false);
+  assert.deepEqual(hidden.map((r) => r.field), ["host", "port", "password", "url", "cli"]);
+  assert.equal(by(hidden, "host")?.value, "svc-abc");
+  assert.equal(by(hidden, "port")?.value, "6379");
+  for (const f of ["password", "url", "cli"]) {
+    const r = by(hidden, f)!;
+    assert.equal(r.secret, true, f);
+    assert.ok(r.value.includes(MASK), f + " shows dots: " + r.value);
+    assert.ok(!r.value.includes("s3cr") && !r.value.includes("%40"), f + " leaks nothing: " + r.value);
+  }
+  assert.equal(by(hidden, "url")?.value, `redis://:${MASK}@svc-abc:6379`);
+  assert.equal(by(hidden, "password")?.copyValue, "s3cr@t");
+  assert.equal(by(hidden, "url")?.copyValue, "redis://:s3cr%40t@svc-abc:6379");
+  assert.equal(by(hidden, "host")?.secret, false);
+  const shown = rows("redis", null, ready, true);
+  assert.equal(by(shown, "password")?.value, "s3cr@t");
+  assert.equal(by(shown, "url")?.value, "redis://:s3cr%40t@svc-abc:6379");
+  assert.equal(by(shown, "cli")?.value, "redis-cli -u 'redis://:s3cr%40t@svc-abc:6379'");
+  assert.equal(by(hidden, "cli")?.copyValue, "redis-cli -u 'redis://:s3cr%40t@svc-abc:6379'");
+  assert.equal(by(hidden, "cli")?.value, `redis-cli -u 'redis://:${MASK}@svc-abc:6379'`);
+  const mongo = rows("mongodb", 20001, { kind: "ready", password: "pw" }, true);
+  assert.deepEqual(mongo.map((r) => r.field), ["host", "port", "user", "password", "url", "local", "cli"]);
+  assert.equal(by(mongo, "port")?.value, "27017");
+  assert.equal(by(mongo, "user")?.value, "admin");
+  assert.equal(by(mongo, "local")?.value, "mongodb://admin:pw@localhost:20001/?authSource=admin");
+  assert.equal(by(mongo, "cli")?.value, "mongosh 'mongodb://admin:pw@localhost:20001/?authSource=admin'", "CLI uses the Local URL when there is one");
+  assert.equal(rows("redis", 0, { kind: "ready", password: "x" }, true).some((r) => r.field === "local"), false);
   assert.equal(passwordEnvKey("redis"), "REDIS_PASSWORD");
   assert.equal(passwordEnvKey("mongodb"), "MONGO_INITDB_ROOT_PASSWORD");
+});
+
+await check("buildConnectionRows: loading, failed and no stored password never give a URL row", () => {
+  for (const pw of [{ kind: "loading" }, { kind: "failed", message: "x" }, { kind: "ready", password: "" }] as PasswordState[]) {
+    const rs = buildConnectionRows("mongodb", "abc", 20001, pw, true);
+    assert.deepEqual(rs.map((r) => r.field), ["host", "port", "user", "password"], pw.kind);
+    assert.equal(rs.find((r) => r.field === "password")?.copyValue, null, pw.kind);
+  }
+  assert.equal(buildConnectionRows("redis", "a", null, { kind: "loading" }, false).at(-1)?.value, "Loading…");
+  assert.equal(buildConnectionRows("redis", "a", null, { kind: "failed", message: "x" }, false).at(-1)?.value, "Could not load");
+  assert.equal(buildConnectionRows("redis", "a", null, { kind: "ready", password: "" }, false).at(-1)?.value, NO_PASSWORD_TEXT);
+});
+
+await check("shellQuote survives a single quote in the password", () => {
+  assert.equal(shellQuote("a b"), "'a b'");
+  assert.equal(shellQuote("it's"), "'it'\\''s'");
+  const rows = buildConnectionRows("redis", "a", null, { kind: "ready", password: "x'y" }, true);
+  assert.equal(rows.find((r) => r.field === "cli")?.value, "redis-cli -u 'redis://:x'\\''y@svc-a:6379'");
+});
+
+await check("connectionPanelState: live wins, deploying while something is on its way, else none", () => {
+  const d = (status: string, stoppedAt: string | null = null) => ({ status, stoppedAt, hostPort: null, createdAt: "2026-01-01T00:00:00Z" });
+  assert.equal(connectionPanelState([]).kind, "none");
+  assert.equal(connectionPanelState([d("failed")]).kind, "none");
+  assert.equal(connectionPanelState([d("deployed", "2026-01-02T00:00:00Z")]).kind, "none");
+  for (const s of ["queued", "building", "deploying"]) assert.equal(connectionPanelState([d(s)]).kind, "deploying", s);
+  assert.equal(connectionPanelState([d("building"), d("deployed")]).kind, "live", "an older live container is still live");
+  assert.equal(connectionPanelState([d("failed"), d("queued", "2026-01-02T00:00:00Z")]).kind, "none");
+});
+
+await check("deploymentsOf keeps only the service's own rows", () => {
+  const rows = [{ serviceId: "a", status: "deployed", stoppedAt: null, hostPort: null, createdAt: "x" }, { serviceId: "b", status: "deployed", stoppedAt: null, hostPort: null, createdAt: "x" }];
+  assert.equal(deploymentsOf("a", rows).length, 1);
+  assert.equal(deploymentsOf("c", rows).length, 0);
+  assert.equal(connectionPanelState(deploymentsOf("c", rows)).kind, "none", "the previous service's live row must not drive the new one");
+});
+
+await check("copyButtonLabel: Copied! only after a successful write", () => {
+  assert.equal(copyButtonLabel(null, "url"), "Copy");
+  assert.equal(copyButtonLabel({ field: "url", ok: true }, "url"), "Copied!");
+  assert.equal(copyButtonLabel({ field: "url", ok: false }, "url"), "Copy failed");
+  assert.equal(copyButtonLabel({ field: "url", ok: true }, "host"), "Copy");
 });
 
 await check("delete dialog: managed databases need an explicit choice", () => {

@@ -70,6 +70,7 @@ jobs:
       - run: npm run lint
       - run: npm run build
       - run: npm run check:logic
+      - run: npm audit --omit=dev --audit-level=high
 
   secrets:
     runs-on: ubuntu-latest

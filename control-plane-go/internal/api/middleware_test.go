@@ -333,8 +333,9 @@ func TestRateLimitedResponseBodyAndRetryAfter(t *testing.T) {
 		}
 		expectStatus(t, rec, http.StatusTooManyRequests)
 		expectBody(t, rec, `{"error":"too_many_requests"}`)
-		if rec.Header().Get("Retry-After") != "60" {
-			t.Fatalf("Retry-After %q", rec.Header().Get("Retry-After"))
+		// A fresh bucket with burst 1 refills one token per strictEvery (6 s).
+		if rec.Header().Get("Retry-After") != "6" {
+			t.Fatalf("Retry-After %q, want 6", rec.Header().Get("Retry-After"))
 		}
 		if !strings.HasPrefix(rec.Header().Get("Content-Type"), "application/json") {
 			t.Fatalf("Content-Type %q", rec.Header().Get("Content-Type"))
@@ -622,4 +623,41 @@ func TestRateLimitLRUKeepsActiveClients(t *testing.T) {
 			t.Fatalf("a=%v b=%v, want the active client kept and the idle one swept", has(l, "a"), has(l, "b"))
 		}
 	})
+}
+
+// Retry-After is the whole seconds (rounded up, at least 1) until the next token.
+func TestRateLimitRetryAfterIsTimeToNextToken(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	l := newIPLimiter(1, strictEvery)
+	l.now = func() time.Time { return now }
+	call := func() (int, string) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/auth/login", nil)
+		req.RemoteAddr = "10.0.0.1:1"
+		l.wrap(okHandler()).ServeHTTP(rec, req)
+		return rec.Code, rec.Header().Get("Retry-After")
+	}
+	if c, _ := call(); c != 200 {
+		t.Fatalf("first call %d", c)
+	}
+	for _, step := range []struct {
+		advance time.Duration
+		want    string
+	}{
+		{0, "6"},
+		{2 * time.Second, "4"},
+		{500 * time.Millisecond, "4"}, // 3.5 s left rounds up
+		{3*time.Second + 100*time.Millisecond, "1"}, // 0.4 s left is still at least 1
+	} {
+		now = now.Add(step.advance)
+		c, ra := call()
+		if c != http.StatusTooManyRequests || ra != step.want {
+			t.Fatalf("after +%v: %d Retry-After %q, want 429 %q", step.advance, c, ra, step.want)
+		}
+	}
+	// A denied request must not consume a token or delay the refill.
+	now = now.Add(time.Second)
+	if c, _ := call(); c != 200 {
+		t.Fatalf("token should have refilled, got %d", c)
+	}
 }

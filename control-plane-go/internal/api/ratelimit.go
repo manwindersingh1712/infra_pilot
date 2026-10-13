@@ -2,9 +2,11 @@ package api
 
 import (
 	"container/list"
+	"math"
 	"net"
 	"net/http"
 	"net/netip"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -66,6 +68,12 @@ func (l *ipLimiter) remove(e *list.Element) {
 }
 
 func (l *ipLimiter) allow(key string) bool {
+	ok, _ := l.take(key)
+	return ok
+}
+
+// take is allow that also reports, when denied, how long until the next token.
+func (l *ipLimiter) take(key string) (bool, time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
@@ -76,14 +84,29 @@ func (l *ipLimiter) allow(key string) bool {
 		c := e.Value.(*client)
 		c.seen = now
 		l.lru.MoveToFront(e)
-		return c.lim.AllowN(now, 1)
+		return takeToken(c.lim, now)
 	}
 	for len(l.clients) >= l.max && l.lru.Len() > 0 {
 		l.remove(l.lru.Back())
 	}
 	c := &client{key: key, lim: rate.NewLimiter(rate.Every(l.every), l.burst), seen: now}
 	l.clients[key] = l.lru.PushFront(c)
-	return c.lim.AllowN(now, 1)
+	return takeToken(c.lim, now)
+}
+
+// takeToken spends a token if one is available. Otherwise it returns the wait
+// until the next one; the reservation is cancelled so a denied request neither
+// consumes a token nor pushes the refill back.
+func takeToken(lim *rate.Limiter, now time.Time) (bool, time.Duration) {
+	r := lim.ReserveN(now, 1)
+	if !r.OK() {
+		return false, time.Minute
+	}
+	if d := r.DelayFrom(now); d > 0 {
+		r.CancelAt(now)
+		return false, d
+	}
+	return true, 0
 }
 
 // clientKey is the limiter key for a TCP peer address. IPv4-mapped IPv6 is
@@ -164,8 +187,9 @@ func inPrefixes(ps []netip.Prefix, a netip.Addr) bool {
 // untrusted X-Forwarded-For entry; see requestClientKey.
 func (l *ipLimiter) wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !l.allow(requestClientKey(r, l.trusted)) {
-			w.Header().Set("Retry-After", "60")
+		if ok, wait := l.take(requestClientKey(r, l.trusted)); !ok {
+			secs := max(1, int(math.Ceil(wait.Seconds())))
+			w.Header().Set("Retry-After", strconv.Itoa(secs))
 			writeError(w, http.StatusTooManyRequests, "too_many_requests")
 			return
 		}

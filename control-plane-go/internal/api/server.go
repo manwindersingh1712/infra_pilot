@@ -95,11 +95,18 @@ func buildHandler(d Deps) (*Server, http.Handler) {
 	return s, withSecurityHeaders(withRequestID(withCORS(d.CORSOrigins, s.withRecover(jsonErrors(mux)))))
 }
 
+// router is the part of *http.ServeMux that routes() uses; the route-walk test
+// substitutes a recorder to enumerate every registered pattern.
+type router interface {
+	Handle(pattern string, h http.Handler)
+	HandleFunc(pattern string, h func(http.ResponseWriter, *http.Request))
+}
+
 // routes registers every endpoint. s.private requires a JWT. Each endpoint
 // class has its own per-IP bucket: authLimit for register and login,
 // refreshLimit for refresh and logout, so a login burst cannot block token
 // refresh behind one shared address.
-func (s *Server) routes(mux *http.ServeMux) {
+func (s *Server) routes(mux router) {
 	mux.HandleFunc("GET /healthz", s.healthz)
 	mux.HandleFunc("GET /readyz", s.readyz)
 

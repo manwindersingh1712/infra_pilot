@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { apiFetch, humanizeApiError } from "../lib/api";
+import { REPO_URL_GENERIC_MESSAGE, REPO_URL_HINT, repoUrlProblem } from "../lib/repoUrl";
 
 type ServiceType = "docker" | "nodejs" | "nextjs" | "react" | "mongodb" | "redis";
 type Step = "select-type" | "database-options" | "github-type" | "service-form";
@@ -143,6 +144,8 @@ export function CreateServiceModal({ projectId, isOpen, onClose, onCreated }: Cr
   const [repoUrl, setRepoUrl] = useState("");
   const [branch, setBranch] = useState("main");
   const [loading, setLoading] = useState(false);
+  // Shown only after the field was left or a submit was tried, so typing is not nagged.
+  const [repoTouched, setRepoTouched] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Set once POST /services succeeded. A retry after a failed deploy must not
   // create a second service, so submit then only repeats the deploy.
@@ -174,7 +177,13 @@ export function CreateServiceModal({ projectId, isOpen, onClose, onCreated }: Cr
 
   const needsRepo = serviceType === "docker" || serviceType === "nodejs" || serviceType === "nextjs" || serviceType === "react";
 
+  // The specific mistakes (ssh, file, http) show at once; the generic "not a
+  // URL" message waits until the field was left, so typing is not nagged.
+  const repoCheck = needsRepo ? repoUrlProblem(repoUrl) : null;
+  const repoProblem = repoCheck !== null && (repoTouched || repoCheck !== REPO_URL_GENERIC_MESSAGE) ? repoCheck : null;
+
   function resetForm() {
+    setRepoTouched(false);
     setStep("select-type");
     setSelectedCategory(null);
     setName("");
@@ -242,6 +251,10 @@ export function CreateServiceModal({ projectId, isOpen, onClose, onCreated }: Cr
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim()) return;
+    if (createdId === null && needsRepo && repoUrlProblem(repoUrl) !== null) {
+      setRepoTouched(true);
+      return;
+    }
 
     const myGeneration = generation.current;
     const stale = () => generation.current !== myGeneration;
@@ -262,7 +275,7 @@ export function CreateServiceModal({ projectId, isOpen, onClose, onCreated }: Cr
       };
 
       if (needsRepo) {
-        body.repoUrl = repoUrl;
+        body.repoUrl = repoUrl.trim();
         body.branch = branch;
       }
 
@@ -741,14 +754,26 @@ export function CreateServiceModal({ projectId, isOpen, onClose, onCreated }: Cr
                     placeholder="https://github.com/username/repo"
                     required={needsRepo}
                     disabled={createdId !== null}
+                    aria-invalid={repoProblem !== null}
+                    aria-describedby="repo-url-help"
+                    data-testid="repo-url"
                     style={inputStyle}
                     onFocus={(e) => {
                       e.currentTarget.style.borderColor = "rgba(139,92,246,0.5)";
                     }}
                     onBlur={(e) => {
                       e.currentTarget.style.borderColor = "rgba(255,255,255,0.1)";
+                      setRepoTouched(true);
                     }}
                   />
+                  <div
+                    id="repo-url-help"
+                    data-testid="repo-url-help"
+                    role={repoProblem ? "alert" : undefined}
+                    style={{ marginTop: "6px", fontSize: "12px", color: repoProblem ? "#f87171" : "#9ca3af" }}
+                  >
+                    {repoProblem ?? REPO_URL_HINT}
+                  </div>
                 </div>
 
                 <div style={{ marginBottom: "24px" }}>
@@ -799,7 +824,7 @@ export function CreateServiceModal({ projectId, isOpen, onClose, onCreated }: Cr
               </button>
               <button
                 type="submit"
-                disabled={loading || (createdId === null && (!name.trim() || (needsRepo && !repoUrl.trim())))}
+                disabled={loading || (createdId === null && (!name.trim() || (needsRepo && (!repoUrl.trim() || repoUrlProblem(repoUrl) !== null))))}
                 style={{
                   padding: "10px 20px",
                   borderRadius: "8px",

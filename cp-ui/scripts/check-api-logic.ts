@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { refreshSession, withStorageLock, type RefreshCallResult, type RefreshDeps } from "../src/lib/refresh.ts";
 import { isValidProjectName, projectNameTooLong } from "../src/lib/projectName.ts";
+import { repoUrlProblem, REPO_URL_SSH_MESSAGE, REPO_URL_FILE_MESSAGE, REPO_URL_HINT, REPO_URL_HTTP_MESSAGE } from "../src/lib/repoUrl.ts";
 import { newServiceOverlaps } from "../src/lib/canvasLayout.ts";
 import { ApiError, humanizeApiError, rateLimitMessage, parseErrorCode, parseRetryAfter, SESSION_EXPIRED_MESSAGE } from "../src/lib/errors.ts";
 import {
@@ -910,6 +911,24 @@ await check("deploymentBadge: a stopped deployed row reads Stopped, not a green 
   assert.deepEqual(deploymentBadge("failed", "2026-10-13T10:00:00Z"), { label: "failed", tone: "failed" });
   for (const st of ["queued", "building", "deploying"]) assert.deepEqual(deploymentBadge(st, null), { label: st, tone: "pending" });
   assert.deepEqual(deploymentBadge("weird", null), { label: "weird", tone: "neutral" });
+});
+
+await check("repoUrlProblem rejects ssh/git@/file/http and accepts https", () => {
+  for (const ok of [
+    "https://github.com/user/repo", "https://github.com/user/repo.git", "https://gitlab.com/group/sub/repo",
+    "https://git.example.org:8443/x/y.git", "  https://bitbucket.org/a/b  ", "HTTPS://GitHub.com/a/b", "",
+  ]) assert.equal(repoUrlProblem(ok), null, ok);
+  for (const ssh of ["git@github.com:user/repo.git", "ssh://git@github.com/user/repo.git", "git://github.com/user/repo", "deploy@host.example.com:team/repo"]) {
+    assert.equal(repoUrlProblem(ssh), REPO_URL_SSH_MESSAGE, ssh);
+  }
+  for (const f of ["file:///srv/repo", "/srv/repo", "./repo", "../repo", "~/repo", "C:\\repo", "FILE://x"]) {
+    assert.equal(repoUrlProblem(f), REPO_URL_FILE_MESSAGE, f);
+  }
+  for (const bad of ["http://github.com/a/b", "github.com/a/b", "https://", "https://git hub.com/a", "ftp://x.com/a", "not a url"]) {
+    assert.notEqual(repoUrlProblem(bad), null, bad);
+  }
+  assert.equal(repoUrlProblem("http://github.com/a/b"), REPO_URL_HTTP_MESSAGE);
+  assert.equal(REPO_URL_HINT, "Public https:// URLs only");
 });
 
 console.log(`ok: ${passed} checks passed`);

@@ -15,7 +15,7 @@ import {
   DELETE_CLOSED, DELETING_NOTICE, beginDelete, buildConnectionRows, buildConnectionUrl, cancelDelete,
   classifyDeleteError, connectedServiceNames, deletePath, failDelete, openDelete, passwordEnvKey,
   pickConnectionDeployment, MASK, NO_PASSWORD_TEXT, connectionPanelState, copyButtonLabel, deploymentsOf, shellQuote,
-  type ConnectionRow, type PasswordState,
+  type ConnectionRow, type PasswordState, PURGE_ARMED_LABEL, PURGE_ARM_MS, PURGE_LABEL, disarmPurge, nextFocusIndex, purgeButtonLabel,
 } from "../src/lib/serviceActions.ts";
 
 let passed = 0;
@@ -704,7 +704,10 @@ await check("delete dialog: managed databases need an explicit choice", () => {
     const none = beginDelete(open, t, null);
     assert.equal(none.send, false);
     assert.equal(none.state, open);
-    const purge = beginDelete(open, t, "purge");
+    const arm = beginDelete(open, t, "purge");
+    assert.deepEqual([arm.send, arm.purgeData], [false, false], "the first purge click only arms");
+    assert.deepEqual(arm.state, { phase: "confirm", error: null, armed: true });
+    const purge = beginDelete(arm.state, t, "purge");
     assert.deepEqual([purge.send, purge.purgeData], [true, true]);
     assert.deepEqual(purge.state, { phase: "pending", purgeData: true });
     const keep = beginDelete(open, t, "keep");
@@ -723,10 +726,43 @@ await check("delete dialog: no second request while pending, cancel is blocked w
   assert.equal(beginDelete(DELETE_CLOSED, "nodejs", null).send, false);
   assert.equal(cancelDelete(pending), pending);
   assert.deepEqual(cancelDelete(openDelete()), DELETE_CLOSED);
-  assert.deepEqual(failDelete(pending, "boom"), { phase: "confirm", error: "boom" });
+  assert.deepEqual(failDelete(pending, "boom"), { phase: "confirm", error: "boom", armed: false });
   assert.equal(failDelete(DELETE_CLOSED, "boom"), DELETE_CLOSED);
   const retry = beginDelete(failDelete(pending, "boom"), "redis", "keep");
   assert.equal(retry.send, true, "after an error the user can try again");
+});
+
+await check("two-step purge: arm, disarm, keep needs no arming, an error disarms", () => {
+  const armed = beginDelete(openDelete(), "redis", "purge").state;
+  assert.equal(purgeButtonLabel(openDelete()), PURGE_LABEL);
+  assert.equal(purgeButtonLabel(armed), PURGE_ARMED_LABEL);
+  assert.match(PURGE_ARMED_LABEL, /again.*permanently/);
+  assert.deepEqual(disarmPurge(armed), openDelete());
+  const unarmed = openDelete();
+  assert.equal(disarmPurge(unarmed), unarmed);
+  const keep = beginDelete(armed, "redis", "keep");
+  assert.deepEqual([keep.send, keep.purgeData], [true, false], "keep while armed deletes without erasing");
+  assert.equal(disarmPurge(DELETE_CLOSED), DELETE_CLOSED);
+  const pending = beginDelete(armed, "redis", "purge").state;
+  assert.equal(disarmPurge(pending), pending);
+  const failed = failDelete(pending, "boom");
+  assert.equal(beginDelete(failed, "redis", "purge").send, false, "after an error the purge must be armed again");
+  assert.equal(PURGE_ARM_MS, 5000);
+  // stateless services have no purge step
+  assert.equal(beginDelete(openDelete(), "nodejs", null).send, true);
+});
+
+await check("nextFocusIndex: wraps at both ends, enters from outside", () => {
+  assert.equal(nextFocusIndex(0, 3, false), 1);
+  assert.equal(nextFocusIndex(2, 3, false), 0);
+  assert.equal(nextFocusIndex(0, 3, true), 2);
+  assert.equal(nextFocusIndex(2, 3, true), 1);
+  assert.equal(nextFocusIndex(-1, 3, false), 0);
+  assert.equal(nextFocusIndex(-1, 3, true), 2);
+  assert.equal(nextFocusIndex(5, 3, false), 0);
+  assert.equal(nextFocusIndex(0, 1, false), 0);
+  assert.equal(nextFocusIndex(0, 1, true), 0);
+  assert.equal(nextFocusIndex(0, 0, false), -1);
 });
 
 await check("classifyDeleteError: 404 is success, the rest is readable", () => {

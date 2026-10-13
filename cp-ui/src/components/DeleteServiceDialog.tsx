@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { apiFetch } from "../lib/api";
 import {
-  beginDelete, cancelDelete, classifyDeleteError, deletePath, failDelete, isManagedDb, openDelete,
+  PURGE_ARM_MS, beginDelete, cancelDelete, classifyDeleteError, deletePath, disarmPurge, failDelete, isManagedDb,
+  nextFocusIndex, openDelete, purgeButtonLabel,
   type DeleteChoice, type DeleteState,
 } from "../lib/serviceActions";
 
@@ -12,6 +13,9 @@ interface DeleteServiceDialogProps {
   onDeleted: () => void;
   // Called when the user dismisses the dialog without deleting.
   onCancel: () => void;
+  // Called with a readable message when the delete failed after this dialog
+  // was already unmounted (nothing is left to show the error in).
+  onFailed?: (message: string) => void;
 }
 
 const buttonBase: React.CSSProperties = {
@@ -22,19 +26,57 @@ const buttonBase: React.CSSProperties = {
   textAlign: "left",
 };
 
-export function DeleteServiceDialog({ service, connectedNames, onDeleted, onCancel }: DeleteServiceDialogProps) {
+export function DeleteServiceDialog({ service, connectedNames, onDeleted, onCancel, onFailed }: DeleteServiceDialogProps) {
   const [state, setState] = useState<DeleteState>(openDelete());
   // Updated synchronously so two clicks in a row can never both send.
   const stateRef = useRef<DeleteState>(state);
   const mounted = useRef(true);
   const cancelRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  // The element that opened the dialog gets the focus back when it closes.
+  const opener = useRef<Element | null>(document.activeElement);
 
   useEffect(() => {
     mounted.current = true;
     cancelRef.current?.focus();
+    const from = opener.current;
     return () => {
       mounted.current = false;
+      if (from instanceof HTMLElement && document.contains(from)) from.focus();
     };
+  }, []);
+
+  // Keep the focus inside the dialog: while pending every button is disabled,
+  // so the dialog itself holds it; after an error it returns to Cancel.
+  useEffect(() => {
+    if (state.phase === "pending") {
+      dialogRef.current?.focus();
+    } else if (document.activeElement === document.body || document.activeElement === dialogRef.current) {
+      cancelRef.current?.focus();
+    }
+  }, [state.phase]);
+
+  const armed = state.phase === "confirm" && state.armed;
+  useEffect(() => {
+    if (!armed) return;
+    const t = setTimeout(() => {
+      const next = disarmPurge(stateRef.current);
+      stateRef.current = next;
+      setState(next);
+    }, PURGE_ARM_MS);
+    return () => clearTimeout(t);
+  }, [armed]);
+
+  useEffect(() => {
+    function onTab(e: KeyboardEvent) {
+      if (e.key !== "Tab" || !dialogRef.current) return;
+      e.preventDefault();
+      const items = Array.from(dialogRef.current.querySelectorAll<HTMLElement>("button:not([disabled])"));
+      const i = nextFocusIndex(items.indexOf(document.activeElement as HTMLElement), items.length, e.shiftKey);
+      (i < 0 ? dialogRef.current : items[i]).focus();
+    }
+    document.addEventListener("keydown", onTab);
+    return () => document.removeEventListener("keydown", onTab);
   }, []);
 
   const managed = isManagedDb(service.serviceType);
@@ -57,9 +99,11 @@ export function DeleteServiceDialog({ service, connectedNames, onDeleted, onCanc
 
   async function submit(choice: DeleteChoice | null) {
     const step = beginDelete(stateRef.current, service.serviceType, choice);
+    if (step.state !== stateRef.current) {
+      stateRef.current = step.state;
+      setState(step.state);
+    }
     if (!step.send) return;
-    stateRef.current = step.state;
-    setState(step.state);
     try {
       await apiFetch(deletePath(service.id, step.purgeData), { method: "DELETE" });
       onDeleted();
@@ -69,9 +113,13 @@ export function DeleteServiceDialog({ service, connectedNames, onDeleted, onCanc
         onDeleted();
         return;
       }
+      if (!mounted.current) {
+        onFailed?.(outcome.message);
+        return;
+      }
       const next = failDelete(stateRef.current, outcome.message);
       stateRef.current = next;
-      if (mounted.current) setState(next);
+      setState(next);
     }
   }
 
@@ -92,6 +140,9 @@ export function DeleteServiceDialog({ service, connectedNames, onDeleted, onCanc
       onClick={dismiss}
     >
       <div
+        ref={dialogRef}
+        tabIndex={-1}
+        aria-busy={pending}
         role="dialog"
         aria-modal="true"
         aria-labelledby="delete-service-title"
@@ -108,6 +159,7 @@ export function DeleteServiceDialog({ service, connectedNames, onDeleted, onCanc
           borderRadius: "12px",
           boxShadow: "0 20px 60px rgba(0,0,0,0.6)",
           color: "#e5e7eb",
+          outline: "none",
         }}
       >
         <h3 id="delete-service-title" style={{ margin: "0 0 12px 0", fontSize: "17px", color: "#fff", wordBreak: "break-word" }}>
@@ -121,6 +173,16 @@ export function DeleteServiceDialog({ service, connectedNames, onDeleted, onCanc
           <p data-testid="connected" style={{ margin: "0 0 12px 0", fontSize: "13px", lineHeight: 1.6, color: "#fbbf24", wordBreak: "break-word" }}>
             {connectedNames.length === 1 ? "1 service is" : `${connectedNames.length} services are`} connected to this
             one and may break: {connectedNames.join(", ")}.
+          </p>
+        )}
+
+        {pending && (
+          <p
+            role="status"
+            data-testid="pending-text"
+            style={{ margin: "0 0 12px 0", padding: "10px 12px", fontSize: "13px", color: "#ddd6fe", background: "rgba(139,92,246,0.12)", border: "1px solid rgba(139,92,246,0.3)", borderRadius: "8px" }}
+          >
+            Deleting “{service.name}”… this takes a few seconds. Keep this window open.
           </p>
         )}
 
@@ -149,9 +211,9 @@ export function DeleteServiceDialog({ service, connectedNames, onDeleted, onCanc
                 data-testid="delete-purge"
                 disabled={pending}
                 onClick={() => void submit("purge")}
-                style={{ ...buttonBase, ...disabledStyle, background: "rgba(239,68,68,0.15)", color: "#fca5a5", border: "1px solid rgba(239,68,68,0.4)" }}
+                style={{ ...buttonBase, ...disabledStyle, background: armed ? "rgba(239,68,68,0.45)" : "rgba(239,68,68,0.15)", color: armed ? "#fff" : "#fca5a5", border: "1px solid rgba(239,68,68,0.4)" }}
               >
-                Delete database and its data
+                {purgeButtonLabel(state)}
                 <span style={{ display: "block", marginTop: "4px", fontSize: "12px", fontWeight: 400, color: "#9ca3af" }}>
                   The data is erased for good, including data migrated from the earlier Infra Pilot version.
                 </span>
@@ -188,9 +250,6 @@ export function DeleteServiceDialog({ service, connectedNames, onDeleted, onCanc
           >
             Cancel
           </button>
-          {pending && managed && (
-            <p style={{ margin: 0, fontSize: "12px", color: "#9ca3af" }}>Deleting…</p>
-          )}
         </div>
       </div>
     </div>

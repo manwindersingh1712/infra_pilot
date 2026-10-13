@@ -164,13 +164,13 @@ export type DeleteChoice = "purge" | "keep";
 
 export type DeleteState =
   | { phase: "closed" }
-  | { phase: "confirm"; error: string | null }
+  | { phase: "confirm"; error: string | null; armed: boolean }
   | { phase: "pending"; purgeData: boolean };
 
 export const DELETE_CLOSED: DeleteState = { phase: "closed" };
 
 export function openDelete(): DeleteState {
-  return { phase: "confirm", error: null };
+  return { phase: "confirm", error: null, armed: false };
 }
 
 // beginDelete moves confirm -> pending and says whether to send the request.
@@ -186,6 +186,8 @@ export function beginDelete(
   let purgeData = false;
   if (isManagedDb(serviceType)) {
     if (choice === null) return { state, send: false, purgeData: false };
+    // Erasing data takes two clicks: the first only arms the button.
+    if (choice === "purge" && !state.armed) return { state: { ...state, armed: true }, send: false, purgeData: false };
     purgeData = choice === "purge";
   }
   return { state: { phase: "pending", purgeData }, send: true, purgeData };
@@ -197,7 +199,30 @@ export function cancelDelete(state: DeleteState): DeleteState {
 }
 
 export function failDelete(state: DeleteState, message: string): DeleteState {
-  return state.phase === "pending" ? { phase: "confirm", error: message } : state;
+  return state.phase === "pending" ? { phase: "confirm", error: message, armed: false } : state;
+}
+
+// disarmPurge reverts an armed purge button (after 5 s, or on any other choice).
+export function disarmPurge(state: DeleteState): DeleteState {
+  return state.phase === "confirm" && state.armed ? { ...state, armed: false } : state;
+}
+
+export const PURGE_ARM_MS = 5000;
+export const PURGE_LABEL = "Delete database and its data";
+export const PURGE_ARMED_LABEL = "Click again to erase the data permanently";
+
+export function purgeButtonLabel(state: DeleteState): string {
+  return state.phase === "confirm" && state.armed ? PURGE_ARMED_LABEL : PURGE_LABEL;
+}
+
+// nextFocusIndex implements a Tab focus trap over `count` focusable elements:
+// it wraps at both ends, and from outside the list (-1) it enters at the
+// first element (Tab) or the last (Shift+Tab).
+export function nextFocusIndex(current: number, count: number, shift: boolean): number {
+  if (count <= 0) return -1;
+  if (current < 0 || current >= count) return shift ? count - 1 : 0;
+  if (shift) return current === 0 ? count - 1 : current - 1;
+  return current === count - 1 ? 0 : current + 1;
 }
 
 const DELETE_MESSAGES: Record<string, string> = {

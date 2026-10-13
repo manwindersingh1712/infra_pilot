@@ -1,7 +1,7 @@
 // Run: npm run check:logic  (node scripts/check-api-logic.ts)   (Node 22.18+; no test framework needed)
 import assert from "node:assert/strict";
 import { refreshSession, withStorageLock, type RefreshCallResult, type RefreshDeps } from "../src/lib/refresh.ts";
-import { isValidProjectName } from "../src/lib/projectName.ts";
+import { isValidProjectName, projectNameTooLong } from "../src/lib/projectName.ts";
 import { ApiError, humanizeApiError, parseErrorCode, parseRetryAfter, SESSION_EXPIRED_MESSAGE } from "../src/lib/errors.ts";
 import {
   DEFAULT_RATE_LIMIT_WAIT_S, FAILED_OPENS_BEFORE_HINT, HIDDEN_STALE_MS, MAX_LINES, MIN_RESTART_GAP_MS, STABLE_MS,
@@ -599,6 +599,15 @@ await check("classifyTicketError: 429 honours Retry-After, clamped to 1-60 s, 30
   assert.equal(ms(new ApiError(429, "too_many_requests")), 30_000);
   assert.equal(DEFAULT_RATE_LIMIT_WAIT_S, 30);
   assert.match(classifyTicketError(new ApiError(429, "too_many_streams", 5)).message, /limit/);
+});
+
+await check("projectNameTooLong counts code points", () => {
+  assert.equal(projectNameTooLong("\u{1F600}".repeat(100)), false);
+  assert.equal(projectNameTooLong("\u{1F600}".repeat(101)), true);
+  assert.equal(projectNameTooLong("x".repeat(100)), false);
+  assert.equal(projectNameTooLong("x".repeat(101)), true);
+  assert.equal(projectNameTooLong(" ".repeat(5) + "x".repeat(100) + " "), false, "trimmed");
+  assert.equal(isValidProjectName("\u{1F600}".repeat(101)), false);
 });
 
 // ---- serviceActions.ts

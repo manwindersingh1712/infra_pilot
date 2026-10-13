@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import logoSvg from "../assets/logo.svg";
 import { apiFetch, humanizeApiError, logout } from "../lib/api";
-import { isValidProjectName, PROJECT_NAME_MAX } from "../lib/projectName";
+import { isValidProjectName, projectNameTooLong } from "../lib/projectName";
 
 interface Project {
   id: string;
@@ -575,7 +575,6 @@ export function ProjectsPage() {
                 setCreateError(null);
               }}
               onKeyDown={(e) => e.key === "Enter" && createProject()}
-              maxLength={PROJECT_NAME_MAX}
               autoFocus
               style={{
                 width: "100%",
@@ -593,11 +592,11 @@ export function ProjectsPage() {
             <div
               style={{
                 fontSize: "12px",
-                color: "#6b7280",
+                color: projectNameTooLong(newProjectName) ? "#ef4444" : "#6b7280",
                 marginBottom: createError ? "12px" : "24px",
               }}
             >
-              2-100 characters
+              {projectNameTooLong(newProjectName) ? "Names are 2 to 100 characters. This one is too long." : "2-100 characters"}
             </div>
             {createError && (
               <div

@@ -11,3 +11,9 @@ export function isValidProjectName(raw: string): boolean {
   const n = projectNameLength(raw);
   return n >= PROJECT_NAME_MIN && n <= PROJECT_NAME_MAX;
 }
+
+// Shown when the name is over the limit. The input has no maxLength: that
+// attribute counts UTF-16 units, so 100 emoji would be cut at 50.
+export function projectNameTooLong(raw: string): boolean {
+  return projectNameLength(raw) > PROJECT_NAME_MAX;
+}

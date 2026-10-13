@@ -4,7 +4,7 @@ import { DeleteServiceDialog } from "./DeleteServiceDialog";
 import { DeploymentStageTracker } from "./DeploymentStageTracker";
 import { apiFetch, humanizeApiError } from "../lib/api";
 import {
-  buildConnectionRows, connectionPanelState, copyButtonLabel, deploymentsOf, isManagedDb, passwordEnvKey, shouldClosePanel,
+  buildConnectionRows, connectionPanelState, copyButtonLabel, deploymentBadge, deploymentsOf, isManagedDb, passwordEnvKey, shouldClosePanel,
   type CopyResult, type PasswordState,
 } from "../lib/serviceActions";
 
@@ -1044,7 +1044,7 @@ export function ServiceDetailsPanel({ service, isOpen, onClose, onDeleted, onDel
                                       textTransform: "uppercase",
                                     }}
                                   >
-                                    REMOVED
+                                    {deployment.status === "deployed" && deployment.stoppedAt ? deploymentBadge(deployment.status, deployment.stoppedAt).label : "REMOVED"}
                                   </span>
                                   <div>
                                     <div style={{ fontSize: "14px", color: "#e5e7eb", fontWeight: 500 }}>

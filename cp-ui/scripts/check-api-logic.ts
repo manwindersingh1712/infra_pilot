@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { refreshSession, withStorageLock, type RefreshCallResult, type RefreshDeps } from "../src/lib/refresh.ts";
 import { isValidProjectName, projectNameTooLong } from "../src/lib/projectName.ts";
+import { newServiceOverlaps } from "../src/lib/canvasLayout.ts";
 import { ApiError, humanizeApiError, rateLimitMessage, parseErrorCode, parseRetryAfter, SESSION_EXPIRED_MESSAGE } from "../src/lib/errors.ts";
 import {
   DEFAULT_RATE_LIMIT_WAIT_S, FAILED_OPENS_BEFORE_HINT, HIDDEN_STALE_MS, MAX_LINES, MIN_RESTART_GAP_MS, STABLE_MS,
@@ -619,6 +620,17 @@ await check("429 message names the wait when Retry-After is known", () => {
   assert.equal(h(new ApiError(429, "too_many_requests", 0)), "Too many requests. Wait a moment and try again.");
   assert.equal(rateLimitMessage(Number.NaN), "Too many requests. Wait a moment and try again.");
   assert.match(h(new ApiError(429, "too_many_streams", 9)), /limit/);
+});
+
+await check("newServiceOverlaps: only a new service on top of another", () => {
+  const s = (id: string, x: number, y: number) => ({ id, positionX: x, positionY: y });
+  assert.equal(newServiceOverlaps([s("a", 0, 0), s("b", 0, 0)], "b"), true);
+  assert.equal(newServiceOverlaps([s("a", 300, 40), s("b", 0, 0)], "b"), false, "dragged service elsewhere");
+  assert.equal(newServiceOverlaps([s("a", 0, 200), s("b", 0, 0)], "b"), false, "same column only");
+  assert.equal(newServiceOverlaps([s("a", 200, 0), s("b", 0, 0)], "b"), false, "same row only");
+  assert.equal(newServiceOverlaps([s("a", 0, 0)], "a"), false, "alone");
+  assert.equal(newServiceOverlaps([s("a", 0, 0), s("b", 0, 0), s("c", 5, 5)], "c"), false, "stacked pair does not involve c");
+  assert.equal(newServiceOverlaps([s("a", 0, 0)], "missing"), false);
 });
 
 // ---- serviceActions.ts

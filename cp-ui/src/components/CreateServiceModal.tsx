@@ -8,7 +8,7 @@ interface CreateServiceModalProps {
   projectId: string;
   isOpen: boolean;
   onClose: () => void;
-  onCreated: () => void;
+  onCreated: (serviceId: string) => void;
 }
 
 // Service category definitions
@@ -274,7 +274,7 @@ export function CreateServiceModal({ projectId, isOpen, onClose, onCreated }: Cr
         });
         id = service.id;
         // Show the new node on the canvas even if the deploy below fails.
-        onCreated();
+        onCreated(id);
         // The dialog was closed while the request was in flight: the service
         // exists, but this dialog instance is gone, so keep no id and report
         // nothing here (the canvas refresh above shows the service).

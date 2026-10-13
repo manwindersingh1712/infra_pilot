@@ -13,6 +13,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { ServiceNode } from "../components/ServiceNode";
+import { newServiceOverlaps } from "../lib/canvasLayout";
 import { CreateServiceModal } from "../components/CreateServiceModal";
 import { ServiceDetailsPanel } from "../components/ServiceDetailsPanel";
 import { ApiError, apiFetch, humanizeApiError, logout } from "../lib/api";
@@ -72,11 +73,12 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
   // background=true is a refresh while the page is already showing: it must
   // not swap the page for the loader or the error screen, because that would
   // unmount open dialogs (Create Service keeps its state across a refresh).
-  async function loadCanvasData(background = false) {
-    if (!projectId) return;
+  async function loadCanvasData(background = false): Promise<Service[] | null> {
+    if (!projectId) return null;
     // Only the newest request may write state: an older response that arrives
     // late must not bring back a node that was just deleted.
     const seq = ++loadSeq.current;
+    let loaded: Service[] | null = null;
     if (!background) {
       setLoading(true);
       setError(null);
@@ -85,15 +87,16 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
     try {
       // Load project name
       const project = await apiFetch<{ name: string }>(`/projects/${projectId}`);
-      if (seq !== loadSeq.current) return;
+      if (seq !== loadSeq.current) return null;
       setProjectName(project.name);
 
       // Load canvas data
       const canvas = await apiFetch<{ services: Service[]; connections: ConnectionData[] }>(
         `/projects/${projectId}/canvas`
       );
-      if (seq !== loadSeq.current) return;
+      if (seq !== loadSeq.current) return null;
       setServices(canvas.services);
+      loaded = canvas.services;
       setConnections(canvas.connections);
 
       // Auto-open create modal if no services exist
@@ -101,7 +104,7 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
         setIsCreateModalOpen(true);
       }
     } catch (err) {
-      if (seq !== loadSeq.current) return;
+      if (seq !== loadSeq.current) return null;
       if (background) {
         setToast(`Could not refresh the canvas. ${sentence(humanizeApiError(err))}`);
       } else {
@@ -110,6 +113,22 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
     } finally {
       if (!background) setLoading(false);
     }
+    return loaded;
+  }
+
+  // New services start at (0, 0). Only when the new one would sit on top of
+  // another is the project laid out by the API; positions are otherwise kept.
+  // Everything here is a background refresh: the page never unmounts.
+  async function handleServiceCreated(serviceId: string) {
+    const loaded = await loadCanvasData(true);
+    if (!loaded || !projectId || !newServiceOverlaps(loaded, serviceId)) return;
+    try {
+      await apiFetch(`/projects/${projectId}/canvas/auto-layout`, { method: "POST" });
+    } catch (err) {
+      setToast(`Could not arrange the new service. ${sentence(humanizeApiError(err))} Drag it to where you want it.`);
+      return;
+    }
+    await loadCanvasData(true);
   }
 
   function handleLogout() {
@@ -641,7 +660,7 @@ export function ProjectCanvasPage({ projectId, onBack }: ProjectCanvasPageProps)
         projectId={projectId}
         isOpen={isCreateModalOpen}
         onClose={() => setIsCreateModalOpen(false)}
-        onCreated={() => void loadCanvasData(true)}
+        onCreated={(id) => void handleServiceCreated(id)}
       />
 
       {/* Service Details Panel */}

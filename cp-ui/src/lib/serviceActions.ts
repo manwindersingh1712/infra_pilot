@@ -98,7 +98,7 @@ export function buildConnectionUrl(serviceType: string, host: string, port: numb
   const pw = mask ? MASK : safeEncodeURIComponent(password);
   return serviceType === "mongodb"
     ? `mongodb://admin:${pw}@${host}:${port}/?authSource=admin`
-    : `redis://:${pw}@${host}:${port}`;
+    : `redis://default:${pw}@${host}:${port}`;
 }
 
 // shellQuote wraps a value in single quotes for a POSIX shell. encodeURIComponent

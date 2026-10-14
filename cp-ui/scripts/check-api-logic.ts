@@ -671,9 +671,9 @@ await check("pickConnectionDeployment: newest deployed and not stopped", () => {
 });
 
 await check("buildConnectionUrl percent-encodes the password", () => {
-  assert.equal(buildConnectionUrl("redis", "svc-a", 6379, "p@ss:w/rd#?"), "redis://:p%40ss%3Aw%2Frd%23%3F@svc-a:6379");
+  assert.equal(buildConnectionUrl("redis", "svc-a", 6379, "p@ss:w/rd#?"), "redis://default:p%40ss%3Aw%2Frd%23%3F@svc-a:6379");
   assert.equal(buildConnectionUrl("mongodb", "svc-a", 27017, "a b"), "mongodb://admin:a%20b@svc-a:27017/?authSource=admin");
-  assert.equal(buildConnectionUrl("redis", "svc-a", 6379, ""), "redis://:@svc-a:6379");
+  assert.equal(buildConnectionUrl("redis", "svc-a", 6379, ""), "redis://default:@svc-a:6379");
 });
 
 await check("buildConnectionRows: masked by default, Copy carries the real value", () => {
@@ -690,16 +690,16 @@ await check("buildConnectionRows: masked by default, Copy carries the real value
     assert.ok(r.value.includes(MASK), f + " shows dots: " + r.value);
     assert.ok(!r.value.includes("s3cr") && !r.value.includes("%40"), f + " leaks nothing: " + r.value);
   }
-  assert.equal(by(hidden, "url")?.value, `redis://:${MASK}@svc-abc:6379`);
+  assert.equal(by(hidden, "url")?.value, `redis://default:${MASK}@svc-abc:6379`);
   assert.equal(by(hidden, "password")?.copyValue, "s3cr@t");
-  assert.equal(by(hidden, "url")?.copyValue, "redis://:s3cr%40t@svc-abc:6379");
+  assert.equal(by(hidden, "url")?.copyValue, "redis://default:s3cr%40t@svc-abc:6379");
   assert.equal(by(hidden, "host")?.secret, false);
   const shown = rows("redis", null, ready, true);
   assert.equal(by(shown, "password")?.value, "s3cr@t");
-  assert.equal(by(shown, "url")?.value, "redis://:s3cr%40t@svc-abc:6379");
-  assert.equal(by(shown, "cli")?.value, "redis-cli -u 'redis://:s3cr%40t@svc-abc:6379'");
-  assert.equal(by(hidden, "cli")?.copyValue, "redis-cli -u 'redis://:s3cr%40t@svc-abc:6379'");
-  assert.equal(by(hidden, "cli")?.value, `redis-cli -u 'redis://:${MASK}@svc-abc:6379'`);
+  assert.equal(by(shown, "url")?.value, "redis://default:s3cr%40t@svc-abc:6379");
+  assert.equal(by(shown, "cli")?.value, "redis-cli -u 'redis://default:s3cr%40t@svc-abc:6379'");
+  assert.equal(by(hidden, "cli")?.copyValue, "redis-cli -u 'redis://default:s3cr%40t@svc-abc:6379'");
+  assert.equal(by(hidden, "cli")?.value, `redis-cli -u 'redis://default:${MASK}@svc-abc:6379'`);
   const mongo = rows("mongodb", 20001, { kind: "ready", password: "pw" }, true);
   assert.deepEqual(mongo.map((r) => r.field), ["host", "port", "user", "password", "url", "local", "cli"]);
   assert.equal(by(mongo, "port")?.value, "27017");
@@ -726,7 +726,7 @@ await check("shellQuote survives a single quote in the password", () => {
   assert.equal(shellQuote("a b"), "'a b'");
   assert.equal(shellQuote("it's"), "'it'\\''s'");
   const rows = buildConnectionRows("redis", "a", null, { kind: "ready", password: "x'y" }, true);
-  assert.equal(rows.find((r) => r.field === "cli")?.value, "redis-cli -u 'redis://:x'\\''y@svc-a:6379'");
+  assert.equal(rows.find((r) => r.field === "cli")?.value, "redis-cli -u 'redis://default:x'\\''y@svc-a:6379'");
 });
 
 await check("connectionPanelState: live wins, deploying while something is on its way, else none", () => {
@@ -836,7 +836,7 @@ await check("safeEncodeURIComponent replaces lone surrogates instead of throwing
   assert.equal(safeEncodeURIComponent("p@ss/1"), "p%40ss%2F1");
   assert.equal(safeEncodeURIComponent("\uD83D"), "%EF%BF%BD");
   const rows = buildConnectionRows("redis", "a", null, { kind: "ready", password: "x\uD800y" }, true);
-  assert.equal(rows.find((r) => r.field === "url")?.copyValue, "redis://:x%EF%BF%BDy@svc-a:6379");
+  assert.equal(rows.find((r) => r.field === "url")?.copyValue, "redis://default:x%EF%BF%BDy@svc-a:6379");
   assert.equal(deletePath("a\uD800", false), "/services/a%EF%BF%BD?purgeData=false");
 });
 

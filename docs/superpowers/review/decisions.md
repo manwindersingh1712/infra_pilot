@@ -541,3 +541,6 @@ Follow-ups (backlog): PROD-P2 ("Online" badge for queued/failed services, Node b
 ## 2026-10-13 User decisions at the Plan 2 plan-end gate
 - Plan 1 rollback window: the user chose to WAIT until 2026-10-25 (not closed early). No cutover step (stopping Node, `encrypt-env`, starting the Go API on :8080) before then.
 - Pre-cutover prep on the dev DB APPROVED by the user: verified `pg_dump` backup, apply migration 00004, run `compare-api.sh` with a Go API on :8081 next to the running Node API. Not approved: `encrypt-env`, stopping Node, the Go API on :8080, the worker rebuild.
+
+## 2026-10-15 User closes the Plan 1 rollback window; Plan 2 API cutover starts
+The user wrote "Close the Plan 1 rollback window now and start the cutover. yes" after the explanation of why the window exists (worker rollback; `encrypt-env` is the point of no return for Node, the only way back is the dump). Effect: SEC-P2-1 / STAFF-PE-1 are satisfied by the user's written decision (the window would have ended 2026-10-25). Scope of this approval: START the cutover following `docs/superpowers/runbook/api-cutover.md`. The orchestrator still stops for the user's OK before each system-changing step (stop Node, `migrate encrypt-env --yes`, worker rebuild/restart, Go API on :8080, UI restart), as announced to the user.
